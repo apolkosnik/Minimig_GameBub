@@ -3,7 +3,7 @@
 An Amiga 500 / 600 / 1200 core for the [Game Bub](https://gamebub.net/) handheld,
 ported from [Minimig-AGA_MiSTer](https://github.com/MiSTer-devel/Minimig-AGA_MiSTer)
 to the [Game Bub core framework](https://docs.gamebub.net/developing-cores/overview/)
-(v1.1.0-beta3).
+(v1.1.0-beta4).
 
 The chipset (OCS, ECS, AGA), the CIAs, Paula's audio and floppy controller and both
 CPUs (fx68k for the 68000, TG68K for the 68010 and 68EC020) are the MiSTer core's own
@@ -28,14 +28,21 @@ which suits Kickstart 1.3 and most games. For Kickstart 3.x choose AGA, 68EC020 
 
 ### Controls
 
-| Game Bub | Amiga |
+| Game Bub (or the first dock controller) | Amiga |
 |---|---|
-| D-pad | joystick in port 2 |
+| D-pad, left stick | joystick in port 2 |
 | A / B | fire / second fire button |
+| right stick | moves the mouse in port 1 |
 | L (held) | D-pad moves the mouse in port 1, A and B are its left and right buttons |
 | R | left mouse button (to drag while L is held) |
 | X, Y, Start, Select | keys chosen in the settings (default Space, Return, F1, Esc) |
+| second dock controller: D-pad, left stick, A, B | joystick in port 1 (two player games) |
 | USB or Bluetooth mouse | the mouse in port 1 (needs the firmware fork, see below) |
+
+Port 1 holds the mouse or the second joystick: as on MiSTer, pressing the second
+controller's fire button switches it to the joystick, a left mouse click back to the
+mouse. Dock controllers need the dock beta firmware that goes with framework
+v1.1.0-beta4.
 
 ### Settings
 
@@ -63,24 +70,26 @@ Disk images are written back to the microSD card when the core is exited (or the
 Bub is switched off), with the Amiga's changes, like a real disk. Exit through the menu
 before switching off to be sure.
 
-The core works with the release firmware (1.1.0-beta3) and with the
-[firmware fork](https://github.com/apolkosnik/gamebub/tree/mouse-3do) used by the 3DO
-core. Differences:
-
-* Mouse: only the fork reports a USB or Bluetooth mouse to the core.
-* Saving with the release firmware: on exit it also tries to save Disks 2 to 4 that were
-  not selected and reports an error for them; the selected disks are saved. With the
-  fork, unselected disks are skipped quietly.
+The core is built with framework v1.1.0-beta4 and needs a firmware of that beta or
+later. The [firmware fork](https://github.com/apolkosnik/gamebub/tree/mouse-3do) used by
+the 3DO core adds the USB or Bluetooth mouse (the core takes its reports at
+0x1030/0x1034). A loaded disk image is always reported at its full size when it is saved
+(firmware 1.1.0-beta3 rewrote a file with as many bytes as the core reported, so a 0
+would have emptied it). The release firmware may report an error on exit for Disks 2 to
+4 that were not selected; the selected disks are still saved, and the fork skips the
+unselected ones quietly.
 
 ## Limitations
 
-* Floppies only: no hard disk images (Gayle IDE is built but has no host side), no CD32
-  or CDTV.
+* Floppies only: no hard disk images yet (Gayle IDE is built but has no host side; the
+  framework's on-demand file commands of v1.1.0-beta4 make it possible), no CD32 or
+  CDTV.
 * ADF images only (no extended ADF / MFM-level images), double density.
 * Up to four disk images per session; DF0 and DF1 can be switched between them while
   running.
 * The 68030, RTG, Zorro III RAM and the expansion cards of the MiSTer core (Toccata,
-  A2065, CDTV) are not built: they need the MiSTer's DDR3 memory or its ARM side.
+  A2065, CDTV) are not built: on MiSTer they use its DDR3 memory or its ARM side. The
+  core uses one of the two SDRAM chips (32 MB), which holds everything it needs.
 * The picture is the framework's 320 x 240: the 320 low resolution pixels of the standard
   display window (high resolution pixels are averaged in pairs) and 240 of its lines. In
   PAL that is lines 8 to 247 of 256; **Picture position** chooses others.
@@ -201,7 +210,7 @@ needed; `sim/build.sh` first):
 | Test | |
 |---|---|
 | video | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 320 x 240 frame is checked |
-| input | `inptest.s` copies the inputs to memory: D-pad and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode |
+| input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1 |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |

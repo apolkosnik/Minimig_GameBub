@@ -6,8 +6,9 @@
 # The short tests use the test ROMs in sim/asm (built by asm/build.sh):
 #   video   vidtest.rom: a copper-made 1 bitplane picture, every pixel of
 #           the 320 x 240 frame checked
-#   input   inptest.rom: joystick (port 2), fire, keyboard (with handshake),
-#           host mouse motion and buttons, D-pad mouse mode
+#   input   inptest.rom: joystick (port 2) from the D-pad and the left stick,
+#           fire, keyboard (with handshake), host mouse motion and buttons,
+#           D-pad mouse mode, right stick mouse, a second controller on port 1
 #   audio   audtest.rom: Paula channel 0, the four stereo mix settings
 #   floppy  wrtest.rom: a track written with disk DMA, decoded into the
 #           image, saved on exit (CoreHalt, FileReadStart/End)
@@ -31,7 +32,7 @@ run() {
 	pids+=($!); names+=($name)
 }
 run video  --kick asm/vidtest.rom --ms 560 --check-vidtest
-run input  --kick asm/inptest.rom --ms 1000 \
+run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \
 	--press 580:10:40 --check-word 605:100:0303:0100 \
@@ -39,7 +40,12 @@ run input  --kick asm/inptest.rom --ms 1000 \
 	--press 700:4:40 --check-word 730:108:00FF:0040 --check-word 790:108:00FF:00C0 --check-word 790:10A:FFFF:0002 \
 	--mouse 800:20:-10 --check-mouse 795:850:20:-10 \
 	--press 860:101:40 --check-word 885:104:00C0:0080 --check-word 885:100:0303:0000 \
-	--hwrite 920:1034:2 --check-word 950:106:0400:0000
+	--hwrite 920:1034:2 --check-word 950:106:0400:0000 \
+	--stick 960:0:-100:0:0:0:0:30 --check-word 980:100:0303:0100 \
+	--stick 1000:0:0:100:-50:0:0:50 --check-mouse 995:1070:60:-40:7 \
+	--slot1 --press2 1080:81:40 --check-word 1100:104:0040:0000 --check-word 1100:102:0303:0003 \
+	--press2 1130:41:40 --check-word 1150:102:0303:0300 \
+	--ms 1180
 run audio0 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=0 --expect-audio-ratio 0
 run audio1 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=1 --expect-audio-ratio 0.142857
 run audio2 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=2 --expect-audio-ratio 0.333333

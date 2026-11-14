@@ -40,7 +40,7 @@ class MinimigCore extends Module with Core {
     )
     val audio = new AudioV0()
     val host = new HostV0()
-    val input = new InputV0()
+    val input = new InputExtendedV0(numSlots = 2)
     val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = 1)
   })
 

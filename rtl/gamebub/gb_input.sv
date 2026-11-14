@@ -1,13 +1,20 @@
-// Game Bub Minimig: Game Bub buttons -> Amiga joystick, mouse and keyboard.
+// Game Bub Minimig: Game Bub controllers -> Amiga joysticks, mouse and
+// keyboard (framework InputExtendedV0, two slots).
 //
-//   D-pad          joystick (port 2) directions
+// Slot 0 (the handheld's buttons, or the first dock controller):
+//   D-pad, left stick  joystick (port 2) directions (stick beyond +-64)
 //   A / B          joystick fire 1 / fire 2
+//   right stick    moves the mouse (port 1)
 //   L (held)       D-pad moves the mouse (port 1), A = left, B = right button
 //   R              left mouse button (for dragging while L is held)
 //   host mouse     a USB/Bluetooth mouse reported by the firmware fork
 //                  (gb_host 0x1030/0x1034) moves the port 1 mouse too
 //   X, Y, Start,   Amiga keys (raw key codes from the settings,
 //   Select         defaults Space, Return, F1, Esc)
+// Slot 1 (a second dock controller, when present):
+//   D-pad, left stick, A, B   the joystick in port 1 (minimig switches port 1
+//                  from the mouse to the joystick when its fire button is
+//                  pressed, and back on a left mouse click, as on MiSTer)
 //
 // Mouse and keyboard events go to minimig the way hps_ext.v delivers them
 // on MiSTer: kbd_mouse_type 0 = X delta, 1 = Y delta, 2 = Amiga key code
@@ -31,6 +38,13 @@ module gb_input
 	input             btn_a, btn_b, btn_x, btn_y,
 	input             btn_up, btn_down, btn_left, btn_right,
 	input             btn_l, btn_r, btn_start, btn_select,
+	input signed [7:0] stick_lx, stick_ly,   // slot 0 sticks, -127..127, right / down positive
+	input signed [7:0] stick_rx, stick_ry,
+
+	input             p1_active,              // slot 1: a second controller
+	input             p1_a, p1_b,
+	input             p1_up, p1_down, p1_left, p1_right,
+	input signed [7:0] p1_lx, p1_ly,
 
 	input       [7:0] key_x,
 	input       [7:0] key_y,
@@ -53,13 +67,26 @@ module gb_input
 localparam MOUSE_TICK = CLK_HZ / 200;   // 5 ms between mouse moves
 localparam KEY_GAP    = CLK_HZ / 100;   // 10 ms between key events
 localparam EV_GAP     = 256;            // clocks between any two events
+localparam signed [7:0] STICK_ON  = 8'sd64;    // stick as a digital direction
+localparam signed [7:0] STICK_DZ  = 8'sd16;    // right stick dead zone (mouse)
 
 wire mouse_mode = btn_l;
 
+// directions with the left stick added
+wire s0_up    = btn_up    | (stick_ly < -STICK_ON);
+wire s0_down  = btn_down  | (stick_ly >  STICK_ON);
+wire s0_left  = btn_left  | (stick_lx < -STICK_ON);
+wire s0_right = btn_right | (stick_lx >  STICK_ON);
+wire s1_up    = p1_active & (p1_up    | (p1_ly < -STICK_ON));
+wire s1_down  = p1_active & (p1_down  | (p1_ly >  STICK_ON));
+wire s1_left  = p1_active & (p1_left  | (p1_lx < -STICK_ON));
+wire s1_right = p1_active & (p1_right | (p1_lx >  STICK_ON));
+
 // joystick bits: 0 right, 1 left, 2 down, 3 up, 4 fire 1, 5 fire 2
 assign joy_port2 = mouse_mode ? 16'd0 :
-                   {10'd0, btn_b, btn_a, btn_up & ~btn_down, btn_down, btn_left & ~btn_right, btn_right};
-assign joy_port1 = 16'd0;
+                   {10'd0, btn_b, btn_a, s0_up & ~s0_down, s0_down, s0_left & ~s0_right, s0_right};
+assign joy_port1 = {10'd0, p1_active & p1_b, p1_active & p1_a, s1_up & ~s1_down, s1_down,
+                    s1_left & ~s1_right, s1_right};
 assign mouse_btn = {hmouse_btn[2], (mouse_mode & btn_b) | hmouse_btn[1], (mouse_mode & btn_a) | btn_r | hmouse_btn[0]};
 
 // ------------------------------------------------------------- mouse
@@ -148,6 +175,9 @@ always @(posedge clk) begin
 			if (mtick != '0) mtick <= mtick - 1'd1;
 			else begin
 				mtick <= MOUSE_TICK[$bits(mtick)-1:0];
+				// right stick: up to 7 counts per tick, past the dead zone
+				if (stick_rx > STICK_DZ || stick_rx < -STICK_DZ) ax = ax + (stick_rx >>> 4);
+				if (stick_ry > STICK_DZ || stick_ry < -STICK_DZ) ay = ay + (stick_ry >>> 4);
 				if (mouse_mode && any_dir) begin
 					if (held != 8'hFF) held <= held + 8'd1;
 					if (btn_left ^ btn_right) ax = ax + (btn_right ? {10'd0, speed} : -{10'd0, speed});

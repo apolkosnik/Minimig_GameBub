@@ -348,18 +348,21 @@ int main(int argc, char **argv) {
 	std::vector<std::pair<uint32_t, uint32_t>> extra_settings;
 	double run_ms = 3000;
 	struct Press { double ms; uint32_t mask; double len; };
-	std::vector<Press> presses;
+	std::vector<Press> presses, presses2;   // slot 0, slot 1
+	struct Stick { double ms; int v[6]; double len; };
+	std::vector<Stick> sticks;
 	struct Mouse { double ms; int dx, dy; };
 	std::vector<Mouse> mice;
 	struct Swap { double ms; uint32_t slot; };
 	std::vector<Swap> swaps;
 	struct CheckWord { double ms; uint32_t addr, mask, value; bool done; };
 	std::vector<CheckWord> checks;
-	struct CheckMouse { double ms1, ms2; int dx, dy; uint32_t before; int stage; };
+	struct CheckMouse { double ms1, ms2; int dx, dy, tol; uint32_t before; int stage; };
 	std::vector<CheckMouse> mchecks;
 	struct HWrite { double ms; uint32_t addr, value; bool done; };
 	std::vector<HWrite> hwrites;
 	bool do_exit = false;
+	bool slot1 = false;   // a second controller present
 	std::string save_dir;
 	long expect_sectors = -1, expect_written = -1;
 	bool expect_frame = false;
@@ -377,11 +380,14 @@ int main(int argc, char **argv) {
 		else if (a == "--ms") run_ms = std::atof(next().c_str());
 		else if (a == "--frames-dir") frames_dir = next();
 		else if (a == "--shot-every") shot_every = std::atoi(next().c_str());
+		else if (a == "--press2") { Press p; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%lf", &p.ms, &p.mask, &p.len); presses2.push_back(p); }
+		else if (a == "--stick") { Stick t{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d:%d:%d:%d:%d:%lf", &t.ms, &t.v[0], &t.v[1], &t.v[2], &t.v[3], &t.v[4], &t.v[5], &t.len); sticks.push_back(t); }
+		else if (a == "--slot1") slot1 = true;
 		else if (a == "--press") { Press p; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%lf", &p.ms, &p.mask, &p.len); presses.push_back(p); }
 		else if (a == "--mouse") { Mouse m; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d", &m.ms, &m.dx, &m.dy); mice.push_back(m); }
 		else if (a == "--swap") { Swap s; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &s.ms, &s.slot); swaps.push_back(s); }
 		else if (a == "--check-word") { CheckWord c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x:%x", &c.ms, &c.addr, &c.mask, &c.value); checks.push_back(c); }
-		else if (a == "--check-mouse") { CheckMouse c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy); mchecks.push_back(c); }
+		else if (a == "--check-mouse") { CheckMouse c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy, &c.tol); mchecks.push_back(c); }
 		else if (a == "--hwrite") { HWrite h{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x", &h.ms, &h.addr, &h.value); hwrites.push_back(h); }
 		else if (a == "--exit") do_exit = true;
 		else if (a == "--save-dir") save_dir = next();
@@ -402,6 +408,7 @@ int main(int argc, char **argv) {
 	// power on: MMCM not locked, framework reset
 	top->clk_114 = 0; top->clk_28 = 0; top->mmcm_locked = 0; top->reset = 1;
 	top->host_mem_enable = 0; top->host_cmd_request = 0; top->buttons = 0;
+	top->buttons1 = 0; top->slot1_active = 0; top->sticks = 0;
 	top->eval();
 	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
 	run_cycles(16);
@@ -496,6 +503,14 @@ int main(int argc, char **argv) {
 		uint32_t mask = 0;
 		for (auto &p : presses) if (ms >= p.ms && ms < p.ms + p.len) mask |= p.mask;
 		top->buttons = mask;
+		uint32_t mask2 = 0;
+		for (auto &p : presses2) if (ms >= p.ms && ms < p.ms + p.len) mask2 |= p.mask;
+		top->buttons1 = mask2;
+		top->slot1_active = slot1;
+		uint64_t st = 0;
+		for (auto &t : sticks) if (ms >= t.ms && ms < t.ms + t.len)
+			for (int k = 0; k < 6; k++) st |= uint64_t(uint8_t(int8_t(t.v[k]))) << (8 * k);
+		top->sticks = st;
 		for (auto &m : mice) if (m.ms >= 0 && ms >= m.ms) {
 			hwrite(0x1030, (uint32_t(uint16_t(m.dy)) << 16) | uint16_t(m.dx));
 			m.ms = -1;
@@ -519,8 +534,8 @@ int main(int argc, char **argv) {
 				uint32_t after = sdram_peek16(0x102 >> 1);
 				int dx = int8_t(uint8_t(after) - uint8_t(c.before));
 				int dy = int8_t(uint8_t(after >> 8) - uint8_t(c.before >> 8));
-				if (dx != c.dx || dy != c.dy) FAIL("mouse counters moved by %d, %d; expected %d, %d (JOY0DAT %04X -> %04X)", dx, dy, c.dx, c.dy, c.before, after);
-				else std::printf("%.0f ms: mouse counters moved by %d, %d as expected\n", ms, dx, dy);
+				if (std::abs(dx - c.dx) > c.tol || std::abs(dy - c.dy) > c.tol) FAIL("mouse counters moved by %d, %d; expected %d, %d (JOY0DAT %04X -> %04X)", dx, dy, c.dx, c.dy, c.before, after);
+				else std::printf("%.0f ms: mouse counters moved by %d, %d as expected (%d, %d +- %d)\n", ms, dx, dy, c.dx, c.dy, c.tol);
 				c.stage = 2;
 			}
 		}
