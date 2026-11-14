@@ -10,6 +10,11 @@
 //    SetupComplete, GetStatus until CoreHalt, CoreRun, NotifyFocus(1); and on
 //    exit CoreHalt, then FileReadStart / read back / FileReadEnd for each
 //    file that is not read only;
+//  * the firmware's worker loop serving core requests (core/command.rs,
+//    core/files_on_demand.rs of 1.1.0-beta4): the six command words read at
+//    0xF000_1000, busy, FileGetSize / FileRead / FileWrite / FileFlush on the
+//    on-demand files with the data moved through the memory interface in
+//    pieces of 16 KB, the three result words written back, done (and error);
 //  * the framework between them: the HostV0 memory interface exactly as
 //    SpiReceiverFifo drives it (enable stays high from one queued request to
 //    the next, also in the clock done is seen; the address moves on in the
@@ -30,6 +35,12 @@
 //   --press MS:BUTTONS:LEN  press buttons (hex mask, tb_top order) at MS for LEN ms
 //   --mouse MS:DX:DY     a host mouse report at MS
 //   --swap MS:DF0SLOT    change the DF0 setting at MS
+//   --hdf N FILE         hard disk image for drive N (0 master, 1 slave;
+//                        files.json ids 5, 6, on demand)
+//   --fw-latency-us N    time the firmware takes to notice a core request
+//   --ide-test           check what sim/asm/idetest.rom read and wrote
+//   --expect-hdd-read N  at least N hard disk sectors read
+//   --save-hdf DIR       write the hard disk images as left at the end
 //   --exit               do the firmware's exit sequence at the end and
 //                        compare the saved images with the SDRAM contents
 //   --save-dir DIR       write the saved images there (with --exit)
@@ -159,6 +170,13 @@ static bool prev_as = true;
 
 // one clk_28 cycle: drive the inputs for the coming edge, then 4 clk_114 cycles
 static void cycle28() {
+	// framework (HandheldTop): the core command's busy / done / error
+	// registers are cleared while the core's request is low
+	if (!top->host_core_request) {
+		top->host_core_busy = 0;
+		top->host_core_done = 0;
+		top->host_core_error = 0;
+	}
 	// framework: SpiReceiverFifo system side (combinational outputs of this
 	// clock follow the queue head and regSysMemBusy)
 	bool en = false;
@@ -294,6 +312,225 @@ static std::vector<uint32_t> to_words(const std::vector<uint8_t> &b) {
 
 struct FileSpec { int id; uint32_t addr; std::string path; bool read_only; std::vector<uint8_t> data; };
 
+// ------------------------------------------------- on-demand files
+// The hard disk images (files.json ids 5 and 6). The firmware serves the
+// core's requests from its worker loop.
+struct OnDemand {
+	bool selected = false;
+	std::string path;
+	std::vector<uint8_t> data, orig;
+	unsigned reads = 0, writes = 0, flushes = 0, sizes = 0;
+	uint64_t bytes_read = 0, bytes_written = 0;
+};
+static OnDemand hdf[2];
+static uint64_t fw_latency = 14188;      // clk_28 cycles (500 us)
+static uint64_t core_req_since = 0;
+static unsigned core_bad_requests = 0;
+static bool fw_verbose = false;
+
+static void core_service() {
+	if (!top->host_core_request) { core_req_since = 0; return; }
+	if (top->host_core_done || top->host_core_error) return;   // answered, the core has not dropped it yet
+	if (!core_req_since) { core_req_since = cyc28 ? cyc28 : 1; return; }
+	if (cyc28 - core_req_since < fw_latency) return;
+	core_req_since = 0;
+
+	auto w = hread_block(0xF0001000u, 6);
+	top->host_core_busy = 1;
+	uint32_t res[3] = {0, 0, 0};
+	bool ok = true;
+	uint32_t cmd = w[0];
+	int id = int(w[1] & 0xFFFF);
+	OnDemand *f = (id == 5 || id == 6) && hdf[id - 5].selected ? &hdf[id - 5] : nullptr;
+	const size_t SCRATCH = 16 * 1024;
+	if (cmd < 0x0400 || cmd > 0x0404) {
+		std::printf("fw: unknown core request %04X\n", cmd);
+		core_bad_requests++;
+		ok = false;
+	}
+	else if (!f) { res[0] = 1; ok = false; }               // invalid file
+	else if (cmd == 0x0400) {                              // FileGetSize
+		res[1] = uint32_t(f->data.size());
+		res[2] = uint32_t(uint64_t(f->data.size()) >> 32);
+		f->sizes++;
+	}
+	else if (cmd == 0x0401) {                              // FileSetSize
+		f->data.resize((uint64_t(w[3]) << 32) | w[2]);
+	}
+	else if (cmd == 0x0402) {                              // FileRead
+		uint32_t address = w[2];
+		uint64_t offset = (uint64_t(w[4]) << 32) | w[3];
+		size_t length = w[5], transferred = 0;
+		while (transferred < length) {
+			size_t chunk = std::min(length - transferred, SCRATCH);
+			if (offset + transferred >= f->data.size()) break;           // end of the file
+			size_t n = std::min<uint64_t>(chunk, f->data.size() - (offset + transferred));
+			std::vector<uint8_t> b(f->data.begin() + offset + transferred, f->data.begin() + offset + transferred + n);
+			hwrite_block(address + uint32_t(transferred), to_words(b));
+			transferred += n;
+		}
+		res[1] = uint32_t(transferred);
+		f->reads++;
+		f->bytes_read += transferred;
+		if (fw_verbose) std::printf("fw: FileRead id %d offset %llu length %zu -> %zu\n", id, (unsigned long long)offset, length, transferred);
+	}
+	else if (cmd == 0x0403) {                              // FileWrite
+		uint32_t address = w[2];
+		uint64_t offset = (uint64_t(w[4]) << 32) | w[3];
+		size_t length = w[5], transferred = 0;
+		while (transferred < length) {
+			size_t chunk = std::min(length - transferred, SCRATCH);
+			auto words = hread_block(address + uint32_t(transferred), (chunk + 3) / 4);
+			if (f->data.size() < offset + transferred + chunk) f->data.resize(offset + transferred + chunk);
+			for (size_t i = 0; i < chunk; i++) f->data[offset + transferred + i] = uint8_t(words[i / 4] >> (8 * (i % 4)));
+			transferred += chunk;
+		}
+		res[1] = uint32_t(transferred);
+		f->writes++;
+		f->bytes_written += transferred;
+		if (fw_verbose) std::printf("fw: FileWrite id %d offset %llu length %zu\n", id, (unsigned long long)offset, length);
+	}
+	else f->flushes++;                                     // FileFlush
+
+	hwrite_block(0xF0001000u, {res[0], res[1], res[2]});
+	top->host_core_busy = 0;
+	top->host_core_done = 1;
+	top->host_core_error = !ok;
+}
+
+// ------------------------------------------- hard disk geometry
+// What Main_MiSTer makes of an image (ide.cpp: guess_geometry(),
+// calc_geometry(), ide_set_geometry(), ide_img_set()), to check the core.
+struct Geo { bool present = false; uint32_t cyl = 0, heads = 0, spt = 0, total = 0, offset = 0; };
+
+static uint32_t be32(const uint8_t *p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+static void put32(std::vector<uint8_t> &b, size_t o, uint32_t v) { b[o] = uint8_t(v >> 24); b[o + 1] = uint8_t(v >> 16); b[o + 2] = uint8_t(v >> 8); b[o + 3] = uint8_t(v); }
+
+static void calc_geometry(uint64_t size, uint32_t &heads, uint32_t &sectors) {
+	uint32_t head = 0, cyl = 0, spt = 0;
+	uint32_t sptt[] = { 63, 127, 255, 0 };
+	uint32_t total = uint32_t(size / 512);
+	for (int i = 0; sptt[i] != 0; i++) {
+		spt = sptt[i];
+		for (head = 4; head <= 16; head++) {
+			cyl = total / (head * spt);
+			if (total <= 1024 * 1024) { if (cyl <= 1023) break; }
+			else {
+				if (cyl < 16383) break;
+				if (cyl < 32767 && head >= 5) break;
+				if (cyl <= 65536) break;
+			}
+		}
+		if (head <= 16) break;
+	}
+	heads = head; sectors = spt;
+}
+
+static Geo guess_geometry(const std::vector<uint8_t> &img) {
+	Geo g;
+	uint64_t size = img.size();
+	if (size < 512) return g;
+	uint32_t heads = 0, sectors = 0, offset = 0;
+	uint8_t flg = 0;
+	bool rdb = false;
+	for (int i = 0; i < 16 && uint64_t(i + 1) * 512 <= size; i++) {
+		const uint8_t *sec = &img[size_t(i) * 512];
+		for (int j = 0; j < 512; j++) flg |= sec[j];
+		if (!std::memcmp(sec, "RDSK", 4)) {
+			sectors = be32(sec + 68);
+			heads = be32(sec + 72);
+			if (sectors > 255 || heads > 16) {
+				if (!(sectors & 1) && sectors < 512 && heads <= 8) { sectors /= 2; heads *= 2; }
+				else calc_geometry(size, heads, sectors);
+			}
+			rdb = true;
+			break;
+		}
+	}
+	if (!rdb) {
+		if (flg) {
+			heads = 16; sectors = 128;
+			for (int i = 32; i <= 2048; i <<= 1) {
+				uint64_t cylinders = size / (512 * i) + 1;
+				if (cylinders < 65536) { sectors = (i < 128) ? i : 128; heads = i / sectors; break; }
+			}
+			offset = heads * sectors;
+		}
+		else calc_geometry(size, heads, sectors);
+	}
+	g.present = true;
+	g.total = uint32_t(size / 512);
+	g.heads = heads ? heads : 16;
+	g.spt = sectors ? sectors : 256;
+	uint64_t c = size / (uint64_t(g.heads) * g.spt * 512);
+	if (c > 65535) c = 65535;
+	if (offset && c < 65535) c++;
+	g.cyl = uint32_t(c);
+	g.offset = offset;
+	return g;
+}
+
+// ide_set_geometry() of command 91
+static void set_geometry(Geo &g, uint32_t sectors, uint32_t heads) {
+	g.heads = heads ? heads : 16;
+	g.spt = sectors ? sectors : 256;
+	uint64_t c = uint64_t(g.total) / (g.heads * g.spt);
+	if (g.offset) { c++; g.offset = g.heads * g.spt; }
+	if (c > 65535) c = 65535;
+	g.cyl = uint32_t(c);
+}
+
+// fill_fake_rdb(): block 0 (RDSK) or 1 (PART) of the virtual RDB
+static std::vector<uint8_t> fake_rdb_block(const Geo &g, int drvnum, int block) {
+	std::vector<uint8_t> b(512, 0);
+	if (block == 0) {
+		std::memcpy(&b[0], "RDSK", 4);
+		put32(b, 4, 0x40); put32(b, 12, 7); put32(b, 16, 0x200); put32(b, 20, 0x12);
+		put32(b, 24, 0xFFFFFFFF); put32(b, 28, 1); put32(b, 32, 0xFFFFFFFF); put32(b, 36, 0xFFFFFFFF);
+		for (int i = 0; i < 6; i++) put32(b, 40 + 4 * i, 0xFFFFFFFF);
+		put32(b, 64, g.cyl); put32(b, 68, g.spt); put32(b, 72, g.heads); put32(b, 76, 1);
+		put32(b, 80, g.cyl);
+		put32(b, 96, g.cyl); put32(b, 100, g.cyl); put32(b, 104, 3);
+		put32(b, 128, 0); put32(b, 132, 1); put32(b, 136, 1); put32(b, 140, g.cyl - 1);
+		put32(b, 144, g.heads * g.spt); put32(b, 148, 0); put32(b, 152, 1);
+		std::memcpy(&b[160], "DON'T   REPARTITION!    0.00", 28);
+	}
+	else {
+		std::memcpy(&b[0], "PART", 4);
+		put32(b, 4, 0x40); put32(b, 12, 7); put32(b, 16, 0xFFFFFFFF); put32(b, 20, 1);
+		b[36] = 3; b[37] = 'D'; b[38] = 'H'; b[39] = uint8_t('0' + drvnum);
+		put32(b, 128, 0x10); put32(b, 132, 0x80); put32(b, 140, g.heads); put32(b, 144, 1);
+		put32(b, 148, g.spt); put32(b, 152, 2); put32(b, 164, 1); put32(b, 168, g.cyl - 1);
+		put32(b, 172, 30); put32(b, 180, 0xFFFFFF); put32(b, 184, 0x7FFFFFFE); put32(b, 192, 0x444F5301);
+	}
+	uint32_t sum = 0;
+	for (int i = 0; i < 64; i++) sum += be32(&b[4 * i]);
+	put32(b, 8, 0 - sum);
+	return b;
+}
+
+// the sector a drive returns for an LBA
+static std::vector<uint8_t> drive_sector(const Geo &g, const std::vector<uint8_t> &img, int drvnum, uint32_t lba) {
+	if (lba < g.offset) return lba < 2 ? fake_rdb_block(g, drvnum, int(lba)) : std::vector<uint8_t>(512, 0);
+	std::vector<uint8_t> b(512, 0);
+	uint64_t o = uint64_t(lba - g.offset) * 512;
+	for (int i = 0; i < 512; i++) if (o + i < img.size()) b[i] = img[o + i];
+	return b;
+}
+
+static uint32_t chip16(uint32_t addr);
+
+// chip RAM at addr holds these bytes
+static int compare_chip(const char *what, uint32_t addr, const std::vector<uint8_t> &e) {
+	int bad = 0;
+	for (size_t i = 0; i + 1 < e.size(); i += 2) {
+		uint32_t w = chip16(addr + uint32_t(i)), x = uint32_t(e[i]) << 8 | e[i + 1];
+		if (w != x && bad++ < 4) FAIL("%s: chip RAM %06X holds %04X, expected %04X", what, addr + uint32_t(i), w, x);
+	}
+	if (!bad) std::printf("ide test: %s as expected (%zu bytes)\n", what, e.size());
+	return bad;
+}
+
 // -------------------------------------------------------------- MFM
 // One track in the standard Amiga format, as trackdisk writes it: 11
 // sectors of 544 words (2 gap words, 2 sync words, header info, label,
@@ -337,6 +574,8 @@ static std::vector<uint16_t> mfm_track(int track) {
 	return out;
 }
 
+static uint32_t chip16(uint32_t addr) { return sdram_peek16(addr >> 1); }
+
 // -------------------------------------------------------------- main
 int main(int argc, char **argv) {
 	Verilated::commandArgs(argc, argv);
@@ -368,6 +607,9 @@ int main(int argc, char **argv) {
 	bool expect_frame = false;
 	bool check_vidtest = false;
 	bool floppy_write_test = false;
+	bool ide_test = false;
+	long expect_hdd_read = -1;
+	std::string save_hdf;
 	double expect_lr = -1;   // expected mean |right| / mean |left|
 	std::vector<std::pair<uint32_t, uint32_t>> dumps;   // SDRAM word address, words
 
@@ -389,6 +631,16 @@ int main(int argc, char **argv) {
 		else if (a == "--check-word") { CheckWord c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x:%x", &c.ms, &c.addr, &c.mask, &c.value); checks.push_back(c); }
 		else if (a == "--check-mouse") { CheckMouse c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy, &c.tol); mchecks.push_back(c); }
 		else if (a == "--hwrite") { HWrite h{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x", &h.ms, &h.addr, &h.value); hwrites.push_back(h); }
+		else if (a == "--hdf") {
+			int n = std::atoi(next().c_str()) & 1;
+			hdf[n].selected = true; hdf[n].path = next();
+			hdf[n].data = read_file(hdf[n].path); hdf[n].orig = hdf[n].data;
+		}
+		else if (a == "--fw-latency-us") fw_latency = uint64_t(std::atof(next().c_str()) * 28.375);
+		else if (a == "--fw-verbose") fw_verbose = true;
+		else if (a == "--ide-test") ide_test = true;
+		else if (a == "--expect-hdd-read") expect_hdd_read = std::atol(next().c_str());
+		else if (a == "--save-hdf") save_hdf = next();
 		else if (a == "--exit") do_exit = true;
 		else if (a == "--save-dir") save_dir = next();
 		else if (a == "--expect-sectors") expect_sectors = std::atol(next().c_str());
@@ -409,6 +661,7 @@ int main(int argc, char **argv) {
 	top->clk_114 = 0; top->clk_28 = 0; top->mmcm_locked = 0; top->reset = 1;
 	top->host_mem_enable = 0; top->host_cmd_request = 0; top->buttons = 0;
 	top->buttons1 = 0; top->slot1_active = 0; top->sticks = 0;
+	top->host_core_busy = 0; top->host_core_done = 0; top->host_core_error = 0;
 	top->eval();
 	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
 	run_cycles(16);
@@ -488,6 +741,17 @@ int main(int argc, char **argv) {
 		if (t.size() != 6000) FAIL("MFM track is %zu words", t.size());
 		for (size_t i = 0; i < t.size(); i++) sdram_poke16(0x18000 + uint32_t(i), t[i]);
 	}
+	// sim/asm/idetest.s: the drive to test and its last sector
+	Geo geo[2];
+	for (int n = 0; n < 2; n++) if (hdf[n].selected) geo[n] = guess_geometry(hdf[n].orig);
+	int ide_drv = hdf[0].selected ? 0 : 1;
+	if (ide_test) {
+		if (!hdf[ide_drv].selected) { FAIL("--ide-test needs --hdf"); std::fflush(stdout); std::_Exit(2); }
+		uint32_t last = geo[ide_drv].total - 1 + geo[ide_drv].offset;
+		sdram_poke16(0xF0 >> 1, ide_drv ? 0x0010 : 0x0000);
+		sdram_poke16(0xF4 >> 1, last >> 16);
+		sdram_poke16(0xF6 >> 1, last & 0xFFFF);
+	}
 	if (!command({0x0100})) FAIL("CoreRun");
 	if (!command({0x0200, 1})) FAIL("NotifyFocus");
 	if (get_status() != 4) FAIL("core not running after CoreRun");
@@ -540,14 +804,15 @@ int main(int argc, char **argv) {
 			}
 		}
 		if (!boot_seen && top->dbg_boot_done) { boot_seen = true; boot_done_at = cyc28; }
+		core_service();
 		cycle28();
 		int ims = int(ms / 250);
 		if (ims != last_ms_print) {
 			last_ms_print = ims;
-			std::printf("%6.0f ms: frames %d (changed %d), cpu_rst %d hlt %d, sectors read %u written %u, motor %d, "
+			std::printf("%6.0f ms: frames %d (changed %d), cpu_rst %d hlt %d, sectors read %u written %u, hdd %u/%u, motor %d, "
 			            "hsync %llu vsync %llu, beamcon0 %04X ersy %d lace %d vcnt %u, cpu at %06X\n",
 			            ms, frames, frames_changed, top->dbg_cpu_rst, top->dbg_cpuhlt,
-			            hread(0x10), hread(0x14), top->dbg_motor,
+			            hread(0x10), hread(0x14), hread(0x28), hread(0x2C), top->dbg_motor,
 			            (unsigned long long)hs_edges, (unsigned long long)vs_edges,
 			            top->dbg_beamcon0, top->dbg_ersy, top->dbg_lace, top->dbg_video_vcnt, top->dbg_chip_addr << 1);
 			hs_edges = vs_edges = 0;
@@ -570,6 +835,130 @@ int main(int argc, char **argv) {
 		else if (std::abs(r / l - expect_lr) > 0.03) FAIL("right / left = %.3f, expected %.3f", r / l, expect_lr);
 		else std::printf("audio: right / left = %.3f as expected\n", r / l);
 	}
+	// hard disks
+	uint32_t hdd_rd = hread(0x28), hdd_wr = hread(0x2C), hdd_state = hread(0x24);
+	std::printf("hard disks: state %08X, %u sectors read, %u written; requests not known to the firmware: %u\n",
+	            hdd_state, hdd_rd, hdd_wr, core_bad_requests);
+	if (core_bad_requests) FAIL("the core sent requests the firmware does not know");
+	if (top->host_core_request) std::printf("hard disks: a core request is pending at the end\n");
+	for (int n = 0; n < 2; n++) {
+		uint32_t chs = hread(0x30 + 4 * n), total = hread(0x38 + 4 * n);
+		if (!hdf[n].selected) continue;
+		std::printf("hard disk %d: %u cylinders, %u heads, %u sectors, %u sectors in the image; firmware: %u size, %u read, %u write, %u flush commands, %llu bytes read, %llu written\n",
+		            n, chs >> 16, (chs >> 9) & 0x7F, chs & 0x1FF, total, hdf[n].sizes, hdf[n].reads, hdf[n].writes, hdf[n].flushes,
+		            (unsigned long long)hdf[n].bytes_read, (unsigned long long)hdf[n].bytes_written);
+		if (!ide_test) {
+			// the geometry Main_MiSTer would give the image
+			if ((chs >> 16) != geo[n].cyl || ((chs >> 9) & 0x7F) != geo[n].heads || (chs & 0x1FF) != geo[n].spt || total != geo[n].total)
+				FAIL("hard disk %d geometry: expected %u/%u/%u, %u sectors", n, geo[n].cyl, geo[n].heads, geo[n].spt, geo[n].total);
+		}
+		if (!save_hdf.empty()) {
+			std::ofstream o(save_hdf + "/hdf" + std::to_string(n) + ".hdf", std::ios::binary);
+			o.write((const char *)hdf[n].data.data(), hdf[n].data.size());
+		}
+	}
+	if (expect_hdd_read >= 0 && long(hdd_rd) < expect_hdd_read) FAIL("%u hard disk sectors read, expected at least %ld", hdd_rd, expect_hdd_read);
+
+	// sim/asm/idetest.s
+	if (ide_test) {
+		const Geo g = geo[ide_drv];
+		const auto &img = hdf[ide_drv].orig;
+		const int d = ide_drv;
+		std::printf("ide test: drive %d, image %zu bytes: %u/%u/%u, virtual RDB of %u sectors\n", d, img.size(), g.cyl, g.heads, g.spt, g.offset);
+		if (chip16(0x100) != 0x600D || chip16(0x102) != 0) FAIL("the test program stopped in step %u (failed step %u)", chip16(0x100), chip16(0x102));
+		if (fb[0] != 0x00FF00) FAIL("the test program ended with COLOR00 %06X", fb[0]);
+		if (!(chip16(0x106) & 0x8000)) FAIL("no IDE interrupt request in Gayle after identify");
+		if ((chip16(0x104) >> 8) != 0x40) FAIL("status after the identify data %02X, expected 40", chip16(0x104) >> 8);
+
+		// identify: words as the drive sends them (low byte first)
+		auto idw = [&](uint32_t base, int i) { uint32_t w = chip16(base + 2 * i); return ((w & 0xFF) << 8) | (w >> 8); };
+		auto check_id = [&](uint32_t base, const Geo &x, const char *what) {
+			struct { int i; uint32_t v; } e[] = {
+				{0, 0x0040}, {1, x.cyl}, {3, x.heads}, {4, (512 * x.spt) & 0xFFFF}, {5, 512}, {6, x.spt},
+				{10, 0x414F}, {11, 0x4844}, {20, 3}, {21, 512}, {22, 4}, {27, ('G' << 8) | 'a'}, {28, ('m' << 8) | 'e'},
+				{46, 0x2020}, {47, 0x8020}, {48, 1}, {49, 0x200}, {50, 0x4001}, {53, 7},
+				{54, x.cyl}, {55, x.heads}, {56, x.spt}, {57, x.total & 0xFFFF}, {58, x.total >> 16}, {59, 0x110},
+				{60, x.total & 0xFFFF}, {61, x.total >> 16}, {65, 120}, {68, 120}, {69, 0}, {80, 0x7E}, {82, 0x4200},
+				{83, 0x7000}, {84, 0x4000}, {85, 0x4200}, {86, 0x7000}, {87, 0x4000}, {93, 0x630B},
+				{100, x.total & 0xFFFF}, {101, x.total >> 16}, {102, 0}, {255, 0},
+			};
+			int bad = 0;
+			for (auto &w : e) if (idw(base, w.i) != w.v && bad++ < 6) FAIL("%s word %d is %04X, expected %04X", what, w.i, idw(base, w.i), w.v);
+			if (!bad) std::printf("ide test: %s as expected\n", what);
+		};
+		check_id(0x1000, g, "identify");
+		Geo g2 = g;
+		set_geometry(g2, 17, 4);
+		check_id(0x1200, g2, "identify after initialize device parameters (4 heads, 17 sectors)");
+		{
+			uint32_t chs = hread(0x30 + 4 * d);
+			if ((chs >> 16) != g2.cyl || ((chs >> 9) & 0x7F) != g2.heads || (chs & 0x1FF) != g2.spt)
+				FAIL("geometry register %08X, expected %u/%u/%u", chs, g2.cyl, g2.heads, g2.spt);
+		}
+
+		auto sectors = [&](uint32_t lba, int n) {
+			std::vector<uint8_t> b;
+			for (int i = 0; i < n; i++) { auto s1 = drive_sector(g, img, d, lba + i); b.insert(b.end(), s1.begin(), s1.end()); }
+			return b;
+		};
+		uint32_t hspt = g.heads * g.spt;
+		compare_chip(g.offset ? "LBA 0, 1 (virtual RDSK and PART blocks)" : "LBA 0, 1", 0x2000, sectors(0, 2));
+		compare_chip("LBA 100..102 (read sectors)", 0x3000, sectors(100, 3));
+		compare_chip("40 sectors from CHS 1/0/1 (read multiple)", 0x4000, sectors(hspt, 40));
+		{
+			auto e = sectors(g.total - 1 + g.offset, 1);
+			e.resize(1024, 0);
+			compare_chip("the last sector and zeros after the end of the image", 0x9000, e);
+		}
+		// task file after the reads: the address of the last sector
+		{
+			uint32_t r0 = chip16(0x110), r1 = chip16(0x112), r2 = chip16(0x114);
+			if (r0 != ((102u << 8) | 0) || r1 != (uint32_t(0x00) << 8 | (0xE0 | (d << 4))) || (r2 >> 8) != 0)
+				FAIL("task file after the LBA read: %04X %04X %04X", r0, r1, r2);
+			else std::printf("ide test: task file after the LBA read as expected\n");
+			uint32_t last = hspt + 39;
+			uint32_t c = last / hspt, h = (last % hspt) / g.spt, sct = (last % hspt) % g.spt + 1;
+			uint32_t q0 = chip16(0x118), q1 = chip16(0x11A), q2 = chip16(0x11C);
+			if (q0 != ((sct << 8) | (c & 0xFF)) || q1 != (((c >> 8) << 8) | (0xA0 | (d << 4) | h)) || (q2 >> 8) != 0)
+				FAIL("task file after the CHS read: %04X %04X %04X, expected %u/%u/%u", q0, q1, q2, c, h, sct);
+			else std::printf("ide test: task file after the CHS read as expected (%u/%u/%u)\n", c, h, sct);
+		}
+		if (chip16(0x120) != 0x4104) FAIL("unknown command: status, error %04X, expected 4104", chip16(0x120));
+
+		// the image as the test leaves it
+		std::vector<uint8_t> e = img;
+		auto put_words = [&](uint32_t lba, int nwords, uint16_t start, uint16_t inc) {
+			uint16_t v = start;
+			for (int i = 0; i < nwords; i++, v = uint16_t(v + inc)) {
+				if (lba < g.offset) continue;   // the virtual RDB is not written
+				uint64_t o = uint64_t(lba - g.offset) * 512 + 2 * uint64_t(i);
+				if (o + 1 < e.size()) { e[o] = uint8_t(v >> 8); e[o + 1] = uint8_t(v); }
+			}
+		};
+		put_words(200, 512, 0xA500, 1);
+		put_words(2 * hspt + 2, 20 * 256, 0x1234, 7);
+		const auto &now = hdf[d].data;
+		if (now.size() != e.size()) FAIL("the image is %zu bytes after the test, was %zu", now.size(), e.size());
+		else {
+			size_t diff = 0, first = 0;
+			for (size_t i = 0; i < e.size(); i++) if (now[i] != e[i]) { if (!diff) first = i; diff++; }
+			if (diff) FAIL("the image differs from the expected one in %zu bytes, first at %zu", diff, first);
+			else std::printf("ide test: the image holds the 2 + 20 written sectors, nothing else changed\n");
+		}
+		{
+			uint16_t sum = 0;
+			for (int i = 0; i < 256; i++) {
+				uint64_t o = uint64_t(300 + i - g.offset) * 512;
+				for (int j = 0; j < 512; j += 2) sum = uint16_t(sum + ((o + j + 1 < e.size()) ? (uint32_t(e[o + j]) << 8 | e[o + j + 1]) : 0));
+			}
+			if (chip16(0x130) != sum) FAIL("sum of 256 sectors from LBA 300 is %04X, expected %04X", chip16(0x130), sum);
+			else std::printf("ide test: sum of 256 sectors (count 0) as expected\n");
+		}
+		if (hdf[d].flushes == 0) FAIL("the written sectors were never flushed");
+		// write sectors: 1 + 1 sectors; write multiple: blocks of 16 and 4
+		if (hdf[d].writes != 4) FAIL("%u FileWrite commands, expected 4", hdf[d].writes);
+	}
+
 	uint32_t stalls = hread(0x1000), runc = hread(0x1004);
 	std::printf("statistics: %u paused, %u run clocks\n", stalls, runc);
 	if (runc == 0) FAIL("run statistics counter did not count");

@@ -5,7 +5,7 @@
 			"label": "Disk 1",
 			"extensions": ["adf"],
 			"user_selected": true,
-			"optional": false,
+			"optional": true,
 			"read_only": false,
 			"address": "0x10000000",
 			"max_size": "0x100000",
@@ -53,6 +53,26 @@
 			"address": "0x20000000",
 			"max_size": "0x100000",
 			"max_transfer_speed": 2000
+		},
+		{
+			"id": 5,
+			"label": "Hard disk 1",
+			"extensions": ["hdf"],
+			"user_selected": true,
+			"optional": true,
+			"read_only": false,
+			"on_demand": true,
+			"max_transfer_speed": 8000
+		},
+		{
+			"id": 6,
+			"label": "Hard disk 2",
+			"extensions": ["hdf"],
+			"user_selected": true,
+			"optional": true,
+			"read_only": false,
+			"on_demand": true,
+			"max_transfer_speed": 8000
 		}
 	]
 }

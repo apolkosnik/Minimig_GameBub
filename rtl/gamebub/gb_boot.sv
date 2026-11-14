@@ -3,6 +3,7 @@
 // Replays what Main_MiSTer's ApplyConfiguration() (minimig_config.cpp)
 // sends to userio.v:
 //
+//   (the hard disk images are looked at first: gb_ide, hdd_ready)
 //   CPU, CHIP, FLP, FLPEX01, FLPEX23           (pre-configuration)
 //   RST(HLT), HDD, MEM, CPU, CHIP, FLP, FLPEX   (CPU halted)
 //   [reload] RST(HLT|CPU), "discard residents", Kickstart upload
@@ -41,6 +42,8 @@ module gb_boot
 	input       [4:0] cfg_floppy,   // XXXZFFXS (FF drives-1, S speed)
 	input       [1:0] cfg_audmix,
 	input      [20:0] kick_size,    // bytes
+	input       [5:0] cfg_hdd,      // IDE: bit 0 Gayle on, 1 master, 2 slave, 5 not the fast port
+	input             hdd_ready,    // cfg_hdd is valid (the images have been looked at)
 
 	input             bus_free,     // the floppy server is idle and stopped
 
@@ -98,7 +101,7 @@ always @* begin
 		5'd3:  begin k_cmd = UIO_MM2_FLPEX01; k_val = 16'h0000; end
 		5'd4:  begin k_cmd = UIO_MM2_FLPEX23; k_val = 16'h0000; end
 		5'd5:  begin k_cmd = UIO_MM2_RST;     k_val = SPI_CPU_HLT; end
-		5'd6:  begin k_cmd = UIO_MM2_HDD;     k_val = 16'h0000; end
+		5'd6:  begin k_cmd = UIO_MM2_HDD;     k_val = {10'd0, cfg_hdd}; end
 		5'd7:  begin k_cmd = UIO_MM2_MEM;     k_val = cfg_memory; end
 		5'd8:  begin k_cmd = UIO_MM2_CPU;     k_val = cfg_cpu; end
 		5'd9:  begin k_cmd = UIO_MM2_CHIP;    k_val = cfg_chipset; end
@@ -196,7 +199,7 @@ always @(posedge clk) begin
 	end
 
 	S_WAITBUS:
-		if (bus_free) state <= (step == 5'd31) ? S_HALT : S_STEP;
+		if (bus_free && hdd_ready) state <= (step == 5'd31) ? S_HALT : S_STEP;
 
 	S_HALT: begin
 		halt_now  <= halt;

@@ -12,10 +12,19 @@
 #   audio   audtest.rom: Paula channel 0, the four stereo mix settings
 #   floppy  wrtest.rom: a track written with disk DMA, decoded into the
 #           image, saved on exit (CoreHalt, FileReadStart/End)
+#   ide_*   idetest.rom: the Gayle IDE port with hard disk images served by
+#           on-demand file commands: identify, read / write sectors and
+#           multiple by LBA and CHS, set multiple, device parameters, the
+#           end of the image, an unknown command; every byte read and the
+#           image afterwards are checked. ide_part: a partition image
+#           (virtual RDB), ide_rdb: an image with an RDB (4 heads, 17
+#           sectors), ide_slave: the partition image as the slave drive
 #
 # Kickstart boots run when the ROMs are given (they are not included):
 #   KICK13=<Kickstart 1.3 A500 ROM> KICK31=<Kickstart 3.1 A1200 ROM>
 #   ADF13=<OFS bootable ADF> ADF31=<bootable ADF for 3.1>
+#   HDF31=<bootable partition image> HDFRDB31=<bootable image with an RDB>
+#   (sim/make_hdf.sh makes both from the files of an ADF)
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -u
 cd "$(dirname "$0")"
@@ -24,6 +33,18 @@ B=./obj_dir/Vtb_top
 OUT=out/tests
 rm -rf $OUT; mkdir -p $OUT
 python3 -c "open('$OUT/blank.adf', 'wb').write(bytes(901120))"
+# hard disk images for the IDE tests: a partition image and one with an RDB
+python3 - $OUT <<'PY'
+import random, struct, sys
+r = random.Random(1234)
+open(sys.argv[1] + '/part.hdf', 'wb').write(bytes(r.getrandbits(8) for _ in range(4 * 1024 * 1024)))
+d = bytearray(r.getrandbits(8) for _ in range(3 * 1024 * 1024 + 512 * 5))
+rdb = bytearray(512)
+rdb[0:4] = b'RDSK'
+struct.pack_into('>III', rdb, 64, 0, 17, 4)   # cylinders (not used), sectors, heads
+d[0:512] = rdb
+open(sys.argv[1] + '/rdb.hdf', 'wb').write(d)
+PY
 pids=()
 names=()
 run() {
@@ -51,12 +72,19 @@ run audio1 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=1 --expect-au
 run audio2 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=2 --expect-audio-ratio 0.333333
 run audio3 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=3 --expect-audio-ratio 1
 run floppy --kick asm/wrtest.rom --disk 0 $OUT/blank.adf --ms 1200 --floppy-write-test --exit
+run ide_part  --kick asm/idetest.rom --hdf 0 $OUT/part.hdf --ide-test --ms 1800
+run ide_rdb   --kick asm/idetest.rom --hdf 0 $OUT/rdb.hdf  --ide-test --ms 1800
+run ide_slave --kick asm/idetest.rom --hdf 1 $OUT/part.hdf --ide-test --ms 1800
 if [ -n "${KICK13:-}" ]; then
 	run ks13_nodisk --kick "$KICK13" --ms 6000 --expect-boot-frame --frames-dir $OUT --shot-every 300
 	[ -n "${ADF13:-}" ] && run ks13_boot --kick "$KICK13" --disk 0 "$ADF13" --ms 15000 --expect-sectors 100 --exit
 fi
 if [ -n "${KICK31:-}" ] && [ -n "${ADF31:-}" ]; then
 	run ks31_aga --kick "$KICK31" --disk 0 "$ADF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-sectors 100
+fi
+if [ -n "${KICK31:-}" ]; then
+	[ -n "${HDF31:-}" ] && run ks31_hdf --kick "$KICK31" --hdf 0 "$HDF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60
+	[ -n "${HDFRDB31:-}" ] && run ks31_rdb --kick "$KICK31" --hdf 0 "$HDFRDB31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60
 fi
 fail=0
 for i in "${!pids[@]}"; do

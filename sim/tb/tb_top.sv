@@ -29,6 +29,9 @@ module tb_top
 	output        host_cmd_done,
 	output        host_cmd_error,
 	output        host_core_request,
+	input         host_core_busy,
+	input         host_core_done,
+	input         host_core_error,
 
 	// InputExtendedV0 slot 0 and 1 buttons, in the order
 	// {select, start, r1, l1, right, left, down, up, y, x, b, a}
@@ -109,9 +112,9 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.host_commandHost_done   (host_cmd_done),
 	.host_commandHost_error  (host_cmd_error),
 	.host_commandCore_request(host_core_request),
-	.host_commandCore_busy   (1'b0),
-	.host_commandCore_done   (1'b0),
-	.host_commandCore_error  (1'b0),
+	.host_commandCore_busy   (host_core_busy),
+	.host_commandCore_done   (host_core_done),
+	.host_commandCore_error  (host_core_error),
 	.input_slots_0_active      (1'b1),
 	.input_slots_0_deviceType  (4'd1),
 	.input_slots_0_buttons_a      (buttons[0]),

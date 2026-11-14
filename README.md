@@ -9,9 +9,10 @@ The chipset (OCS, ECS, AGA), the CIAs, Paula's audio and floppy controller and b
 CPUs (fx68k for the 68000, TG68K for the 68010 and 68EC020) are the MiSTer core's own
 RTL, imported unchanged except for a few small patches (see *Upstream RTL*). What the
 MiSTer's ARM (Main_MiSTer) and its framework do around the core is done here by the
-FPGA itself: configuration, the Kickstart upload and the floppy drive (ADF images
-encoded to MFM and decoded back on writes) are hardware state machines, and the Game
-Bub's MCU only loads and saves the files.
+FPGA itself: configuration, the Kickstart upload, the floppy drive (ADF images
+encoded to MFM and decoded back on writes) and the hard disks (the IDE drives of an
+A600 / A1200) are hardware state machines, and the Game Bub's MCU only loads and
+saves the files.
 
 ## Using the core
 
@@ -19,8 +20,9 @@ Bub's MCU only loads and saves the files.
    microSD card.
 2. Put a Kickstart ROM image in that directory as `kick.rom` (256 KB, 512 KB or 1 MB;
    the 8 KB A1000 boot ROM works too). Kickstart is copyrighted and not included.
-3. Start the core and choose the disk images (`.adf`, double density, up to 1 MB):
-   Disk 1 is required, Disks 2 to 4 are optional ("[No Selection]").
+3. Start the core and choose the images, all optional ("[No Selection]"): Disks 1 to 4
+   are floppies (`.adf`, double density, up to 1 MB), Hard disk 1 and 2 are hard disk
+   images (`.hdf`, see *Hard disks*).
 
 The default machine is an Amiga 500 (OCS, 68000, 512 KB chip + 512 KB slow RAM, PAL),
 which suits Kickstart 1.3 and most games. For Kickstart 3.x choose AGA, 68EC020 and
@@ -64,6 +66,25 @@ v1.1.0-beta4.
 Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
 **Reset (apply)**; the others apply at once.
 
+### Hard disks
+
+Hard disk 1 and 2 are the master and slave drive of the Amiga 600 / 1200 IDE port
+(Gayle). The port is switched on when an image is chosen, and it needs a Kickstart with
+an IDE driver (`scsi.device`): 2.05 of the A600HD, or 3.x of the A600 or A1200. With no
+floppy in DF0 the Amiga boots from the hard disk.
+
+Both kinds of `.hdf` work, as on MiSTer:
+
+* an image of a whole disk, which starts with a Rigid Disk Block (made with HDToolBox,
+  or by an emulator's "RDB" hardfile): its own geometry and partitions are used;
+* an image of a single partition (most `.hdf` files): the core puts a Rigid Disk Block
+  with one bootable FFS partition (DH0, DH1 for the slave) in front of it.
+
+An image can be of any size up to 128 GB; it stays on the microSD card and the core
+reads and writes only the sectors the Amiga asks for (the framework's on-demand file
+commands), so what the Amiga writes is in the file straight away. The firmware flushes
+it a second after the last write and when the core is exited.
+
 ### Saving
 
 Disk images are written back to the microSD card when the core is exited (or the Game
@@ -81,9 +102,7 @@ unselected ones quietly.
 
 ## Limitations
 
-* Floppies only: no hard disk images yet (Gayle IDE is built but has no host side; the
-  framework's on-demand file commands of v1.1.0-beta4 make it possible), no CD32 or
-  CDTV.
+* Two hard disks on the primary IDE port; no CD-ROM, CD32 or CDTV.
 * ADF images only (no extended ADF / MFM-level images), double density.
 * Up to four disk images per session; DF0 and DF1 can be switched between them while
   running.
@@ -121,6 +140,7 @@ unselected ones quietly.
 | sdram_ctrl + ddram_ctrl (DDR3) | sdram_ctrl only, with a third "host" port; Zorro II fast RAM in the same SDRAM |
 | Main_MiSTer ApplyConfiguration(), UploadKickstart() | `gb_boot`: replays the same userio commands, uploads the ROM from SDRAM |
 | Main_MiSTer minimig_fdd.cpp | `gb_floppy`: the same track encoding, sync word handling, header and data checks in hardware |
+| Main_MiSTer ide.cpp | `gb_ide`: the same commands, geometry rules and virtual RDB in hardware, on the management port of the unchanged `ide.sv`; sectors through the framework's on-demand file commands |
 | hps_io / hps_ext | `gb_io_master`: drives the same IO_UIO / IO_FPGA / IO_STROBE bus |
 | video_mixer, scaler | `gb_video`: 320 x 240 window into the framework's frame buffer |
 | audio_out | `gb_audio`: A500 filter, stereo mix |
@@ -139,12 +159,21 @@ Host (MCU) memory map:
 
 | Address | |
 |---|---|
-| 0x0000_0000 | ID "MMIG", version, debug counters (floppy sectors read/written, last floppy error, boot state) |
+| 0x0000_0000 | ID "MMIG", version, debug counters (floppy sectors read/written, last floppy error, boot state; from 0x24 hard disk state, sectors read/written, geometry and size of both drives) |
 | 0x0000_1000, 1004 | statistics: clocks paused / run (the firmware's convention) |
 | 0x0000_1030, 1034 | mouse motion and buttons (firmware fork) |
 | 0x0000_1040 - 107C | settings |
 | 0x1000_0000 + n * 1 MB | disk image n (files 0 to 3) |
 | 0x2000_0000 | Kickstart (file 4) |
+| 0x3000_0000 - 3FFF | sector buffer of the hard disks (files 5 and 6, on demand): 32 sectors |
+| 0xF000_1000 - 1014 | core -> host command: `FileGetSize`, `FileRead`, `FileWrite`, `FileFlush` and their parameters; the results are written back here |
+
+For a hard disk block the core raises the framework's core command request with
+`FileRead` (file, buffer address, offset, length); the firmware writes the bytes into the
+sector buffer and the core hands them to `ide.sv`, already fetching the next block while
+the Amiga reads this one. Writes go the other way with `FileWrite`. When the Amiga
+boots, `FileGetSize` and one `FileRead` of the first 16 sectors tell whether a drive has
+an image and which geometry it gets.
 
 Before a disk image is read back for saving, the core lets the floppy server finish a
 sector it is writing into the image and holds the Amiga in reset until the image has
@@ -198,6 +227,8 @@ bench (`sim/tb/sim_main.cpp`) that plays the Game Bub around it:
 * the release firmware's load sequence (files in `files.json` order, settings,
   `SetupComplete`, `CoreRun`, focus) and its exit sequence (`CoreHalt`, then each
   writable file read back);
+* the firmware's worker loop serving core requests (the command words read, busy, the
+  on-demand file commands with the data moved in pieces of 16 KB, results, done);
 * the framework's SPI receiver as it drives the HostV0 memory interface (enable held
   from one request to the next) and its frame buffer writer;
 * checks on every run: files in SDRAM and read back through the host interface, settings
@@ -213,18 +244,26 @@ needed; `sim/build.sh` first):
 | input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1 |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
+| ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |
+| ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
 
 Results of the last run (Kickstart 1.3 rev 34.5, 3.1 rev 40.68 A1200, WhichAmiga 1.4):
-all ten pass. Kickstart 1.3 shows its insert disk picture, boots WhichAmiga's OFS disk to
-the CLI; Kickstart 3.1 boots the FFS disk and WhichAmiga reports a 68EC020, AGA Lisa and
-Alice, 2 MB chip RAM.
+all fifteen pass. Kickstart 1.3 shows its insert disk picture, boots WhichAmiga's OFS disk
+to the CLI; Kickstart 3.1 boots the FFS disk and WhichAmiga reports a 68EC020, AGA Lisa
+and Alice, 2 MB chip RAM. From both hard disk images Kickstart 3.1 boots to the same
+report, now with Gayle among the chips.
 
 Single runs:
 
 ```
 sim/obj_dir/Vtb_top --kick kick13.rom --disk 0 game.adf --ms 10000 \
     --frames-dir out --shot-every 50 --expect-sectors 100 --exit
+```
+
+```
+sim/obj_dir/Vtb_top --kick kick31.rom --hdf 0 disk.hdf --set 1044=2 --set 1048=2 \
+    --set 104C=4 --ms 12000 --frames-dir out --shot-every 50 --fw-verbose
 ```
 
 `--frames-dir` writes the frames as PPM files; see the head of `sim/tb/sim_main.cpp` for

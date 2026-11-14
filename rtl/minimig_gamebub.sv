@@ -10,6 +10,8 @@
 //   chipdma_arb, fastchip      not needed (no Akiko/CDTV/RTG/fast IDE)
 //   HPS (Main_MiSTer)          gb_boot (configuration, Kickstart upload)
 //                              gb_floppy (ADF <-> MFM floppy server)
+//                              gb_ide (hard disk images on the Gayle IDE
+//                              port, on-demand file commands)
 //                              gb_host (Game Bub MCU: files, settings)
 //   video_mixer / scaler       gb_video (320 x 240 into the framework)
 //   audio filters              gb_audio
@@ -177,6 +179,18 @@ wire [15:0] hmouse_dx, hmouse_dy;
 wire  [2:0] hmouse_btn;
 wire        f_idle, f_committing;
 
+wire [31:0] hc_cmd, hc_p1, hc_p2, hc_p3, hc_p4, hc_p5, hc_res0, hc_res1, hc_res2;
+wire [11:0] hb_addr;
+wire        hb_we;
+wire [31:0] hb_wdata, hb_rdata;
+wire [31:0] ide_state, ide_sectors_read, ide_sectors_written, ide_chs0, ide_chs1, ide_total0, ide_total1;
+wire  [1:0] hdd_present;
+wire        hdd_mount_busy;
+wire  [5:0] ide_req;
+wire  [4:0] ide_address;
+wire        ide_write, ide_read;
+wire [15:0] ide_writedata, ide_readdata;
+
 wire [15:0] bridge_rdata;     // SDRAM host port read data (all clients)
 wire        ntsc;             // from minimig (PAL/NTSC configuration)
 
@@ -238,11 +252,28 @@ gb_host #(
 	.stat_stall       (~core_reset & ~focus),
 	.fdd_error        (fdd_error),
 	.fdd_sectors_read (fdd_sectors_read),
-	.fdd_sectors_written(fdd_sectors_written)
+	.fdd_sectors_written(fdd_sectors_written),
+	.hc_cmd           (hc_cmd),
+	.hc_p1            (hc_p1),
+	.hc_p2            (hc_p2),
+	.hc_p3            (hc_p3),
+	.hc_p4            (hc_p4),
+	.hc_p5            (hc_p5),
+	.hc_res0          (hc_res0),
+	.hc_res1          (hc_res1),
+	.hc_res2          (hc_res2),
+	.hb_addr          (hb_addr),
+	.hb_we            (hb_we),
+	.hb_wdata         (hb_wdata),
+	.hb_rdata         (hb_rdata),
+	.ide_state        (ide_state),
+	.ide_sectors_read (ide_sectors_read),
+	.ide_sectors_written(ide_sectors_written),
+	.ide_chs0         (ide_chs0),
+	.ide_chs1         (ide_chs1),
+	.ide_total0       (ide_total0),
+	.ide_total1       (ide_total1)
 );
-
-// no core initiated commands
-assign host_commandCore_request = 1'b0;
 
 // ===========================================================================
 // HPS replacement: IO bus master shared by the boot sequencer and the
@@ -294,6 +325,10 @@ gb_boot #(.KICK_STAGE(KICK_STAGE)) boot
 	.cfg_floppy  (cfg_floppy),
 	.cfg_audmix  (cfg_audmix),
 	.kick_size   (kick_size),
+	// Gayle IDE on when a drive has an image; always the port in the
+	// chip bus (bit 5), the fast one of the 68020 path is not built
+	.cfg_hdd     ((hdd_present != 2'b00) ? {3'b100, hdd_present, 1'b1} : 6'd0),
+	.hdd_ready   (~hdd_mount_busy),
 	.bus_free    (f_idle),
 	.io_sel      (b_sel),
 	.io_req      (b_req),
@@ -336,6 +371,49 @@ gb_floppy #(
 	.last_error     (fdd_error),
 	.sectors_read   (fdd_sectors_read),
 	.sectors_written(fdd_sectors_written)
+);
+
+// ===========================================================================
+// Hard disks: the part of Main_MiSTer's ide.cpp for the Gayle IDE port,
+// the images read and written through on-demand file commands
+// ===========================================================================
+gb_ide ide_server
+(
+	.clk           (clk_sys),
+	.reset         (reset_d),
+	.enable        (fdd_enable),
+	.start         (boot_start),
+	.mount_busy    (hdd_mount_busy),
+	.present       (hdd_present),
+	.ide_req       (ide_req[2:0]),
+	.ide_address   (ide_address),
+	.ide_write     (ide_write),
+	.ide_writedata (ide_writedata),
+	.ide_read      (ide_read),
+	.ide_readdata  (ide_readdata),
+	.hc_request    (host_commandCore_request),
+	.hc_cmd        (hc_cmd),
+	.hc_p1         (hc_p1),
+	.hc_p2         (hc_p2),
+	.hc_p3         (hc_p3),
+	.hc_p4         (hc_p4),
+	.hc_p5         (hc_p5),
+	.hc_done       (host_commandCore_done),
+	.hc_error      (host_commandCore_error),
+	.hc_res0       (hc_res0),
+	.hc_res1       (hc_res1),
+	.hc_res2       (hc_res2),
+	.hb_addr       (hb_addr),
+	.hb_we         (hb_we),
+	.hb_wdata      (hb_wdata),
+	.hb_rdata      (hb_rdata),
+	.dbg_sectors_read   (ide_sectors_read),
+	.dbg_sectors_written(ide_sectors_written),
+	.dbg_chs0      (ide_chs0),
+	.dbg_chs1      (ide_chs1),
+	.dbg_total0    (ide_total0),
+	.dbg_total1    (ide_total1),
+	.dbg_state     (ide_state)
 );
 
 // ===========================================================================
@@ -784,12 +862,12 @@ minimig minimig
 	.ide_ext_irq  (1'b0             ),
 	.akiko_irq    (1'b0             ),
 	.ide_ena      (                 ),
-	.ide_req      (                 ),
-	.ide_address  (5'd0             ),
-	.ide_write    (1'b0             ),
-	.ide_writedata(16'h0000         ),
-	.ide_read     (1'b0             ),
-	.ide_readdata (                 ),
+	.ide_req      (ide_req          ),
+	.ide_address  (ide_address      ),
+	.ide_write    (ide_write        ),
+	.ide_writedata(ide_writedata    ),
+	.ide_read     (ide_read         ),
+	.ide_readdata (ide_readdata     ),
 
 	.a2065_clk_ddr(clk_114          ),
 	.a2065_mem_address    (         ),

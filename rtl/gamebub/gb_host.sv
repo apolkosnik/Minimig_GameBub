@@ -7,6 +7,8 @@
 //   0x0000_0010..20       debug, read only: floppy sectors read / written,
 //                         last floppy error, boot state, first word of the
 //                         Kickstart as received
+//   0x0000_0024..3C       debug, read only: hard disk state, sectors read /
+//                         written, geometry and size of the two drives
 //   0x0000_1000, 1004     statistics: clocks the Amiga was paused / ran since
 //                         the last write (the Game Bub firmware's convention
 //                         for every core: it reads and clears them on pause)
@@ -19,7 +21,13 @@
 //                         up to 1 MB each -> SDRAM
 //   0x2000_0000           Kickstart ROM image (files.json id 4), up to
 //                         1 MB -> SDRAM staging area
+//   0x3000_0000..3FFF     sector buffer of the hard disk server (gb_ide):
+//                         the firmware's FileRead / FileWrite of the hard
+//                         disk images (files.json ids 5, 6, on demand) go
+//                         through it
 //   0xF000_0000..0C       HostV0 command parameters / results
+//   0xF000_1000..14       core -> host command and its parameters (read),
+//                         results (write): on-demand file I/O of gb_ide
 //
 // File data arrives as 32 bit words with byte 0 of the file in bits 7:0
 // (the MCU's little endian words; the 3DO core found the same on hardware).
@@ -113,6 +121,17 @@ module gb_host
 	output reg [15:0] hmouse_dy,
 	output reg  [2:0] hmouse_btn,
 
+	// core -> host command words and results (gb_ide)
+	input      [31:0] hc_cmd,
+	input      [31:0] hc_p1, hc_p2, hc_p3, hc_p4, hc_p5,
+	output reg [31:0] hc_res0, hc_res1, hc_res2,
+
+	// sector buffer of gb_ide
+	output reg [11:0] hb_addr,
+	output reg        hb_we,
+	output reg [31:0] hb_wdata,
+	input      [31:0] hb_rdata,
+
 	// statistics
 	input             stat_run,       // the Amiga ran this clock
 	input             stat_stall,     // the Amiga was paused this clock
@@ -120,7 +139,12 @@ module gb_host
 	// debug inputs
 	input       [7:0] fdd_error,
 	input      [15:0] fdd_sectors_read,
-	input      [15:0] fdd_sectors_written
+	input      [15:0] fdd_sectors_written,
+	input      [31:0] ide_state,
+	input      [31:0] ide_sectors_read,
+	input      [31:0] ide_sectors_written,
+	input      [31:0] ide_chs0, ide_chs1,
+	input      [31:0] ide_total0, ide_total1
 );
 
 localparam [15:0] CMD_GET_STATUS     = 16'h0000;
@@ -244,7 +268,8 @@ always @(posedge clk) begin
 end
 
 // ------------------------------------------------------- memory access
-localparam M_IDLE = 3'd0, M_W0 = 3'd1, M_W1 = 3'd2, M_R0 = 3'd3, M_R1 = 3'd4, M_DONE = 3'd5;
+localparam M_IDLE = 3'd0, M_W0 = 3'd1, M_W1 = 3'd2, M_R0 = 3'd3, M_R1 = 3'd4, M_DONE = 3'd5,
+           M_B0 = 3'd6, M_B1 = 3'd7;
 reg  [2:0] mstate;
 reg [24:1] m_base;
 reg [31:0] m_wdata;
@@ -254,18 +279,27 @@ wire        is_reg   = (mem_address[31:16] == 16'h0000);
 wire        is_disk  = (mem_address[31:28] == 4'h1) && (mem_address[27:22] == 6'd0) && (mem_address[21:20] < NUM_SLOTS);
 wire        is_kick  = (mem_address[31:20] == 12'h200);
 wire        is_cmd   = (mem_address[31:4] == 28'hF000000);
+wire        is_ccmd  = (mem_address[31:5] == 27'h7800080);     // 0xF000_1000..1F
+wire        is_buf   = (mem_address[31:14] == 18'h0C000);      // 0x3000_0000..3FFF
 wire [24:1] disk_adr = SLOT_BASE + SLOT_WORDS * mem_address[21:20] + {5'd0, mem_address[19:1]};
 wire [24:1] kick_adr = KICK_STAGE + {5'd0, mem_address[19:1]};
 
 function automatic [31:0] reg_read(input [15:0] a);
 	case (a)
 		16'h0000: reg_read = 32'h4D4D4947;   // "MMIG"
-		16'h0004: reg_read = 32'h00010000;   // version 1.0
+		16'h0004: reg_read = 32'h00010001;   // version 1.1
 		16'h0010: reg_read = {16'd0, fdd_sectors_read};
 		16'h0014: reg_read = {16'd0, fdd_sectors_written};
 		16'h0018: reg_read = {24'd0, fdd_error};
 		16'h001C: reg_read = {27'd0, freeze, halted, kick_loaded, boot_busy, boot_done};
 		16'h0020: reg_read = kick_first;
+		16'h0024: reg_read = ide_state;
+		16'h0028: reg_read = ide_sectors_read;
+		16'h002C: reg_read = ide_sectors_written;
+		16'h0030: reg_read = ide_chs0;
+		16'h0034: reg_read = ide_chs1;
+		16'h0038: reg_read = ide_total0;
+		16'h003C: reg_read = ide_total1;
 		16'h1000: reg_read = stat_stalls;
 		16'h1004: reg_read = stat_cycles;
 		16'h1030: reg_read = {hmouse_dy, hmouse_dx};
@@ -295,8 +329,12 @@ always @(posedge clk) begin
 	boot_start   <= 1'b0;
 	hmouse_valid <= 1'b0;
 	stat_clr     <= 2'b00;
+	hb_we        <= 1'b0;
 
 	if (reset) begin
+		hc_res0      <= 32'd0;
+		hc_res1      <= 32'd0;
+		hc_res2      <= 32'd0;
 		mstate       <= M_IDLE;
 		sd_req       <= 1'b0;
 		sd_we        <= 1'b0;
@@ -394,6 +432,12 @@ always @(posedge clk) begin
 					m_wdata <= mem_dataWrite;
 					mstate  <= mem_write ? M_W0 : M_R0;
 				end
+				else if (is_buf) begin
+					hb_addr  <= mem_address[13:2];
+					hb_wdata <= mem_dataWrite;
+					hb_we    <= mem_write;
+					mstate   <= M_B0;
+				end
 				else begin
 					if (mem_write) begin
 						if (is_cmd) case (mem_address[3:2])
@@ -401,6 +445,12 @@ always @(posedge clk) begin
 							2'd1: reg_p1 <= mem_dataWrite;
 							2'd2: reg_p2 <= mem_dataWrite;
 							2'd3: reg_p3 <= mem_dataWrite;
+						endcase
+						else if (is_ccmd) case (mem_address[4:2])
+							3'd0: hc_res0 <= mem_dataWrite;
+							3'd1: hc_res1 <= mem_dataWrite;
+							3'd2: hc_res2 <= mem_dataWrite;
+							default: ;
 						endcase
 						else if (is_reg) case (mem_address[15:0])
 							16'h1000: stat_clr[0] <= 1'b1;
@@ -436,6 +486,15 @@ always @(posedge clk) begin
 							2'd1: mem_dataRead <= reg_p1;
 							2'd2: mem_dataRead <= reg_p2;
 							2'd3: mem_dataRead <= reg_p3;
+						endcase
+						else if (is_ccmd) case (mem_address[4:2])
+							3'd0: mem_dataRead <= hc_cmd;
+							3'd1: mem_dataRead <= hc_p1;
+							3'd2: mem_dataRead <= hc_p2;
+							3'd3: mem_dataRead <= hc_p3;
+							3'd4: mem_dataRead <= hc_p4;
+							3'd5: mem_dataRead <= hc_p5;
+							default: mem_dataRead <= 32'd0;
 						endcase
 						else if (is_reg) mem_dataRead <= reg_read(mem_address[15:0]);
 						else mem_dataRead <= 32'd0;
@@ -490,6 +549,13 @@ always @(posedge clk) begin
 				mem_dataRead <= {sd_rdata[7:0], sd_rdata[15:8], m_r0[7:0], m_r0[15:8]};
 				mstate       <= M_DONE;
 			end
+
+		// sector buffer of gb_ide (block RAM: the read data follows the address)
+		M_B0: mstate <= M_B1;
+		M_B1: begin
+			mem_dataRead <= hb_rdata;
+			mstate       <= M_DONE;
+		end
 
 		// done is high for one clock; the next access may start right after
 		M_DONE: begin
