@@ -1,0 +1,17 @@
+{
+	"metadata": {
+		"id": "apolkosnik.Minimig",
+		"name": "Minimig (Amiga)",
+		"author": "Minimig team, apolkosnik",
+		"version": "0.1.0",
+		"release_date": "2026-11-14",
+		"url": "https://github.com/apolkosnik/Minimig_GameBub",
+		"license": "GPL-3.0-or-later"
+	},
+	"bitstreams": [
+		{
+			"target": "gamebub_rev4",
+			"filename": "MinimigCore-gamebub_rev4.bit"
+		}
+	]
+}

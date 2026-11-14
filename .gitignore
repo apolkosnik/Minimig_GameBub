@@ -1,2 +1,7 @@
 /out
 /build
+/sim/obj_dir*
+/sim/gen
+/sim/out
+/sim/asm/*.rom
+/sim/asm/*.bin
