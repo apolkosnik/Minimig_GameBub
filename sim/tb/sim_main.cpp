@@ -699,7 +699,7 @@ int main(int argc, char **argv) {
 	std::vector<Setting> settings = {
 		{0x1044, 0}, {0x1048, 0}, {0x104C, 1}, {0x1050, 0}, {0x1054, 0}, {0x1058, 0},
 		{0x105C, 0}, {0x1060, 7}, {0x1064, 1}, {0x1068, 2},
-		{0x106C, 0x40}, {0x1070, 0x44}, {0x1074, 0x50}, {0x1078, 0x45}, {0x107C, 8},
+		{0x106C, 0x40}, {0x1070, 0x44}, {0x1074, 0x50}, {0x1078, 0x45}, {0x107C, 0},
 	};
 	for (auto &s : settings) hwrite(s.addr, s.value);
 	for (auto &s : extra_settings) hwrite(s.first, s.second);
@@ -983,18 +983,21 @@ int main(int argc, char **argv) {
 	}
 
 	// sim/asm/vidtest.s: 320 x 256 picture in the standard PAL display
-	// window; the frame shows its lines 8..247 (gb_video V_START), all 320
+	// window; the frame shows 240 of its lines from the one the Picture
+	// position setting gives (0x107C, 0..16; gb_video V_START), all 320
 	// pixels (H_START). Colour 1 yellow, colour 0 blue.
 	if (check_vidtest) {
 		const uint32_t Y = 0xFFFF00, B = 0x0000FF;
+		int vpos = 0;
+		for (auto &e : extra_settings) if (e.first == 0x107C) vpos = int(e.second);
 		int bad = 0;
 		for (int y = 0; y < VH; y++) for (int x = 0; x < VW; x++) {
-			int line = y + 8;
+			int line = y + vpos;
 			bool one = (line % 16 == 0) || line == 255 || x < 16 || x >= 304 || ((x - 16) % 8) < 4;
 			uint32_t e = one ? Y : B;
 			if (fb[y * VW + x] != e && bad++ < 5) FAIL("vidtest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
 		}
-		if (!bad) std::printf("vidtest picture: all %d pixels as expected\n", VW * VH);
+		if (!bad) std::printf("vidtest picture: all %d pixels as expected (lines %d to %d of the display window)\n", VW * VH, vpos, vpos + VH - 1);
 	}
 
 	if (do_exit) {

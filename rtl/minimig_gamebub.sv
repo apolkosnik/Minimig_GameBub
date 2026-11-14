@@ -171,7 +171,7 @@ wire [11:0] drv_slot;
 wire [31:0] drv_tracks;
 wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
-wire  [3:0] video_vpos;
+wire  [4:0] video_vpos;
 wire  [7:0] fdd_error;
 wire [15:0] fdd_sectors_read, fdd_sectors_written;
 wire        hmouse_valid;

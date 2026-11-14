@@ -79,7 +79,7 @@ released when the game goes on.
 | Audio filter | the Amiga 500's fixed 4.4 kHz output filter |
 | Stereo mix | how much of each channel goes into the other (None, 12 %, 25 %, Mono) |
 | X / Y / Start / Select key | Space, Return, Esc, F1, F2, Help, Del or P |
-| Picture position | moves the 240 lines shown up or down |
+| Picture position (PAL) | which 240 of the 256 PAL lines are shown: Top (the default, so title bars are visible), Middle, Bottom or in between. NTSC's 200 lines always fit |
 
 Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
 **Reset (apply)**; the others apply at once.
@@ -126,8 +126,9 @@ unselected ones quietly.
   A2065, CDTV) are not built: on MiSTer they use its DDR3 memory or its ARM side. The
   core uses one of the two SDRAM chips (32 MB), which holds everything it needs.
 * The picture is the framework's 320 x 240: the 320 low resolution pixels of the standard
-  display window (high resolution pixels are averaged in pairs) and 240 of its lines. In
-  PAL that is lines 8 to 247 of 256; **Picture position** chooses others.
+  display window (high resolution pixels are averaged in pairs, so a 640 pixel wide
+  Workbench is readable but soft) and 240 of its lines. In PAL that is the top 240 of 256;
+  **Picture position** chooses others. An NTSC Workbench (200 lines) fits whole.
 * PAL runs at 50 Hz on the 60 Hz panel.
 * **Not yet run on a Game Bub.** Everything is tested in simulation (see *Simulation*);
   the bitstream builds and meets timing.
@@ -257,7 +258,7 @@ needed; `sim/build.sh` first):
 
 | Test | |
 |---|---|
-| video | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 320 x 240 frame is checked |
+| video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 320 x 240 frame is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
 | input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |

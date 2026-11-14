@@ -406,40 +406,32 @@
 		},
 		{
 			"id": 16,
-			"label": "Picture position",
+			"label": "Picture position (PAL)",
 			"address": "0x0000107C",
 			"type": "list",
 			"items": [
 				{
-					"label": "Up 8",
+					"label": "Top",
 					"value": "0x0"
 				},
 				{
-					"label": "Up 4",
+					"label": "Down 4",
 					"value": "0x4"
 				},
 				{
-					"label": "Up 2",
-					"value": "0x6"
-				},
-				{
-					"label": "Default",
+					"label": "Middle",
 					"value": "0x8"
 				},
 				{
-					"label": "Down 2",
-					"value": "0xA"
-				},
-				{
-					"label": "Down 4",
+					"label": "Down 12",
 					"value": "0xC"
 				},
 				{
-					"label": "Down 7",
-					"value": "0xF"
+					"label": "Bottom",
+					"value": "0x10"
 				}
 			],
-			"default": "0x8"
+			"default": "0x0"
 		}
 	]
 }

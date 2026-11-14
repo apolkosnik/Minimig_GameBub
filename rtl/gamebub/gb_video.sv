@@ -7,8 +7,9 @@
 //   - counts 28 MHz clocks from the start of _hsync and lines from the start
 //     of _vsync,
 //   - keeps a 320 low resolution pixel (1280 clock) window starting at
-//     H_START, and 240 lines starting at V_START (PAL) / V_START_NTSC, the
-//     standard display window ($2C81) with 8 PAL lines cut at top and bottom,
+//     H_START, and 240 lines: in PAL 240 of the 256 lines of the standard
+//     display window ($2C81), from its line vpos (0: its top 240 lines, 16:
+//     its bottom 240); in NTSC its 200 lines with 20 lines above and below,
 //   - outputs one pixel per low resolution pixel (every 4 clocks) as the
 //     average of its two high resolution halves (lores: the same colour
 //     twice; hires: both pixels blended so 640 wide screens stay legible),
@@ -16,12 +17,19 @@
 //     pixels and vblank outside the 240 lines (vblank changes only while
 //     hblank is high).
 //
+// H_START: a low resolution pixel is four clocks long, and the two clocks
+// sampled (the first and the third after H_START + 4k) must both be inside
+// it. With AGA selected Denise's picture comes one clock later than with
+// OCS / ECS: 413 is inside the pixel for all three (the second and fourth
+// clock of an OCS pixel, the first and third of an AGA one). At 412 every
+// AGA pixel was blended with its neighbour.
+//
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 module gb_video
 #(
-	parameter        H_START      = 12'd412,  // 28 MHz clocks from _hsync to the first pixel
-	parameter        V_START      = 9'd49,    // lines from _vsync (PAL)
+	parameter        H_START      = 12'd413,  // 28 MHz clocks from _hsync to the first pixel
+	parameter        V_START      = 9'd41,    // lines from _vsync to the first line of the PAL display window
 	parameter        V_START_NTSC = 9'd21,
 	parameter        R_BITS       = 5,
 	parameter        G_BITS       = 6,
@@ -31,7 +39,7 @@ module gb_video
 	input                   clk,          // 28 MHz
 	input                   reset,
 	input                   ntsc,
-	input             [3:0] vpos,         // vertical adjust, 8 = default
+	input             [4:0] vpos,         // PAL: first of the window's 256 lines shown, 0..16
 	input             [7:0] r_in,
 	input             [7:0] g_in,
 	input             [7:0] b_in,
@@ -54,7 +62,7 @@ reg        frame_seen;
 wire hs_start = hs_d & ~hsync_n;
 wire vs_start = vs_d & ~vsync_n;
 
-wire  [8:0] v_first = (ntsc ? V_START_NTSC : V_START) + {5'd0, vpos} - 9'd8;
+wire  [8:0] v_first = ntsc ? V_START_NTSC : V_START + {4'd0, (vpos > 5'd16) ? 5'd16 : vpos};
 wire        line_on = frame_seen && (vcnt >= v_first) && (vcnt < v_first + 9'd240);
 wire [11:0] hrel    = hcnt - H_START;
 wire        h_on    = (hcnt >= H_START) && (hcnt < H_START + 12'd1280);

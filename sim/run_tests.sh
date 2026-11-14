@@ -5,7 +5,10 @@
 #
 # The short tests use the test ROMs in sim/asm (built by asm/build.sh):
 #   video   vidtest.rom: a copper-made 1 bitplane picture, every pixel of
-#           the 320 x 240 frame checked
+#           the 320 x 240 frame checked; with OCS (top of the PAL picture),
+#           ECS (middle) and AGA with the 68EC020 (bottom): AGA's picture
+#           comes a clock later, and blended every pixel with its neighbour
+#           before H_START took that in
 #   input   inptest.rom: joystick (port 2) from the D-pad and the left stick,
 #           fire, keyboard (with handshake), host mouse motion and buttons,
 #           D-pad mouse mode, right stick mouse, a second controller on port 1
@@ -55,6 +58,8 @@ run() {
 	pids+=($!); names+=($name)
 }
 run video  --kick asm/vidtest.rom --ms 560 --check-vidtest
+run video_ecs --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=1 --set 107C=8
+run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 107C=10
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \

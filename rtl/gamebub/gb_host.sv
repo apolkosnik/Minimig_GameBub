@@ -117,7 +117,7 @@ module gb_host
 	output reg  [7:0] key_y,
 	output reg  [7:0] key_start,
 	output reg  [7:0] key_select,
-	output reg  [3:0] video_vpos,
+	output reg  [4:0] video_vpos,
 
 	// mouse from the host (firmware)
 	output reg        hmouse_valid,   // one clock per motion write
@@ -206,7 +206,7 @@ always @* begin
 	cfg_floppy   = {2'b00, set_drives[1:0], set_fspeed[0]};
 	cfg_audmix   = set_stereo[1:0];
 	audio_filter = set_filter[0];
-	video_vpos   = set_vpos[3:0];
+	video_vpos   = set_vpos[4:0];
 end
 
 // --------------------------------------------------------------- files
@@ -380,7 +380,7 @@ always @(posedge clk) begin
 		key_y        <= 8'h44;   // Return
 		key_start    <= 8'h50;   // F1
 		key_select   <= 8'h45;   // Esc
-		set_vpos     <= 8'd8;
+		set_vpos     <= 8'd0;
 		hmouse_dx    <= 16'd0;
 		hmouse_dy    <= 16'd0;
 		hmouse_btn   <= 3'd0;
