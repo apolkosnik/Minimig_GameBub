@@ -9,6 +9,8 @@
 #   input   inptest.rom: joystick (port 2) from the D-pad and the left stick,
 #           fire, keyboard (with handshake), host mouse motion and buttons,
 #           D-pad mouse mode, right stick mouse, a second controller on port 1
+#           and host keyboard events (USB HID usages): a key down and up,
+#           Caps Lock toggling, a burst of four events, an unknown usage
 #   audio   audtest.rom: Paula channel 0, the four stereo mix settings
 #   floppy  wrtest.rom: a track written with disk DMA, decoded into the
 #           image, saved on exit (CoreHalt, FileReadStart/End)
@@ -66,7 +68,13 @@ run input  --kick asm/inptest.rom \
 	--stick 1000:0:0:100:-50:0:0:50 --check-mouse 995:1070:60:-40:7 \
 	--slot1 --press2 1080:81:40 --check-word 1100:104:0040:0000 --check-word 1100:102:0303:0003 \
 	--press2 1130:41:40 --check-word 1150:102:0303:0300 \
-	--ms 1180
+	--hwrite 1160:1038:104 --check-word 1200:108:00FF:0020 \
+	--hwrite 1210:1038:004 --check-word 1240:108:00FF:00A0 \
+	--hwrite 1250:1038:139 --check-word 1280:108:00FF:0062 \
+	--hwrite 1290:1038:039 --hwrite 1300:1038:139 --check-word 1340:108:00FF:00E2 \
+	--hwrite 1350:1038:1E1 --hwrite 1352:1038:11A --hwrite 1354:1038:01A --hwrite 1356:1038:0E1 \
+	--hwrite 1358:1038:1FF --check-word 1420:108:00FF:00E0 --check-word 1420:10A:FFFF:000A \
+	--ms 1450
 run audio0 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=0 --expect-audio-ratio 0
 run audio1 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=1 --expect-audio-ratio 0.142857
 run audio2 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=2 --expect-audio-ratio 0.333333

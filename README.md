@@ -39,12 +39,30 @@ which suits Kickstart 1.3 and most games. For Kickstart 3.x choose AGA, 68EC020 
 | R | left mouse button (to drag while L is held) |
 | X, Y, Start, Select | keys chosen in the settings (default Space, Return, F1, Esc) |
 | second dock controller: D-pad, left stick, A, B | joystick in port 1 (two player games) |
-| USB or Bluetooth mouse | the mouse in port 1 (needs the firmware fork, see below) |
+| USB or Bluetooth mouse on the dock | the mouse in port 1 (needs the firmware forks, see below) |
+| USB keyboard on the dock | the Amiga's keyboard (needs the firmware forks, see below) |
 
 Port 1 holds the mouse or the second joystick: as on MiSTer, pressing the second
 controller's fire button switches it to the joystick, a left mouse click back to the
 mouse. Dock controllers need the dock beta firmware that goes with framework
 v1.1.0-beta4.
+
+### Keyboard and mouse on the dock
+
+The stock firmware passes only gamepads to a core. With the forks of the
+[handheld firmware](https://github.com/apolkosnik/gamebub/tree/3do-beta4) and the
+[dock firmware](https://github.com/apolkosnik/dock-firmware/tree/usb-mouse) a USB
+keyboard and a USB or Bluetooth mouse on the dock are the Amiga's:
+
+* the dock reads the keyboard (USB HID boot protocol) and reports the keys held; the
+  handheld firmware writes every key going down or up to the core (0x1038: USB HID
+  usage, bit 8 set when pressed), and the core translates it to the Amiga's raw key
+  code. The Windows keys are the Amiga keys, Insert and F12 are Help, Caps Lock toggles
+  as on an Amiga keyboard. Ctrl + Amiga + Amiga resets the Amiga as usual;
+* the mouse's movement and buttons are written to 0x1030 / 0x1034.
+
+Both work only while the core has the focus; keys let go while the menu is open are
+released when the game goes on.
 
 ### Settings
 
@@ -92,9 +110,7 @@ Bub is switched off), with the Amiga's changes, like a real disk. Exit through t
 before switching off to be sure.
 
 The core is built with framework v1.1.0-beta4 and needs a firmware of that beta or
-later. The [firmware fork](https://github.com/apolkosnik/gamebub/tree/mouse-3do) used by
-the 3DO core adds the USB or Bluetooth mouse (the core takes its reports at
-0x1030/0x1034). A loaded disk image is always reported at its full size when it is saved
+later (the forks above are built on it). A loaded disk image is always reported at its full size when it is saved
 (firmware 1.1.0-beta3 rewrote a file with as many bytes as the core reported, so a 0
 would have emptied it). The release firmware may report an error on exit for Disks 2 to
 4 that were not selected; the selected disks are still saved, and the fork skips the
@@ -162,6 +178,7 @@ Host (MCU) memory map:
 | 0x0000_0000 | ID "MMIG", version, debug counters (floppy sectors read/written, last floppy error, boot state; from 0x24 hard disk state, sectors read/written, geometry and size of both drives) |
 | 0x0000_1000, 1004 | statistics: clocks paused / run (the firmware's convention) |
 | 0x0000_1030, 1034 | mouse motion and buttons (firmware fork) |
+| 0x0000_1038 | keyboard event: USB HID usage, bit 8 set when pressed (firmware fork) |
 | 0x0000_1040 - 107C | settings |
 | 0x1000_0000 + n * 1 MB | disk image n (files 0 to 3) |
 | 0x2000_0000 | Kickstart (file 4) |
@@ -241,7 +258,7 @@ needed; `sim/build.sh` first):
 | Test | |
 |---|---|
 | video | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 320 x 240 frame is checked |
-| input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1 |
+| input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
 | ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |

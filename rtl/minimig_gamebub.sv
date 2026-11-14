@@ -177,6 +177,8 @@ wire [15:0] fdd_sectors_read, fdd_sectors_written;
 wire        hmouse_valid;
 wire [15:0] hmouse_dx, hmouse_dy;
 wire  [2:0] hmouse_btn;
+wire        hkey_valid, hkey_down;
+wire  [7:0] hkey_usage;
 wire        f_idle, f_committing;
 
 wire [31:0] hc_cmd, hc_p1, hc_p2, hc_p3, hc_p4, hc_p5, hc_res0, hc_res1, hc_res2;
@@ -248,6 +250,9 @@ gb_host #(
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
 	.hmouse_btn       (hmouse_btn),
+	.hkey_valid       (hkey_valid),
+	.hkey_usage       (hkey_usage),
+	.hkey_down        (hkey_down),
 	.stat_run         (~core_reset & focus),
 	.stat_stall       (~core_reset & ~focus),
 	.fdd_error        (fdd_error),
@@ -962,6 +967,9 @@ gb_input input_map
 	.hmouse_dx  (hmouse_dx),
 	.hmouse_dy  (hmouse_dy),
 	.hmouse_btn (hmouse_btn),
+	.hkey_valid (hkey_valid),
+	.hkey_usage (hkey_usage),
+	.hkey_down  (hkey_down),
 	.joy_port1  (joy_port1),
 	.joy_port2  (joy_port2),
 	.mouse_btn  (mouse_btn),

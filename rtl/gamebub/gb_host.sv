@@ -16,6 +16,10 @@
 //                         and down positive (written by the firmware fork for
 //                         a USB/Bluetooth mouse, as for the 3DO core)
 //   0x0000_1034           mouse buttons: bit 0 left, 1 right, 2 middle
+//   0x0000_1038           keyboard event (written by the firmware fork for a
+//                         USB keyboard on the dock): bits 7:0 the key's USB
+//                         HID usage (0xE0..E7 the modifiers), bit 8 set when
+//                         pressed, clear when released
 //   0x0000_1040..107C     settings (metadata/settings.json), read/write
 //   0x1000_0000 + n<<20   disk image slot n (0..3, files.json ids 0..3),
 //                         up to 1 MB each -> SDRAM
@@ -120,6 +124,11 @@ module gb_host
 	output reg [15:0] hmouse_dx,
 	output reg [15:0] hmouse_dy,
 	output reg  [2:0] hmouse_btn,
+
+	// keyboard from the host (firmware)
+	output reg        hkey_valid,     // one clock per key event
+	output reg  [7:0] hkey_usage,     // USB HID usage
+	output reg        hkey_down,
 
 	// core -> host command words and results (gb_ide)
 	input      [31:0] hc_cmd,
@@ -328,6 +337,7 @@ always @(posedge clk) begin
 	mem_done     <= 1'b0;
 	boot_start   <= 1'b0;
 	hmouse_valid <= 1'b0;
+	hkey_valid   <= 1'b0;
 	stat_clr     <= 2'b00;
 	hb_we        <= 1'b0;
 
@@ -461,6 +471,11 @@ always @(posedge clk) begin
 								hmouse_dy    <= mem_dataWrite[31:16];
 							end
 							16'h1034: hmouse_btn  <= mem_dataWrite[2:0];
+							16'h1038: begin
+								hkey_valid <= 1'b1;
+								hkey_usage <= mem_dataWrite[7:0];
+								hkey_down  <= mem_dataWrite[8];
+							end
 							16'h1040: if (mem_dataWrite != 32'd0) reset_req <= 1'b1;
 							16'h1044: set_chipset <= mem_dataWrite[7:0];
 							16'h1048: set_cpu     <= mem_dataWrite[7:0];
