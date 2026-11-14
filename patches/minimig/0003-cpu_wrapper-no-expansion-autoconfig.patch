@@ -1,0 +1,30 @@
+diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
+index a31efb6..c60357d 100644
+--- a/rtl/minimig/cpu_wrapper.sv
++++ b/rtl/minimig/cpu_wrapper.sv
+@@ -810,9 +810,11 @@ always @(posedge clk) begin
+ 
+ 	if (~reset | ~reset_out) begin
+ 		ac_memcard  <= (cpucfg[1] & ~ec020) ? fastramcfg : fastramcfg[2] ? 3'd3 : {1'b0, fastramcfg[1:0]};
+-		ac_toccata  <= cdtv_mode ? 1'b0 : 1'b1;
+-		ac_a2065    <= 1;
+-		ac_cdtv     <= cdtv_mode;
++		// Game Bub port: Toccata, A2065 and CDTV are not built, so they
++		// are not offered in the autoconfig chain.
++		ac_toccata  <= 1'b0;
++		ac_a2065    <= 1'b0;
++		ac_cdtv     <= 1'b0;
+ 		ac_rtg      <= z3cpu;
+ 		rtg_ena     <= 0;
+ 		cdtv_base   <= 8'hE9;
+@@ -874,7 +876,8 @@ always @(posedge clk) begin
+ 	end
+ end
+ 
+-assign toccata_ena = ~ac_toccata & ~cdtv_mode;
+-assign a2065_ena   = ~ac_a2065;
++// Game Bub port: the cards are absent, so they are never enabled in gary
++assign toccata_ena = 1'b0;
++assign a2065_ena   = 1'b0;
+ 
+ endmodule

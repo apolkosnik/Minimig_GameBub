@@ -1,0 +1,150 @@
+diff --git a/rtl/minimig/sdram_ctrl.sv b/rtl/minimig/sdram_ctrl.sv
+index 820ee08..f0300d8 100644
+--- a/rtl/minimig/sdram_ctrl.sv
++++ b/rtl/minimig/sdram_ctrl.sv
+@@ -26,6 +26,14 @@
+ //
+ // (C)2019 Alexey Melnikov
+ //
++// Game Bub port:
++// - The data bus is split into sd_data_in / sd_data_out / sd_data_oe
++//   (the Game Bub framework owns the tri-state buffer).
++// - A third, low priority "host" port gives the core's own logic (floppy
++//   image server, ROM staging) word access to the SDRAM. It is served in
++//   slots the chipset and CPU writes leave free and wins over CPU cache
++//   fills after it has waited HOST_STARVE slots.
++//
+ 
+ 
+ module sdram_ctrl
+@@ -46,7 +54,9 @@ module sdram_ctrl
+ 	output reg        sd_ras,
+ 	output reg        sd_cas,
+ 	output reg  [1:0] sd_dqm,
+-	inout  reg [15:0] sd_data,
++	input      [15:0] sd_data_in,
++	output reg [15:0] sd_data_out,
++	output reg        sd_data_oe,
+ 	output reg        sd_clk,
+ 	output            sd_cke,
+ 	// chip
+@@ -69,7 +79,15 @@ module sdram_ctrl
+ 	input             cpuU,
+ 	input      [15:0] cpuWR,
+ 	output     [15:0] cpuRD,
+-	output            ramready
++	output            ramready,
++	// host (lowest priority, one word per request)
++	input      [24:1] hostAddr,
++	input             hostReq,   // hold until hostAck
++	input             hostWE,
++	input       [1:0] hostDQM,   // byte masks, active high (1 = byte not written)
++	input      [15:0] hostWR,
++	output reg [15:0] hostRD,
++	output reg        hostAck    // one clock; hostRD is valid with it on reads
+ );
+ 
+ assign sd_cs = 0;
+@@ -80,7 +98,10 @@ localparam [2:0]
+ 	IDLE = 0,
+ 	CHIP = 1,
+ 	CPU_READCACHE = 2,
+-	CPU_WRITECACHE = 3;
++	CPU_WRITECACHE = 3,
++	HOST = 4;
++
++localparam HOST_STARVE = 4'd8;
+ 
+ 
+ ////////////////////////////////////////
+@@ -222,6 +243,11 @@ always @ (posedge sysclk) begin
+ 		if(!fwd_dqm[1]) m[15:8] = fwd_dat[15:8];
+ 		if(!fwd_dqm[0]) m[7:0]  = fwd_dat[7:0];
+ 	end
++	hostAck <= 0;
++	if(slot_type == HOST && sdram_state == 9) begin
++		hostRD  <= sdata_chip;
++		hostAck <= 1;
++	end
+ 	if(slot_type == CHIP) begin
+ 		case(sdram_state)
+ 			 9: chipRD   <= (fwd_en && fwd_pos==2'd0) ? m : sdata_chip;
+@@ -290,13 +316,18 @@ reg [15:0] p_data;
+ reg        p_act = 0;
+ 
+ wire        chip_req = ~chipDMA | ~chipRW;
++// host request: never ahead of the chipset or a CPU write, ahead of the
++// cache once it has been passed over HOST_STARVE times
++reg         host_busy = 0;  // the request is being served (slot taken)
++reg   [3:0] host_wait = 0;
++wire        host_go  = hostReq & ~host_busy & ~write_req & (~cache_req | (host_wait >= HOST_STARVE));
+ wire        act_chip = p_act & chip_req;
+-wire        act_cpu  = p_act & (write_req | cache_req);
++wire        act_cpu  = p_act & (write_req | cache_req | host_go);
+ (* keep *) wire        cpu_slot;
+ (* keep *) wire [14:0] row_chip;
+ assign      cpu_slot = p_act & ~chip_req;
+ assign      row_chip = act_chip ? chipAddr[24:10] : {p_ba, p_addr};
+-wire [14:0] row      = (cpu_slot & write_req) ? writeAddr[24:10] : (cpu_slot & cache_req) ? cpuAddr[24:10] : row_chip;
++wire [14:0] row      = (cpu_slot & write_req) ? writeAddr[24:10] : (cpu_slot & host_go) ? hostAddr[24:10] : (cpu_slot & cache_req) ? cpuAddr[24:10] : row_chip;
+ wire        ras      = p_ras & ~act_chip & ~act_cpu;
+ wire        cas      = p_cas | act_chip | act_cpu;
+ 
+@@ -315,7 +346,8 @@ always @ (posedge sysclk) begin
+ 	sd_cas  <= cas;
+ 	sd_we   <= p_we;
+ 	sd_dqm  <= p_dqm;
+-	sd_data <= p_oe ? p_data : 16'hZZZZ;
++	sd_data_out <= p_data;
++	sd_data_oe  <= p_oe;
+ 
+ 	if(~sdram_state[0]) chipWE <= 0;
+ 
+@@ -326,7 +358,9 @@ always @ (posedge sysclk) begin
+ 	if(sdram_state == 6) chipWE2 <= 0;
+ 	if(sdram_state == 8) snoop2  <= 0;
+ 
+-	if(sdram_state[0]) sdata_reg <= sd_data;
++	if(sdram_state[0]) sdata_reg <= sd_data_in;
++
++	if(hostAck) host_busy <= 0;
+ 
+ 	rcnt_n = rcnt;
+ 	if(!init_done) begin
+@@ -335,6 +369,8 @@ always @ (posedge sysclk) begin
+ 		rcnt_n                 = 0;
+ 		a_wr2                 <= 0;
+ 		a_rd2                 <= 0;
++		host_busy             <= 0;
++		host_wait             <= 0;
+ 	end else begin
+ 
+ 		case(sdram_state)
+@@ -350,6 +386,9 @@ always @ (posedge sysclk) begin
+ 				a_rd2           <= 0;
+ 
+ 				if(~&rcnt) rcnt_n = rcnt + 1'd1;
++				// counts every slot the pending host request does not get
++				// (the host branch below clears it when it is served)
++				if(hostReq & ~host_busy & ~&host_wait) host_wait <= host_wait + 1'd1;
+ 
+ 				// we give the chipset first priority
+ 				// (this includes anything on the "motherboard" - chip RAM, slow RAM and Kickstart, turbo modes notwithstanding)
+@@ -380,6 +419,17 @@ always @ (posedge sysclk) begin
+ 					write_ack    <= 1; // let the write buffer know we're about to write
+ 					datawr       <= writeDat;
+ 				end
++				// request from the host port
++				else if(host_go) begin
++					slot_type    <= HOST;
++					casaddr[8:0] <= hostAddr[9:1];
++					cas_dqm      <= hostDQM;
++					cas_sd_cas   <= 0;
++					cas_sd_we    <= ~hostWE;
++					datawr       <= hostWR;
++					host_busy    <= 1;
++					host_wait    <= 0;
++				end
+ 				// request from read cache
+ 				else if(cache_req) begin
+ 					slot_type    <= CPU_READCACHE;

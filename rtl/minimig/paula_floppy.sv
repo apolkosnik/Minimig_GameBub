@@ -761,7 +761,7 @@ always @(posedge clk) begin
 	if (clk7_en) begin
 		_virtualFloppyFifoResetLastSel <= _sel;
 		lastVirtualFloppyMode <= virtualFloppyMode;		
-		virtualFloppyFifoReset = (((_virtualFloppyFifoResetLastSel != _sel) && (virtualFloppyMode | lastVirtualFloppyMode))) | (_step && !_step_del);
+		virtualFloppyFifoReset <= (((_virtualFloppyFifoResetLastSel != _sel) && (virtualFloppyMode | lastVirtualFloppyMode))) | (_step && !_step_del);
 	end
 end
 		

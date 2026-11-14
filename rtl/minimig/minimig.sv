@@ -410,6 +410,9 @@ wire        int3;					//intterrupt 3
 wire        int6;					//intterrupt 6
 wire        int6_toccata;
 wire        a2065_int2_sync;
+wire [15:0] toccata_out;		//Game Bub: expansion outputs, declared before use
+wire [15:0] a2065_dout;
+wire        a2065_nrdy;
 wire        freeze;				//Action Replay freeze button
 wire        _fire0;				//joystick 1 fire signal to cia A
 wire        _fire1;				//joystick 2 fire signal to cia A
@@ -1023,173 +1026,43 @@ always @(posedge clk) begin
 	end
 end
 
-// Toccata soundcard
+// Game Bub port: the Toccata sound card, the A2065 Ethernet card and the
+// CDTV bridge/NVRAM need the MiSTer HPS or DDR3 and are not built. Their
+// outputs are held inactive; cpu_wrapper does not autoconfigure the cards.
 
-wire [15:0] toccata_out;
-toccata #(
-  .CLK_FREQUENCY(28_359_380)
-) toccata_board (
-	.clk(clk),
-	.rst(reset),
-	.hsync(_hsync),
-	.data_in(cpu_data_out),
-	.data_out(toccata_out),
-	.addr(cpu_address_out[15:1]),
-	.rd(cpu_rd),
-	.hwr(cpu_hwr),
-	.lwr(cpu_lwr),
-	.sel(sel_toccata),
-	.toc_int(int6_toccata),
-	.out_left(toccata_aud_left),
-	.out_right(toccata_aud_right)
-);
+assign      toccata_out = 16'h0000;
+assign      int6_toccata = 1'b0;
+assign      toccata_aud_left  = 16'h0000;
+assign      toccata_aud_right = 16'h0000;
 
-//-------------------------------------------------------------------------------------
-// A2065 Ethernet card. Everything the card needs is inside this module; the
-// core sees only the 68k bus, an interrupt, and one memory port.
+assign      a2065_dout = 16'h0000;
+assign      a2065_nrdy = 1'b0;
+assign      a2065_int2_sync = 1'b0;
+assign      a2065_mem_address    = 29'd0;
+assign      a2065_mem_burstcount = 8'd0;
+assign      a2065_mem_read       = 1'b0;
+assign      a2065_mem_writedata  = 64'd0;
+assign      a2065_mem_byteenable = 8'd0;
+assign      a2065_mem_write      = 1'b0;
 
-wire [15:0] a2065_dout;
-wire        a2065_nrdy;
+assign cdtv_bridge_dout       = 16'h0000;
+assign cdtv_bridge_selack     = 1'b0;
+assign cdtv_irq_w             = 1'b0;
+assign cdtv_cdda_volume       = 10'd0;
+assign cdtv_cdda_volume_valid = 1'b0;
+assign cdtv_uio_dout          = 16'h0000;
+assign cdtv_req               = 1'b0;
+assign cdtv_dma_req           = 1'b0;
+assign cdtv_dma_we            = 1'b0;
+assign cdtv_dma_baddr         = 32'd0;
+assign cdtv_dma_wbyte         = 8'd0;
+assign cdtv_nvr_dout          = 16'h0000;
+assign cdtv_nvr_dirty         = 1'b0;
+assign cdtv_card_dout         = 16'h0000;
+assign cdtv_card_dirty        = 1'b0;
 
-a2065 a2065_inst (
-	.clk_sys          (clk),
-	.rst_n_sys        (~reset),
-
-	.cpu_addr         (cpu_address_out[23:1]),
-	.cpu_data_in      (cpu_data_out),
-	.cpu_data_out     (a2065_dout),
-	.cpu_rw           (cpu_r_w),
-	.cpu_as_n         (_cpu_as),
-	.cpu_uds_n        (_cpu_uds),
-	.cpu_lds_n        (_cpu_lds),
-	.sel              (sel_a2065),
-	.nrdy             (a2065_nrdy),
-	.int2             (a2065_int2_sync),
-
-	.card_base        (a2065_base),
-	.card_configured  (a2065_ena),
-
-	.clk_ddr          (a2065_clk_ddr),
-	.mem_address      (a2065_mem_address),
-	.mem_burstcount   (a2065_mem_burstcount),
-	.mem_read         (a2065_mem_read),
-	.mem_readdata     (a2065_mem_readdata),
-	.mem_readdatavalid(a2065_mem_readdatavalid),
-	.mem_writedata    (a2065_mem_writedata),
-	.mem_byteenable   (a2065_mem_byteenable),
-	.mem_write        (a2065_mem_write),
-	.mem_waitrequest  (a2065_mem_waitrequest)
-);
-
-//
-//-------------------------------------------------------------------------------------
-
-cdtv_bridge cdtv_bridge_inst
-(
-	.clk             (clk                  ),
-	.reset           (reset                ),
-
-	.sel             (sel_cdtv             ),
-	.selack          (cdtv_bridge_selack   ),
-	.addr            (cpu_address_out      ),
-	.din             (cpu_data_out         ),
-	.dout            (cdtv_bridge_dout     ),
-	.rd              (cpu_rd               ),
-	.hwr             (cpu_hwr              ),
-	.lwr             (cpu_lwr              ),
-
-
-	.cdtv_irq        (cdtv_irq_w           ),
-	.cdda_volume     (cdtv_cdda_volume     ),
-	.cdda_volume_valid(cdtv_cdda_volume_valid),
-
-	.uio_cs          (cdtv_cs              ),
-	.uio_cs_sec      (cdtv_cs_sec          ),
-	.uio_cs_stch     (cdtv_cs_stch         ),
-	.uio_cs_nvr      (cdtv_cs_nvr          ),
-	.uio_cs_card     (cdtv_cs_card         ),
-	.uio_wr          (cdtv_wr              ),
-	.uio_rd          (cdtv_rd              ),
-	.uio_din         (cdtv_uio_din         ),
-	.uio_dout        (cdtv_uio_dout        ),
-	.uio_req         (cdtv_req             ),
-
-	.nvr_addr        (cdtv_nvr_addr        ),
-	.nvr_dout        (cdtv_nvr_save_dout   ),
-	.nvr_load_din    (cdtv_nvr_load_din    ),
-	.nvr_load_we     (cdtv_nvr_load_we     ),
-	.nvr_clear_dirty (cdtv_nvr_clear_dirty ),
-
-	.card_addr        (cdtv_card_addr       ),
-	.card_dout        (cdtv_card_save_dout  ),
-	.card_load_din    (cdtv_card_load_din   ),
-	.card_load_we     (cdtv_card_load_we    ),
-	.card_clear_dirty (cdtv_card_clear_dirty),
-
-	.subq_push       (cdtv_subq_push       ),
-	.subq_byte       (cdtv_subq_byte       ),
-
-	.sten_pulse_ext  (cdtv_sten_pulse      ),
-	.scor_pulse      (cdtv_scor_pulse      ),
-	.sbcp_pulse      (cdtv_sbcp_pulse      ),
-
-	.cdtv_dma_req    (cdtv_dma_req         ),
-	.cdtv_dma_we     (cdtv_dma_we          ),
-	.cdtv_dma_baddr  (cdtv_dma_baddr       ),
-	.cdtv_dma_wbyte  (cdtv_dma_wbyte       ),
-	.cdtv_dma_ack    (cdtv_dma_ack         )
-);
-
-cdtv_nvram cdtv_nvram_inst
-(
-	.clk             (clk                  ),
-	.reset           (reset                ),
-
-	.sel             (sel_cdtv_nvram       ),
-	.addr            (cpu_address_out      ),
-	.din             (cpu_data_out         ),
-	.dout            (cdtv_nvr_dout        ),
-	.rd              (cpu_rd               ),
-	.hwr             (cpu_hwr              ),
-	.lwr             (cpu_lwr              ),
-
-	.hps_load_addr   (cdtv_nvr_addr        ),
-	.hps_load_din    (cdtv_nvr_load_din    ),
-	.hps_load_we     (cdtv_nvr_load_we     ),
-
-	.hps_save_addr   (cdtv_nvr_addr        ),
-	.hps_save_dout   (cdtv_nvr_save_dout   ),
-
-	.dirty           (cdtv_nvr_dirty       ),
-	.clear_dirty     (cdtv_nvr_clear_dirty )
-);
-
-cdtv_nvram #(.ADDR_W(13)) cdtv_card_inst
-(
-	.clk             (clk                   ),
-	.reset           (reset                 ),
-
-	.sel             (sel_cdtv_card         ),
-	.addr            (cpu_address_out       ),
-	.din             (cpu_data_out          ),
-	.dout            (cdtv_card_dout        ),
-	.rd              (cpu_rd                ),
-	.hwr             (cpu_hwr               ),
-	.lwr             (cpu_lwr               ),
-
-	.hps_load_addr   (cdtv_card_addr        ),
-	.hps_load_din    (cdtv_card_load_din    ),
-	.hps_load_we     (cdtv_card_load_we     ),
-
-	.hps_save_addr   (cdtv_card_addr        ),
-	.hps_save_dout   (cdtv_card_save_dout   ),
-
-	.dirty           (cdtv_card_dirty       ),
-	.clear_dirty     (cdtv_card_clear_dirty )
-);
-
-assign cdtv_din    = sel_cdtv_nvram ? cdtv_nvr_dout : sel_cdtv_card ? cdtv_card_dout : cdtv_bridge_dout;
-assign cdtv_selack = cdtv_bridge_selack | sel_cdtv_nvram | sel_cdtv_card;
+assign cdtv_din    = 16'h0000;
+assign cdtv_selack = 1'b0;
 //-------------------------------------------------------------------------------------
 
 //data multiplexer

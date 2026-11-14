@@ -39,7 +39,7 @@ end
 
 always @(posedge clk) begin
   if (clk7_en) begin
-  	out=mem[out_ptr[10:0]];
+  	out <= mem[out_ptr[10:0]];
   end
 end
 

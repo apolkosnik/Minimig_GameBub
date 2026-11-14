@@ -79,3 +79,7 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 
 ## Patches
 
+- `0001-sdram_ctrl-split-data-bus-and-add-host-port.patch`
+- `0002-minimig-remove-toccata-a2065-cdtv.patch`
+- `0003-cpu_wrapper-no-expansion-autoconfig.patch`
+- `0004-nonblocking-registers-written-in-clocked-blocks.patch`

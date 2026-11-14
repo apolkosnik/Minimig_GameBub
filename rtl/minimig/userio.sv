@@ -246,9 +246,9 @@ end
 // port 1 automatic mouse/joystick switch
 always @ (posedge clk) begin
 	//when left mouse button pushed, switch to mouse (default)
-	if (!_mleft || reset) joy1enable = 0;
+	if (!_mleft || reset) joy1enable <= 0;
 	//when joystick 1 fire pushed, switch to joystick
-	else if (!_sjoy1[4]) joy1enable = 1;
+	else if (!_sjoy1[4]) joy1enable <= 1;
 end
 
 // Port 1
@@ -508,9 +508,9 @@ always @(posedge clk) begin
 				if (memory_cfg_sel)   t_memory_config <= IO_DIN[7:0];
 				if (video_cfg_sel)    {blver, ar, scanline} <= {IO_DIN[11:8],IO_DIN[2:0]};
 				if (floppy_cfg_sel)   floppy_config <= IO_DIN[4:0];
-				if (floppyex01_cfg_sel) { floppy_ext_drive[5:3], floppy_ext_drive[2:0]}  = IO_DIN[5:0];
-				if (floppyex23_cfg_sel) { floppy_ext_drive[11:9], floppy_ext_drive[8:6]}  = IO_DIN[5:0];
-				if (userport_cfg_sel) {snac_af, snac_port, user_port_mode} = IO_DIN[4:0];
+				if (floppyex01_cfg_sel) { floppy_ext_drive[5:3], floppy_ext_drive[2:0]}  <= IO_DIN[5:0];
+				if (floppyex23_cfg_sel) { floppy_ext_drive[11:9], floppy_ext_drive[8:6]}  <= IO_DIN[5:0];
+				if (userport_cfg_sel) {snac_af, snac_port, user_port_mode} <= IO_DIN[4:0];
 				if (harddisk_cfg_sel) t_ide_config <= IO_DIN[5:0];
 				if (joystick_cfg_sel) {joy_swap, cd32pad, joy_ana_en} <= {IO_DIN[3], ~IO_DIN[1] & IO_DIN[2], IO_DIN[1]};
 				if (aud_sel)          aud_mix <= IO_DIN[1:0];
