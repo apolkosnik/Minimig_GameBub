@@ -1,0 +1,58 @@
+{
+	"files": [
+		{
+			"id": 0,
+			"label": "Disk 1",
+			"extensions": ["adf"],
+			"user_selected": true,
+			"optional": false,
+			"read_only": false,
+			"address": "0x10000000",
+			"max_size": "0x100000",
+			"max_transfer_speed": 2000
+		},
+		{
+			"id": 1,
+			"label": "Disk 2",
+			"extensions": ["adf"],
+			"user_selected": true,
+			"optional": true,
+			"read_only": false,
+			"address": "0x10100000",
+			"max_size": "0x100000",
+			"max_transfer_speed": 2000
+		},
+		{
+			"id": 2,
+			"label": "Disk 3",
+			"extensions": ["adf"],
+			"user_selected": true,
+			"optional": true,
+			"read_only": false,
+			"address": "0x10200000",
+			"max_size": "0x100000",
+			"max_transfer_speed": 2000
+		},
+		{
+			"id": 3,
+			"label": "Disk 4",
+			"extensions": ["adf"],
+			"user_selected": true,
+			"optional": true,
+			"read_only": false,
+			"address": "0x10300000",
+			"max_size": "0x100000",
+			"max_transfer_speed": 2000
+		},
+		{
+			"id": 4,
+			"label": "Kickstart",
+			"filename": "kick.rom",
+			"optional": false,
+			"read_only": true,
+			"address": "0x20000000",
+			"max_size": "0x100000",
+			"max_transfer_speed": 2000
+		}
+	]
+}

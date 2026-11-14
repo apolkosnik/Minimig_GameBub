@@ -1,0 +1,445 @@
+{
+	"settings": [
+		{
+			"id": 1,
+			"label": "Reset (apply)",
+			"address": "0x00001040",
+			"type": "action",
+			"value": "0x1"
+		},
+		{
+			"id": 2,
+			"label": "Chipset",
+			"address": "0x00001044",
+			"type": "list",
+			"items": [
+				{
+					"label": "OCS (A500)",
+					"value": "0x0"
+				},
+				{
+					"label": "ECS (A600)",
+					"value": "0x1"
+				},
+				{
+					"label": "AGA (A1200)",
+					"value": "0x2"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 3,
+			"label": "CPU",
+			"address": "0x00001048",
+			"type": "list",
+			"items": [
+				{
+					"label": "68000",
+					"value": "0x0"
+				},
+				{
+					"label": "68010",
+					"value": "0x1"
+				},
+				{
+					"label": "68EC020",
+					"value": "0x2"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 4,
+			"label": "Memory",
+			"address": "0x0000104C",
+			"type": "list",
+			"items": [
+				{
+					"label": "512K",
+					"value": "0x0"
+				},
+				{
+					"label": "512K + 512K slow",
+					"value": "0x1"
+				},
+				{
+					"label": "1M chip",
+					"value": "0x2"
+				},
+				{
+					"label": "1M + 512K slow",
+					"value": "0x3"
+				},
+				{
+					"label": "2M chip",
+					"value": "0x4"
+				},
+				{
+					"label": "2M + 2M fast",
+					"value": "0x5"
+				},
+				{
+					"label": "2M + 4M fast",
+					"value": "0x6"
+				},
+				{
+					"label": "2M + 8M fast",
+					"value": "0x7"
+				}
+			],
+			"default": "0x1"
+		},
+		{
+			"id": 5,
+			"label": "Video",
+			"address": "0x00001050",
+			"type": "list",
+			"items": [
+				{
+					"label": "PAL",
+					"value": "0x0"
+				},
+				{
+					"label": "NTSC",
+					"value": "0x1"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 6,
+			"label": "DF0",
+			"address": "0x0000105C",
+			"type": "list",
+			"items": [
+				{
+					"label": "Disk 1",
+					"value": "0x0"
+				},
+				{
+					"label": "Disk 2",
+					"value": "0x1"
+				},
+				{
+					"label": "Disk 3",
+					"value": "0x2"
+				},
+				{
+					"label": "Disk 4",
+					"value": "0x3"
+				},
+				{
+					"label": "Empty",
+					"value": "0x7"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 7,
+			"label": "DF1",
+			"address": "0x00001060",
+			"type": "list",
+			"items": [
+				{
+					"label": "Disk 1",
+					"value": "0x0"
+				},
+				{
+					"label": "Disk 2",
+					"value": "0x1"
+				},
+				{
+					"label": "Disk 3",
+					"value": "0x2"
+				},
+				{
+					"label": "Disk 4",
+					"value": "0x3"
+				},
+				{
+					"label": "Empty",
+					"value": "0x7"
+				}
+			],
+			"default": "0x7"
+		},
+		{
+			"id": 8,
+			"label": "Drives",
+			"address": "0x00001054",
+			"type": "list",
+			"items": [
+				{
+					"label": "1",
+					"value": "0x0"
+				},
+				{
+					"label": "2",
+					"value": "0x1"
+				},
+				{
+					"label": "3",
+					"value": "0x2"
+				},
+				{
+					"label": "4",
+					"value": "0x3"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 9,
+			"label": "Floppy speed",
+			"address": "0x00001058",
+			"type": "list",
+			"items": [
+				{
+					"label": "Normal",
+					"value": "0x0"
+				},
+				{
+					"label": "Turbo",
+					"value": "0x1"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 10,
+			"label": "Audio filter",
+			"address": "0x00001064",
+			"type": "checkbox",
+			"value": "0x1",
+			"default": "0x1"
+		},
+		{
+			"id": 11,
+			"label": "Stereo mix",
+			"address": "0x00001068",
+			"type": "list",
+			"items": [
+				{
+					"label": "None",
+					"value": "0x0"
+				},
+				{
+					"label": "12%",
+					"value": "0x1"
+				},
+				{
+					"label": "25%",
+					"value": "0x2"
+				},
+				{
+					"label": "Mono",
+					"value": "0x3"
+				}
+			],
+			"default": "0x2"
+		},
+		{
+			"id": 12,
+			"label": "X button key",
+			"address": "0x0000106C",
+			"type": "list",
+			"items": [
+				{
+					"label": "Space",
+					"value": "0x40"
+				},
+				{
+					"label": "Return",
+					"value": "0x44"
+				},
+				{
+					"label": "Esc",
+					"value": "0x45"
+				},
+				{
+					"label": "F1",
+					"value": "0x50"
+				},
+				{
+					"label": "F2",
+					"value": "0x51"
+				},
+				{
+					"label": "Help",
+					"value": "0x5F"
+				},
+				{
+					"label": "Del",
+					"value": "0x46"
+				},
+				{
+					"label": "P",
+					"value": "0x19"
+				}
+			],
+			"default": "0x40"
+		},
+		{
+			"id": 13,
+			"label": "Y button key",
+			"address": "0x00001070",
+			"type": "list",
+			"items": [
+				{
+					"label": "Space",
+					"value": "0x40"
+				},
+				{
+					"label": "Return",
+					"value": "0x44"
+				},
+				{
+					"label": "Esc",
+					"value": "0x45"
+				},
+				{
+					"label": "F1",
+					"value": "0x50"
+				},
+				{
+					"label": "F2",
+					"value": "0x51"
+				},
+				{
+					"label": "Help",
+					"value": "0x5F"
+				},
+				{
+					"label": "Del",
+					"value": "0x46"
+				},
+				{
+					"label": "P",
+					"value": "0x19"
+				}
+			],
+			"default": "0x44"
+		},
+		{
+			"id": 14,
+			"label": "Start key",
+			"address": "0x00001074",
+			"type": "list",
+			"items": [
+				{
+					"label": "Space",
+					"value": "0x40"
+				},
+				{
+					"label": "Return",
+					"value": "0x44"
+				},
+				{
+					"label": "Esc",
+					"value": "0x45"
+				},
+				{
+					"label": "F1",
+					"value": "0x50"
+				},
+				{
+					"label": "F2",
+					"value": "0x51"
+				},
+				{
+					"label": "Help",
+					"value": "0x5F"
+				},
+				{
+					"label": "Del",
+					"value": "0x46"
+				},
+				{
+					"label": "P",
+					"value": "0x19"
+				}
+			],
+			"default": "0x50"
+		},
+		{
+			"id": 15,
+			"label": "Select key",
+			"address": "0x00001078",
+			"type": "list",
+			"items": [
+				{
+					"label": "Space",
+					"value": "0x40"
+				},
+				{
+					"label": "Return",
+					"value": "0x44"
+				},
+				{
+					"label": "Esc",
+					"value": "0x45"
+				},
+				{
+					"label": "F1",
+					"value": "0x50"
+				},
+				{
+					"label": "F2",
+					"value": "0x51"
+				},
+				{
+					"label": "Help",
+					"value": "0x5F"
+				},
+				{
+					"label": "Del",
+					"value": "0x46"
+				},
+				{
+					"label": "P",
+					"value": "0x19"
+				}
+			],
+			"default": "0x45"
+		},
+		{
+			"id": 16,
+			"label": "Picture position",
+			"address": "0x0000107C",
+			"type": "list",
+			"items": [
+				{
+					"label": "Up 8",
+					"value": "0x0"
+				},
+				{
+					"label": "Up 4",
+					"value": "0x4"
+				},
+				{
+					"label": "Up 2",
+					"value": "0x6"
+				},
+				{
+					"label": "Default",
+					"value": "0x8"
+				},
+				{
+					"label": "Down 2",
+					"value": "0xA"
+				},
+				{
+					"label": "Down 4",
+					"value": "0xC"
+				},
+				{
+					"label": "Down 7",
+					"value": "0xF"
+				}
+			],
+			"default": "0x8"
+		}
+	]
+}
