@@ -1,0 +1,214 @@
+diff --git a/src/main/scala/platform/handheld/HandheldTop.scala b/src/main/scala/platform/handheld/HandheldTop.scala
+index 03dfa9e..b96a182 100644
+--- a/src/main/scala/platform/handheld/HandheldTop.scala
++++ b/src/main/scala/platform/handheld/HandheldTop.scala
+@@ -115,7 +115,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val clockOutDpi = Output(Clock())
+     val clockOutLocked = Output(Bool())
+ 
+-    /** Audio/video clock: DPI when HDMI disabled, 27.027 MHz when HDMI enabled */
++    /** Audio/video clock: DPI when HDMI disabled, 74.22 MHz when HDMI enabled (720p) */
+     val clock_av = Input(Clock())
+ 
+     /** MCU interrupt: true to pull it low (active) */
+@@ -143,7 +143,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val hdmiAudioClock = Output(Clock())
+     val hdmiAudio = Output(Vec(2, UInt(16.W)))
+     val hdmiRgb = Output(UInt(24.W))
+-    val hdmiCx = Input(UInt(10.W))
++    val hdmiCx = Input(UInt(11.W))
+     val hdmiCy = Input(UInt(10.W))
+ 
+     /** Raw button input, not registered or inverted. */
+@@ -648,7 +648,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+   val reset_av = withClock(io.clock_av) { XpmCdcSyncRst(reset) }
+   val displayReadingFrame = Wire(UInt(1.W))
+   withClockAndReset (clock = io.clock_av, reset = reset_av) {
+-    val videoX = Wire(UInt(10.W))
++    val videoX = Wire(UInt(11.W))
+     val videoY = Wire(UInt(10.W))
+     val framebufferReadAddress = Wire(UInt(log2Ceil(videoWidth * videoHeight).W))
+     val overlayReadAddress = Wire(UInt(log2Ceil(overlayWidth * overlayHeight).W))
+@@ -760,10 +760,11 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+ 
+     /**
+      * HDMI audio and video signal output
+-     * Video ID Code 2: 720x480 @ 60Hz
++     * Video ID Code 4: 1280x720 @ 60Hz, pixel clock 74.21875 MHz (clk_wiz_hdmi)
+      */
+-    val hdmiFrameWidth = 858
+-    val hdmiFrameHeight = 525
++    val hdmiPixelHz = 74218750
++    val hdmiFrameWidth = 1650
++    val hdmiFrameHeight = 750
+     io.hdmiAudio := VecInit(audioData.left.asUInt, audioData.right.asUInt)
+     io.hdmiAudioClock := DontCare
+     // Pad to 24-bit RGB.
+@@ -773,8 +774,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val hdmiEnable = XpmCdcSingle(clock, hdmiActive)
+     when (hdmiEnable) {
+       dpiDriver.reset := true.B
+-      val screenWidth = 720
+-      val screenHeight = 480
++      val screenWidth = 1280
++      val screenHeight = 720
+ 
+       // Correct HDMI video X and Y
+       videoX := io.hdmiCx
+@@ -805,35 +806,62 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       val fitDivisor = BigInt(videoHeight).gcd(BigInt(screenHeight)).toInt
+       val videoOffsetX = (screenWidth - (videoWidth * videoScaleX)) / 2
+       val videoOffsetY = (screenHeight - (videoLines * videoScaleY)) / 2
+-      val framebufferReadDelay = 3 /* reading */ + videoPaletteLatency + videoFilterLatency
+-      val videoLine = Mux(fitVideo,
+-        (videoY * (videoHeight / fitDivisor).U) / (screenHeight / fitDivisor).U,
+-        (videoY - videoOffsetY.U) / videoScaleY.U)
+-      framebufferReadAddress :=
+-        (videoLine * videoWidth.U) +
+-          ((videoX - videoOffsetX.U + framebufferReadDelay.U) / videoScaleX.U)
+-      framebufferInBounds := videoX >= videoOffsetX.U &&
+-        videoX < (videoOffsetX + (videoWidth * videoScaleX)).U &&
+-        (fitVideo || (videoY >= videoOffsetY.U &&
+-        videoY < (videoOffsetY + (videoLines * videoScaleY)).U))
++      // The hdmi module registers rgb into its video data one clock before its
++      // video period starts (video_data <= rgb, mode two clocks after cx): the
++      // pixel for column x must be on rgb when cx = x + 1, one clock later
++      // than the read delay alone would put it.
++      val hdmiRgbLead = 1
++      // At the 720p pixel clock the address is computed in registered stages
++      // (offset, then the division by the scale; the multiply-add after
++      // them), read that many pixels further ahead.
++      val hdmiAddressStages = 2
++      val framebufferReadDelay = 3 /* reading */ + videoPaletteLatency + videoFilterLatency -
++        hdmiRgbLead + hdmiAddressStages
++      // Fit: line y * fitNum / fitDen, as y * fitMul >> fitShift (a multiply,
++      // not a division, at the pixel clock); exact for every line shown.
++      val fitNum = videoHeight / fitDivisor
++      val fitDen = screenHeight / fitDivisor
++      val fitShift = (1 to 30).find { k =>
++        val m = (BigInt(fitNum) << k) / fitDen + 1
++        (0 until screenHeight).forall(y => ((BigInt(y) * m) >> k) == BigInt(y * fitNum / fitDen))
++      }.getOrElse(throw new CoreException("no exact fit multiplier"))
++      val fitMul = (BigInt(fitNum) << fitShift) / fitDen + 1
++      val framebufferX1 = RegNext(videoX - videoOffsetX.U + framebufferReadDelay.U)
++      val framebufferY1 = RegNext(videoY - videoOffsetY.U)
++      val framebufferFit1 = RegNext(videoY * fitMul.U)
++      val framebufferX2 = RegNext(framebufferX1 / videoScaleX.U)
++      val framebufferY2 = RegNext(Mux(fitVideo,
++        (framebufferFit1 >> fitShift).pad(10)(9, 0),
++        (framebufferY1 / videoScaleY.U).pad(10)(9, 0)))
++      framebufferReadAddress := (framebufferY2 * videoWidth.U) + framebufferX2
++      // The bounds lag by the same pixel as the data. They come from the
++      // counters as they are (videoX / videoY already wrap to the next line
++      // at cx = screenWidth, where a picture as wide as the screen still has
++      // its last column).
++      framebufferInBounds := io.hdmiCx >= (videoOffsetX + hdmiRgbLead).U &&
++        io.hdmiCx < (videoOffsetX + (videoWidth * videoScaleX) + hdmiRgbLead).U &&
++        (fitVideo || (io.hdmiCy >= videoOffsetY.U &&
++        io.hdmiCy < (videoOffsetY + (videoLines * videoScaleY)).U))
+ 
+       // Scale overlay
+       val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
+       val overlayOffsetX = (screenWidth - (overlayWidth * overlayScale)) / 2
+       val overlayOffsetY = (screenHeight - (overlayHeight * overlayScale)) / 2
+-      val overlayReadDelay = 3
+-      overlayReadAddress :=
+-        (((videoY - overlayOffsetY.U) / overlayScale.U)(8, 0) * overlayWidth.U) +
+-          ((videoX - overlayOffsetX.U + overlayReadDelay.U) / overlayScale.U)(8, 0)
++      val overlayReadDelay = 3 - hdmiRgbLead + hdmiAddressStages
++      val overlayX1 = RegNext(videoX - overlayOffsetX.U + overlayReadDelay.U)
++      val overlayY1 = RegNext(videoY - overlayOffsetY.U)
++      val overlayX2 = RegNext((overlayX1 / overlayScale.U)(8, 0))
++      val overlayY2 = RegNext((overlayY1 / overlayScale.U)(8, 0))
++      overlayReadAddress := (overlayY2 * overlayWidth.U) + overlayX2
+       overlayInBounds :=
+-        videoX >= overlayOffsetX.U &&
+-          videoX < (overlayOffsetX + (overlayWidth * overlayScale)).U &&
+-          videoY >= overlayOffsetY.U &&
+-          videoY < (overlayOffsetY + (overlayHeight * overlayScale)).U
++        io.hdmiCx >= (overlayOffsetX + hdmiRgbLead).U &&
++          io.hdmiCx < (overlayOffsetX + (overlayWidth * overlayScale) + hdmiRgbLead).U &&
++          io.hdmiCy >= overlayOffsetY.U &&
++          io.hdmiCy < (overlayOffsetY + (overlayHeight * overlayScale)).U
+ 
+       // HDMI Audio
+       val audioClock = RegInit(false.B)
+-      val audioCounter = Counter(27027000 / (48000 * 2))
++      val audioCounter = Counter(hdmiPixelHz / (48000 * 2))
+       when (audioCounter.inc()) {
+         audioClock := !audioClock
+       }
+diff --git a/verilog/handheld/clk_wiz_hdmi.v b/verilog/handheld/clk_wiz_hdmi.v
+index 32bc3df..ea30f48 100644
+--- a/verilog/handheld/clk_wiz_hdmi.v
++++ b/verilog/handheld/clk_wiz_hdmi.v
+@@ -53,8 +53,9 @@
+ //  Output     Output      Phase    Duty Cycle   Pk-to-Pk     Phase
+ //   Clock     Freq (MHz)  (degrees)    (%)     Jitter (ps)  Error (ps)
+ //----------------------------------------------------------------------------
+-// clk_hdmi__27.03125______0.000______50.0______217.121____159.389
+-// clk_hdmi_x5__135.15625______0.000______50.0______142.405____159.389
++// 720p test: VCO = 50 MHz / 4 * 59.375 = 742.1875 MHz (CEA VIC 4 wants 742.5, -0.04%)
++// clk_hdmi__74.21875  (VCO / 10)
++// clk_hdmi_x5__371.09375  (VCO / 2)
+ //
+ //----------------------------------------------------------------------------
+ // Input Clock   Freq (MHz)    Input Jitter (UI)
+@@ -123,15 +124,15 @@ wire clk_in_50mhz_clk_wiz_hdmi;
+     .CLKOUT4_CASCADE      ("FALSE"),
+     .COMPENSATION         ("ZHOLD"),
+     .STARTUP_WAIT         ("FALSE"),
+-    .DIVCLK_DIVIDE        (1),
+-    .CLKFBOUT_MULT_F      (21.625),
++    .DIVCLK_DIVIDE        (4),
++    .CLKFBOUT_MULT_F      (59.375),
+     .CLKFBOUT_PHASE       (0.000),
+     .CLKFBOUT_USE_FINE_PS ("FALSE"),
+-    .CLKOUT0_DIVIDE_F     (40.000),
++    .CLKOUT0_DIVIDE_F     (10.000),
+     .CLKOUT0_PHASE        (0.000),
+     .CLKOUT0_DUTY_CYCLE   (0.5),
+     .CLKOUT0_USE_FINE_PS  ("FALSE"),
+-    .CLKOUT1_DIVIDE       (8),
++    .CLKOUT1_DIVIDE       (2),
+     .CLKOUT1_PHASE        (0.000),
+     .CLKOUT1_DUTY_CYCLE   (0.5),
+     .CLKOUT1_USE_FINE_PS  ("FALSE"),
+diff --git a/verilog/handheld/common.xdc b/verilog/handheld/common.xdc
+index c9727d6..518e448 100644
+--- a/verilog/handheld/common.xdc
++++ b/verilog/handheld/common.xdc
+@@ -45,3 +45,9 @@ set_clock_groups -name exclusive_dpi_hdmi -physically_exclusive \
+ # after changing, which we don't care about.
+ set_false_path -setup -hold -to [get_pins -hierarchical *bufgmux_av/S0]
+ set_false_path -setup -hold -to [get_pins -hierarchical *bufgmux_av/S1]
++
++# While the HDMI clock drives clk_av, HandheldTop holds the display driver in
++# reset (dpiDriver.reset when hdmiEnable): its registers do not change at that
++# clock, and the display branch of the framebuffer address is not selected.
++set_false_path -from [get_clocks -of_objects [get_pins -hierarchical *bufgmux_av/I1]] \
++    -through [get_pins -of_objects [get_cells -hierarchical -filter {IS_SEQUENTIAL && NAME =~ handheld_top/driver/*}] -filter {REF_PIN_NAME == Q}]
+diff --git a/verilog/handheld/top.sv b/verilog/handheld/top.sv
+index 17971b9..6843a26 100644
+--- a/verilog/handheld/top.sv
++++ b/verilog/handheld/top.sv
+@@ -214,7 +214,7 @@ module top_handheld (
+     logic hdmi_audio_clock;
+     logic [15:0] hdmi_audio [1:0];
+     logic [23:0] hdmi_rgb;
+-    logic [9:0] hdmi_cx;
++    logic [10:0] hdmi_cx;
+     logic [9:0] hdmi_cy;
+ 
+     logic inner_vibrate;
+@@ -434,8 +434,8 @@ module top_handheld (
+     logic hdmi_tmds_clock;
+     logic [2:0] hdmi_tmds_data;
+     hdmi #(
+-        // Video ID code 2: 720x480 @ 60.0Hz
+-        .VIDEO_ID_CODE(2),
++        // Video ID code 4: 1280x720 @ 60.0Hz
++        .VIDEO_ID_CODE(4),
+         .VIDEO_REFRESH_RATE(60.00),
+         .AUDIO_RATE(48000),
+         .AUDIO_BIT_WIDTH(16),

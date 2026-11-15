@@ -287,6 +287,14 @@ needed; `sim/build.sh` first):
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
 
+`sim/hdmi720/run_hdmi720.sh` (branch `hdmi-720p`: 1280x720 HDMI from the dock, framework
+patch `0002-hdmi-720p.patch`, after the 3DO core's 720p test) runs the generated
+HandheldTop with the whole core and the framework's hdmi module and decodes the TMDS
+output as a sink would: CEA-861 VIC 4 timing, the AVI InfoFrame, audio clock
+regeneration and samples, and every pixel of two frames against the frame buffer,
+palette and overlay it wrote (`+mode=0`: direct colours, 240 lines at 3x; `+mode=1`:
+palette, 256 lines fit). The picture is 2x across, all 1280 columns.
+
 `sim/gls/run_palette_gls.sh` (Vivado 2018.3) synthesizes `gb_palette` for the board's
 FPGA and runs the netlist next to the RTL in xsim: a fade of 256 colours over 16 frames,
 then a still picture; every clock must match and the still frames must need no fixed

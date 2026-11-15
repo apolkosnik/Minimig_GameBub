@@ -4,6 +4,11 @@
 // every fourth clk_114 rising edge, exactly as the MMCM outputs are aligned.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// (TB_TOP: the bench module that has the clocks, tb_top unless defined.)
+`ifndef TB_TOP
+`define TB_TOP tb_top
+`endif
+
 module MMCME2_BASE #(
 	parameter BANDWIDTH = "OPTIMIZED",
 	parameter real CLKIN1_PERIOD = 20.0,
@@ -36,13 +41,13 @@ module MMCME2_BASE #(
 		    CLKOUT1_DIVIDE != 32 || CLKOUT2_DIVIDE != 5)
 			$fatal(1, "MMCME2_BASE model: unexpected configuration");
 	end
-	assign CLKOUT0 = tb_top.clk_114;
-	assign CLKOUT1 = tb_top.clk_28;
-	assign CLKOUT2 = tb_top.clk_114;
-	assign CLKOUT3 = tb_top.clk_28;
+	assign CLKOUT0 = `TB_TOP.clk_114;
+	assign CLKOUT1 = `TB_TOP.clk_28;
+	assign CLKOUT2 = `TB_TOP.clk_114;
+	assign CLKOUT3 = `TB_TOP.clk_28;
 	assign {CLKOUT0B, CLKOUT1B, CLKOUT2B, CLKOUT3B, CLKOUT4, CLKOUT5, CLKOUT6, CLKFBOUTB} = '0;
 	assign CLKFBOUT = CLKIN1;
-	assign LOCKED = tb_top.mmcm_locked;
+	assign LOCKED = `TB_TOP.mmcm_locked;
 endmodule
 
 module BUFG (input I, output O);
