@@ -58,6 +58,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -142,6 +143,13 @@ static void video_sample() {
 	if (top->video_pal_we) {
 		palette[top->video_pal_index & 1023] = top->video_pal_color;
 		palette_writes++;
+		{
+			static std::map<uint32_t, int> written;
+			int &n = written[top->video_pal_color];
+			n++;
+			if (std::getenv("PALLOG")) std::fprintf(stderr, "palwrite frame %d line %d x %d: entry %u = %06X\n", frames, fb_y, fb_x, top->video_pal_index, top->video_pal_color);
+			if (n == 2 && std::getenv("PALDEBUG")) std::fprintf(stderr, "palette: colour %06X given a second entry (frame %d, line %d, x %d)\n", top->video_pal_color, frames, fb_y, fb_x);
+		}
 	}
 	if (de && fb_x < VW && fb_y < VH) {
 		// the pixel is a palette index: r, g, b are its top, middle and low bits
@@ -187,6 +195,19 @@ static void video_sample() {
 		shown_i[1].swap(shown_i[0]); shown_c[1].swap(shown_c[0]);
 		shown_pal[1] = shown_pal[0];
 		shown_i[0] = fbi; shown_c[0] = fb; shown_pal[0] = pal_on;
+		if (std::getenv("FBTDUMP")) {
+			std::map<uint32_t, int> n;
+			for (int i = 0; i < VW * VH; i++) n[fbt[i]]++;
+			std::fprintf(stderr, "frame %d: %zu chipset colours\n", frames, n.size());
+			if (n.size() > 256 && n.size() < 2000) {
+				// the pixels with colours seen fewer than 40 times, and their neighbours
+				int shown = 0;
+				for (int i = 1; i + 1 < VW * VH && shown < 8; i++) if (n[fbt[i]] < 40) {
+					std::fprintf(stderr, "  (%d,%d): %06X %06X [%06X] %06X %06X\n", i % VW, i / VW, fbt[i-2 < 0 ? 0 : i-2], fbt[i-1], fbt[i], fbt[i+1], fbt[i+2 < VW*VH ? i+2 : i]);
+					shown++;
+				}
+			}
+		}
 		if (shown_n < 2) shown_n++;
 		uint32_t h = 2166136261u;
 		bool blank = true;

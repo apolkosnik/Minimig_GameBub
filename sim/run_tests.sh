@@ -18,6 +18,9 @@
 #   ham     hamtest.rom: a still HAM picture, almost every pixel another
 #           colour; every pixel shown in palette mode is checked against the
 #           chipset's colour (exact, or the nearest fixed colour)
+#   aga256  aga256.rom: a still AGA picture of 256 colours, random pixels:
+#           in palette mode (aga256t: never reusing entries) every pixel
+#           exact, none in the fixed colours
 #   input   inptest.rom: joystick (port 2) from the D-pad and the left stick,
 #           fire, keyboard (with handshake), host mouse motion and buttons,
 #           D-pad mouse mode, right stick mouse, a second controller on port 1
@@ -71,6 +74,8 @@ run video_ecs --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=1 --set
 run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
 run colour --kick asm/coltest.rom --check-coltest 1100 --ms 4000 --set 1080=3
 run ham    --kick asm/hamtest.rom --ms 900 --set 1080=3
+run aga256 --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=3 --expect-no-fixed
+run aga256t --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=7 --expect-no-fixed
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \

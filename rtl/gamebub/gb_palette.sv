@@ -21,7 +21,13 @@
 //
 // Finding a colour's entry: two hash tables give two candidates, and the
 // palette's own copy here says whether one of them holds the colour (an
-// entry that was given to another colour since simply does not match).
+// entry that was given to another colour since simply does not match). A
+// new colour is put into both tables: it loses its entry only when new
+// colours have taken both its places. (With one table per colour, colours
+// that shared a place took it from each other every frame and kept taking
+// new entries; putting a colour found through one table back into the
+// other did the same through chains of three colours. Either way still
+// pictures of a few hundred colours ran out of entries.)
 // A pixel takes two clocks: the tables and the palette are read in the
 // first, compared and updated in the second; pixels come at least two
 // clocks apart, so each sees the tables as the one before left them.
@@ -91,7 +97,6 @@ reg  [9:0] free_idx;
 reg        free_valid;
 reg        sweep;            // every entry's age goes up by one
 reg  [9:0] sweep_idx;
-reg        way;              // which table the next new colour goes into
 reg [19:0] fixed_count;
 // the ages have one write port (a pixel's entry, else the pass) and one
 // read port (the pass, else the search for a free entry)
@@ -106,11 +111,13 @@ wire hit  = hit1 | hit2;
 wire [9:0] hit_idx = hit1 ? cand1_2 : cand2_2;
 wire alloc = v2 & ~hit & free_valid;
 
-// the fixed colours: 3 + 3 + 2 bits with an ordered dither
+// the fixed colours: 3 + 3 + 2 bits with an ordered dither, the same
+// threshold for the three components, so that a colour is shown a little
+// lighter or darker, never in another hue
 wire  [7:0] thr = {bayer2, 6'd24};                 // 24, 88, 152, 216
 wire [10:0] qr = c2[23:16] * 3'd7 + {3'd0, thr};
 wire [10:0] qg = c2[15:8]  * 3'd7 + {3'd0, thr};
-wire  [9:0] qb = c2[7:0]   * 2'd3 + {2'd0, ~bayer2, 6'd24};
+wire  [9:0] qb = c2[7:0]   * 2'd3 + {2'd0, thr};
 wire  [9:0] fixed_idx = {2'b11, qr[10:8], qg[10:8], qb[9:8]};
 
 always @* begin
@@ -177,8 +184,8 @@ always @(posedge clk) begin
 		else if (free_valid) begin
 			out_index     <= free_idx;
 			age[free_idx] <= 3'd0;
-			if (way) ht2[h2_2] <= free_idx; else ht1[h1_2] <= free_idx;
-			way        <= ~way;
+			ht1[h1_2] <= free_idx;
+			ht2[h2_2] <= free_idx;
 			free_valid <= 1'b0;
 			pal_we     <= 1'b1;
 			pal_index  <= free_idx;
@@ -204,7 +211,6 @@ always @(posedge clk) begin
 		sweep_idx    <= 10'd0;
 		scan         <= 10'd0;
 		free_valid   <= 1'b0;
-		way          <= 1'b0;
 		fixed_count  <= 20'd0;
 		fixed_pixels <= 20'd0;
 		out_index    <= 10'd0;
