@@ -5,8 +5,9 @@
 #
 # The short tests use the test ROMs in sim/asm (built by asm/build.sh):
 #   video   vidtest.rom: a copper-made 1 bitplane picture, every pixel of
-#           the 640 pixel wide frame checked; with OCS (all 256 PAL lines),
-#           ECS (240 lines, middle) and AGA with the 68EC020 (240, bottom): AGA's picture
+#           the 640 pixel wide frame checked; with OCS (all 256 PAL lines,
+#           dithered colours), ECS (240 lines, middle, dithered) and AGA with
+#           the 68EC020 (240, bottom, palette colours): AGA's picture
 #           comes a clock later, and blended every pixel with its neighbour
 #           before H_START took that in
 #   colour  coltest.rom: a different background colour on every line (256
@@ -64,8 +65,8 @@ run() {
 }
 run video  --kick asm/vidtest.rom --ms 560 --check-vidtest
 run video_ecs --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=1 --set 1080=0 --set 107C=8
-run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=0 --set 107C=10
-run colour --kick asm/coltest.rom --check-coltest 1100 --ms 2300
+run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
+run colour --kick asm/coltest.rom --check-coltest 1100 --ms 4000 --set 1080=3
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \

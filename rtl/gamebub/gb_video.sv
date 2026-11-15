@@ -16,9 +16,12 @@
 //   - takes one pixel per high resolution pixel (every 2 clocks): a 640
 //     pixel wide screen as it is, a low resolution pixel twice, every other
 //     pixel of a super high resolution one,
-//   - sends each pixel as the index of its colour in a palette that
-//     gb_palette builds from the colours that appear (the block RAM holds
-//     two 640 x 256 frame buffers of 10 bits per pixel, not of 24),
+//   - sends each pixel as 10 bits (the block RAM holds two 640 x 256 frame
+//     buffers of 10 bits per pixel, not of 24), by palette_mode either
+//     the index of its colour in a palette that gb_palette builds from the
+//     colours that appear (exact colours while there are no more than 768
+//     at a time), or the colour itself in 3 + 4 + 3 bits with an ordered
+//     dither (any number of colours, approximate),
 //   - drives dataEnable for one clock per pixel, hblank outside the 640
 //     pixels and vblank outside the lines (vblank changes only while
 //     hblank is high).
@@ -42,17 +45,19 @@ module gb_video
 	input                   ntsc,
 	input             [4:0] vpos,         // PAL: first of the window's 256 lines shown, 0..16
 	input                   fit_height,   // PAL: all 256 lines, fitted to the screen by the framework
+	input                   palette_mode, // 1: palette indices, 0: dithered colours
 	input             [7:0] r_in,
 	input             [7:0] g_in,
 	input             [7:0] b_in,
 	input                   hsync_n,
 	input                   vsync_n,
 
-	output            [9:0] index,        // palette index of the pixel
+	output            [9:0] index,        // palette index, or dithered 3 + 4 + 3 bit colour
 	output                  de,
 	output                  hblank,
 	output                  vblank,
 	output reg              fit,          // to the framework: show all 256 lines
+	output reg              palette_on,   // to the framework: the pixels are palette indices
 
 	// palette writes for the framework
 	output                  pal_we,
@@ -99,6 +104,7 @@ always @(posedge clk) begin
 		hblank_i   <= 1'b1;
 		vblank_i   <= 1'b1;
 		fit        <= 1'b0;
+		palette_on <= 1'b0;
 	end
 	else begin
 		if (hs_start) begin
@@ -108,6 +114,7 @@ always @(posedge clk) begin
 				vcnt       <= 9'd0;
 				frame_seen <= 1'b1;
 				fit        <= fit_height & ~ntsc;   // only changes between frames
+				palette_on <= palette_mode;
 			end
 			else if (vcnt != 9'h1FF) vcnt <= vcnt + 9'd1;
 			// lines are counted at the start of _hsync: vblank only moves here
@@ -151,6 +158,38 @@ assign vblank = vb_d[2];
 reg vb_prev;
 always @(posedge clk) vb_prev <= vblank_i;
 
+wire       pal_de;
+wire [9:0] pal_out;
+
+// dithered colours, three clocks like the palette's indices: a component c
+// (0..255) becomes (c * levels + t) >> 8 with levels 7 (red, blue) or 15
+// (green) and t one of 24, 88, 152, 216 by the pixel's and the line's
+// parity (a 2 x 2 Bayer matrix), blue taking the thresholds in the opposite
+// order to red (where a grey's red goes up a level its blue goes down, so
+// the pattern is in the hue, not the brightness). Black and white are exact,
+// and the green of every 12 bit colour.
+function automatic [3:0] quant(input [7:0] c, input [3:0] levels, input [7:0] t);
+	reg [11:0] v;
+	begin
+		v = c * levels + {4'd0, t};
+		quant = v[11:8];
+	end
+endfunction
+wire [3:0] dq_r = quant(pr, 4'd7,  {pbayer, 6'd24});
+wire [3:0] dq_g = quant(pg, 4'd15, {pbayer, 6'd24});
+wire [3:0] dq_b = quant(pb, 4'd7,  {~pbayer, 6'd24});
+reg  [2:0] dd_de;
+reg  [9:0] dd1, dd2, dd3;
+always @(posedge clk) begin
+	dd_de <= reset ? 3'd0 : {dd_de[1:0], de_i};
+	dd1   <= {dq_r[2:0], dq_g, dq_b[2:0]};
+	dd2   <= dd1;
+	dd3   <= dd2;
+end
+
+assign de    = palette_on ? pal_de  : dd_de[2];
+assign index = palette_on ? pal_out : dd3;
+
 gb_palette palette
 (
 	.clk          (clk),
@@ -161,8 +200,8 @@ gb_palette palette
 	.in_b         (pb),
 	.in_bayer     (pbayer),
 	.frame        (vblank_i & ~vb_prev),
-	.out_de       (de),
-	.out_index    (index),
+	.out_de       (pal_de),
+	.out_index    (pal_out),
 	.pal_we       (pal_we),
 	.pal_index    (pal_index),
 	.pal_color    (pal_color),

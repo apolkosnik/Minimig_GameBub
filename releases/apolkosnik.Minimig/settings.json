@@ -406,17 +406,25 @@
 		},
 		{
 			"id": 17,
-			"label": "Picture height (PAL)",
+			"label": "Picture",
 			"address": "0x00001080",
 			"type": "list",
 			"items": [
 				{
-					"label": "240 lines, even",
+					"label": "256 lines, dithered",
+					"value": "0x1"
+				},
+				{
+					"label": "256 lines, palette",
+					"value": "0x3"
+				},
+				{
+					"label": "240 lines, dithered",
 					"value": "0x0"
 				},
 				{
-					"label": "All 256 lines",
-					"value": "0x1"
+					"label": "240 lines, palette",
+					"value": "0x2"
 				}
 			],
 			"default": "0x1"

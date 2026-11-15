@@ -7,6 +7,11 @@
 ;   - For the first 60 frames F is 0: the picture does not change, and the
 ;     bench (sim_main.cpp --check-coltest) expects every pixel's colour
 ;     exact (the palette of gb_palette has room for them).
+;   - Then F goes up by one every seven frames, twelve times: 256 new
+;     colours at a time, at every phase of anything that counts frames in
+;     eights. The palette has room: the bench expects no pixel of any of
+;     these frames in a fixed colour, the new colours exact from their
+;     first frame.
 ;   - Then F goes up by one every frame: 256 colours a frame, most of them
 ;     new. The palette runs out of entries that no frame on screen uses,
 ;     and the bench checks that it never gives one away too early.
@@ -69,6 +74,9 @@ start:
 	bra.s	.frame
 .move:	addq.w	#1,d7
 	bsr	colours
+	cmp.w	#12,d7			; the first twelve steps: seven frames each
+	bhi.s	.frame
+	moveq	#6,d6
 	bra.s	.frame
 
 ; the colours of frame d7 into the copper list

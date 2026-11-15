@@ -84,9 +84,20 @@ static std::vector<uint16_t> fbi(VW * VH);       // the frame being written: pal
 // that uses it can still be on screen.
 static uint32_t palette[1024];
 static std::vector<uint16_t> shown_i[2] = { std::vector<uint16_t>(VW * VH), std::vector<uint16_t>(VW * VH) };
+static bool shown_pal[2] = { false, false };   // the frame was palette indices
+// a frame buffer value as the framework shows it: a palette index, or with
+// the palette off a 3 + 4 + 3 bit colour, the bits repeated to 8
+static uint32_t direct_color(uint32_t v) {
+	uint32_t r = (v >> 7) & 7, g = (v >> 3) & 15, b = v & 7;
+	return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 4 | g) << 8) | (b << 5 | b << 2 | b >> 1);
+}
 static std::vector<uint32_t> shown_c[2] = { std::vector<uint32_t>(VW * VH), std::vector<uint32_t>(VW * VH) };
 static int shown_n = 0;
 static uint64_t palette_writes = 0, palette_stale = 0;
+// sim/asm/coltest.s: its F (chip RAM $100) and the pixels in fixed colours
+// of every frame
+static std::vector<std::pair<uint32_t, uint32_t>> frame_fixed;
+static uint32_t sdram_peek16_fwd(uint32_t waddr);
 static uint32_t palette_color(uint32_t index) {
 	if (index >= 768) {   // the fixed colours: 3 + 3 + 2 bits, each repeated to 8
 		uint32_t r = (index >> 5) & 7, g = (index >> 2) & 7, b = index & 3;
@@ -137,16 +148,24 @@ static void video_sample() {
 	}
 	if (vb_edge) {
 		// a frame completed: its colours as the framework would show it now
-		for (int i = 0; i < VW * VH; i++) fb[i] = palette_color(fbi[i]);
+		const bool pal_on = top->video_pal_on;
+		for (int i = 0; i < VW * VH; i++) fb[i] = pal_on ? palette_color(fbi[i]) : direct_color(fbi[i]);
+		{
+			uint32_t fixed = 0;
+			const int lines = top->video_fit ? VH : 240;
+			if (pal_on) for (int i = 0; i < VW * lines; i++) if (fbi[i] >= 768) fixed++;
+			frame_fixed.push_back({sdram_peek16_fwd(0x100 >> 1), fixed});
+		}
 		// the two frames before it may still be on screen: their indices
 		// must still give the colours they had
 		// (the lines the framework shows: all 256 with fit, else the first 240)
 		const int shown_lines = top->video_fit ? VH : 240;
-		for (int k = 0; k < 2 && k < shown_n; k++)
+		for (int k = 0; k < 2 && k < shown_n; k++) if (shown_pal[k] && pal_on)
 			for (int i = 0; i < VW * shown_lines; i++)
 				if (palette_color(shown_i[k][i]) != shown_c[k][i]) palette_stale++;
 		shown_i[1].swap(shown_i[0]); shown_c[1].swap(shown_c[0]);
-		shown_i[0] = fbi; shown_c[0] = fb;
+		shown_pal[1] = shown_pal[0];
+		shown_i[0] = fbi; shown_c[0] = fb; shown_pal[0] = pal_on;
 		if (shown_n < 2) shown_n++;
 		uint32_t h = 2166136261u;
 		bool blank = true;
@@ -610,6 +629,7 @@ static std::vector<uint16_t> mfm_track(int track) {
 }
 
 static uint32_t chip16(uint32_t addr) { return sdram_peek16(addr >> 1); }
+static uint32_t sdram_peek16_fwd(uint32_t waddr) { return sdram_peek16(waddr); }
 
 // -------------------------------------------------------------- main
 int main(int argc, char **argv) {
@@ -892,8 +912,19 @@ int main(int argc, char **argv) {
 			// pixel is its line's colour exactly or, where the palette had
 			// no entry free, the fixed colour nearest below or above it.
 			if (!coltest_done) FAIL("coltest: the still picture was not checked");
+			// the twelve steps of seven frames: the palette has room, so
+			// no pixel of those frames may be in a fixed colour
+			{
+				int frames_checked = 0, frames_bad = 0;
+				for (auto &ff : frame_fixed) if (ff.first >= 1 && ff.first <= 12) {
+					frames_checked++;
+					if (ff.second && frames_bad++ < 5) FAIL("coltest: %u pixels in fixed colours in a frame of step %u, with room in the palette", ff.second, ff.first);
+				}
+				std::printf("coltest steps: %d frames of 12 colour changes, %d with pixels in fixed colours\n", frames_checked, frames_bad);
+				if (frames_checked < 70) FAIL("coltest: only %d frames of the twelve steps seen", frames_checked);
+			}
 			uint32_t f = chip16(0x100);
-			if (f < 20) FAIL("coltest: only %u moving frames", f);
+			if (f < 32) FAIL("coltest: only %u steps", f);
 			int bad = 0, exact = 0, fixedpx = 0, tried = 0;
 			// the frame captured is one of the last few: find its F
 			for (uint32_t ff = f; ff + 6 > f && !tried; ff--) {

@@ -8,9 +8,12 @@
 // the indices in its frame buffers and looks the colour up as it shows
 // them. The colours on screen are then exact.
 //
-// A colour keeps its entry while it is in use. An entry is given to a new
-// colour only when no pixel has used it for four frames, so that no frame
-// buffer still on screen holds its index. When a new colour finds no such
+// A colour keeps its entry while it is in use. Every entry has an age: 0
+// when a pixel uses it, one more at the start of every frame (all entries
+// are gone through then, in the vertical blanking), up to 7. An entry is
+// given to a new colour only at age 5 or more, when no pixel has used it
+// for four whole frames, so that no frame buffer still on screen holds its
+// index. When a new colour finds no such
 // entry (more than 768 colours in five frames: HAM pictures, colour ramps
 // that change every frame) it is shown as the nearest of 256 fixed colours
 // instead (3 bits red, 3 green, 2 blue, dithered; the indices 768..1023,
@@ -61,12 +64,12 @@ reg  [9:0] b_addr;
 // colour -> entry, two ways
 reg  [9:0] ht1 [0:2047];
 reg  [9:0] ht2 [0:2047];
-// frame an entry was last used in
-reg  [2:0] stamp [0:1023];
+// frames since an entry was last used (7: that many or more)
+reg  [2:0] age [0:1023];
 
 integer i;
 initial begin
-	for (i = 0; i < 1024; i = i + 1) begin pal[i] = 24'd0; stamp[i] = 3'd0; end
+	for (i = 0; i < 1024; i = i + 1) begin pal[i] = 24'd0; age[i] = 3'd7; end
 	for (i = 0; i < 2048; i = i + 1) begin ht1[i] = 10'd0; ht2[i] = 10'd0; end
 end
 
@@ -81,14 +84,19 @@ wire  [9:0] cand2 = ht2[h2];
 reg  [10:0] h1_2, h2_2;
 reg   [9:0] cand1_2, cand2_2;
 
-// frames, and an entry free to be given away
-reg  [2:0] fcount;
+// an entry free to be given away, and the pass over all ages
 reg  [9:0] scan;
 reg  [9:0] free_idx;
 reg        free_valid;
+reg        sweep;            // every entry's age goes up by one
+reg  [9:0] sweep_idx;
 reg        way;              // which table the next new colour goes into
 reg [19:0] fixed_count;
-wire [2:0] scan_age = fcount - stamp[scan];
+// the ages have one write port (a pixel's entry, else the pass) and one
+// read port (the pass, else the search for a free entry)
+wire [9:0] age_raddr = sweep ? sweep_idx : scan;
+wire [2:0] age_q     = age[age_raddr];
+wire       scan_old  = (age_q >= 3'd5);
 
 // stage 2: which entry
 wire hit1 = (a_q == c2) && (cand1_2 < ENTRIES);
@@ -138,27 +146,35 @@ always @(posedge clk) begin
 		cand2_2 <= cand2;
 	end
 
-	// the entry scan: one entry a clock while none is at hand
-	if (!free_valid) begin
+	// the search for a free entry: one entry a clock while none is at hand
+	// (the pass over the ages has the read port first)
+	if (!sweep && !free_valid) begin
 		// (not the entry a pixel is using in this very clock)
-		if (scan_age[2] && !(v2 && hit && hit_idx == scan)) begin
+		if (scan_old && !(v2 && hit && hit_idx == scan)) begin
 			free_idx   <= scan;
 			free_valid <= 1'b1;
 		end
 		scan <= (scan == ENTRIES - 10'd1) ? 10'd0 : scan + 10'd1;
 	end
 
+	// the pass: a clock an entry, in the clocks no pixel writes an age
+	if (sweep && !v2) begin
+		if (age_q != 3'd7) age[sweep_idx] <= age_q + 3'd1;
+		if (sweep_idx == ENTRIES - 10'd1) sweep <= 1'b0;
+		sweep_idx <= sweep_idx + 10'd1;
+	end
+
 	if (v2) begin
 		out_de <= 1'b1;
 		if (hit) begin
-			out_index      <= hit_idx;
-			stamp[hit_idx] <= fcount;
+			out_index    <= hit_idx;
+			age[hit_idx] <= 3'd0;
 			// (the entry at hand is in use after all)
 			if (free_valid && hit_idx == free_idx) free_valid <= 1'b0;
 		end
 		else if (free_valid) begin
-			out_index       <= free_idx;
-			stamp[free_idx] <= fcount;
+			out_index     <= free_idx;
+			age[free_idx] <= 3'd0;
 			if (way) ht2[h2_2] <= free_idx; else ht1[h1_2] <= free_idx;
 			way        <= ~way;
 			free_valid <= 1'b0;
@@ -173,17 +189,17 @@ always @(posedge clk) begin
 	end
 
 	if (frame) begin
-		fcount       <= fcount + 3'd1;
 		fixed_pixels <= fixed_count;
 		fixed_count  <= 20'd0;
-		// (ages are counted from the new frame: look again)
-		free_valid   <= 1'b0;
+		sweep        <= 1'b1;
+		sweep_idx    <= 10'd0;
 	end
 
 	if (reset) begin
 		v1           <= 1'b0;
 		v2           <= 1'b0;
-		fcount       <= 3'd4;
+		sweep        <= 1'b0;
+		sweep_idx    <= 10'd0;
 		scan         <= 10'd0;
 		free_valid   <= 1'b0;
 		way          <= 1'b0;

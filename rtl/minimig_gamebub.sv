@@ -44,6 +44,7 @@ module minimig_gamebub
 	output logic        video_vblank,
 	output logic        video_hblank,
 	output logic        video_fit,
+	output logic        video_palette_enable,
 	output logic        video_palette_write,
 	output logic [9:0]  video_palette_index,
 	output logic [23:0] video_palette_color,
@@ -176,7 +177,7 @@ wire [31:0] drv_tracks;
 wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
 wire  [4:0] video_vpos;
-wire        video_fit_set;
+wire        video_fit_set, video_palette_set;
 wire [19:0] video_fixed_pixels;
 wire  [7:0] fdd_error;
 wire [15:0] fdd_sectors_read, fdd_sectors_written;
@@ -253,6 +254,7 @@ gb_host #(
 	.key_select       (key_select),
 	.video_vpos       (video_vpos),
 	.video_fit        (video_fit_set),
+	.video_palette    (video_palette_set),
 	.hmouse_valid     (hmouse_valid),
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
@@ -913,6 +915,8 @@ gb_video video
 	.vpos    (video_vpos),
 	.fit_height (video_fit_set),
 	.fit     (video_fit),
+	.palette_mode (video_palette_set),
+	.palette_on   (video_palette_enable),
 	.r_in    (red),
 	.g_in    (green),
 	.b_in    (blue),

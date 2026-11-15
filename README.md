@@ -79,7 +79,7 @@ released when the game goes on.
 | Audio filter | the Amiga 500's fixed 4.4 kHz output filter |
 | Stereo mix | how much of each channel goes into the other (None, 12 %, 25 %, Mono) |
 | X / Y / Start / Select key | Space, Return, Esc, F1, F2, Help, Del or P |
-| Picture height (PAL) | All 256 lines (fitted to the screen, the default) or 240 lines, even (each line exactly two rows, the bottom 16 lines cut) |
+| Picture | 256 or 240 PAL lines, and dithered or palette colours (see *Limitations*). 256 lines: all of them fitted to the screen, slightly uneven; 240: the top ones, each exactly two rows |
 
 Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
 **Reset (apply)**; the others apply at once.
@@ -128,19 +128,21 @@ unselected ones quietly.
 * The picture is 640 pixels wide, shown one to one across (640 of the handheld's 800 x
   480 panel, or of HDMI): all 640 high resolution pixels of the standard display window,
   so an 80 column Workbench or CLI is sharp; a low resolution pixel is two pixels wide.
-  The screen has 480 rows. **Picture height (PAL)** chooses between all 256 PAL lines
+  The screen has 480 rows. **Picture** chooses between all 256 PAL lines
   fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
   is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
   (the firmware takes 16 settings at most, so there is none for which 240). NTSC's 200 lines always fit, two rows each.
   Interlaced screens show one field's lines.
 * Colour: two 640 x 256 frame buffers fit the FPGA's block RAM at 10 bits per pixel, not
-  at the 24 of an AGA colour. A pixel is therefore stored as the index of its colour in a
-  palette of 768 entries of 24 bits that the core fills with the colours that appear
-  (`gb_palette`), and the framework looks the colour up when it shows the frame: colours
-  are exact. An entry is reused four frames after its colour was last on screen. Only
-  when more than 768 colours are in use within five frames (HAM pictures, colour ramps
-  that change every frame) are the newest shown in the nearest of 256 fixed, dithered
-  colours instead.
+  at the 24 of an AGA colour. **Picture** chooses how a pixel uses them:
+  * *dithered*: the colour in 3 + 4 + 3 bits with a fine 2 x 2 dither. Any number of
+    colours, approximate (black, white and OCS / ECS greens exact);
+  * *palette*: the index of its colour in a palette of 768 entries of 24 bits that the
+    core fills with the colours that appear (`gb_palette`); the framework looks the
+    colour up when it shows the frame, so colours are exact. An entry is reused five
+    frames after its colour was last on screen. When more than 768 colours are in use
+    within that time (HAM pictures, colour ramps that change every frame) the newest are
+    shown in 256 fixed, dithered colours until entries free up.
 * The framework scales a core's picture by the same whole factor in both directions;
   `patches/framework/` adds scaling each direction separately, fitting all lines to the
   screen height, and the palette, which this picture needs (`tools/patch_framework.sh` applies it to

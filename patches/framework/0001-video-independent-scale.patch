@@ -1,8 +1,8 @@
 diff --git a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
-index b9c2409..4c4b43b 100644
+index b9c2409..e4a11e6 100644
 --- a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
 +++ b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
-@@ -17,9 +17,40 @@ class VideoV0(
+@@ -17,9 +17,43 @@ class VideoV0(
    val colorDepthB: Int,
    /// Target frame period, in seconds.
    val framePeriod: Double,
@@ -37,28 +37,32 @@ index b9c2409..4c4b43b 100644
 +  val fit = if (independentScale) Some(Output(Bool())) else None
 +  /// With `paletteBits`: writes a palette entry (index, 24 bit colour: red
 +  /// in bits 23:16, green 15:8, blue 7:0) in any clock that `write` is high.
++  /// While `enable` is low the frame buffers hold colours after all, of the
++  /// colour depths given (may change between frames).
 +  val palette = if (paletteBits > 0) Some(Output(new Bundle {
++    val enable = Bool()
 +    val write = Bool()
 +    val index = UInt(paletteBits.W)
 +    val color = UInt(24.W)
 +  })) else None
  }
 diff --git a/src/main/scala/platform/handheld/HandheldTop.scala b/src/main/scala/platform/handheld/HandheldTop.scala
-index 4f31a0f..690c7c2 100644
+index 4f31a0f..03dfa9e 100644
 --- a/src/main/scala/platform/handheld/HandheldTop.scala
 +++ b/src/main/scala/platform/handheld/HandheldTop.scala
-@@ -203,6 +203,10 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -203,6 +203,11 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
      val dataEnable = Bool()
      val vblank = Bool()
      val hblank = Bool()
 +    val fit = Bool()
++    val paletteEnable = Bool()
 +    val paletteWrite = Bool()
 +    val paletteIndex = UInt(16.W)
 +    val paletteColor = UInt(24.W)
    })
    val (
      videoWidth: Int,
-@@ -211,6 +215,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -211,6 +216,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
      videoColorDepthR: Int,
      videoColorDepthG: Int,
      videoColorDepthB: Int,
@@ -67,18 +71,19 @@ index 4f31a0f..690c7c2 100644
    ) = core.getInterface("video") match {
      case Some(video: VideoV0) => {
        coreVideo.dataR := video.data.r
-@@ -219,6 +225,10 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -219,6 +226,11 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
        coreVideo.dataEnable := video.dataEnable
        coreVideo.hblank := video.hblank
        coreVideo.vblank := video.vblank
 +      coreVideo.fit := video.fit.getOrElse(false.B)
++      coreVideo.paletteEnable := video.palette.map(_.enable).getOrElse(false.B)
 +      coreVideo.paletteWrite := video.palette.map(_.write).getOrElse(false.B)
 +      coreVideo.paletteIndex := video.palette.map(_.index).getOrElse(0.U)
 +      coreVideo.paletteColor := video.palette.map(_.color).getOrElse(0.U)
        (
          video.videoWidth,
          video.videoHeight,
-@@ -226,6 +236,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -226,6 +238,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
          video.colorDepthR,
          video.colorDepthG,
          video.colorDepthB,
@@ -87,7 +92,7 @@ index 4f31a0f..690c7c2 100644
        )
      }
      case Some(x) => throw new CoreException("Unknown 'video': " + x.getClass())
-@@ -233,7 +245,13 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -233,7 +247,13 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
    }
  
    // Video filter
@@ -102,7 +107,7 @@ index 4f31a0f..690c7c2 100644
    val videoFilterOut = Wire(ColorRGB(8))
    val videoFilterReset = Wire(Reset())
    val (
-@@ -596,6 +614,17 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -596,6 +616,17 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
    /// Last completed frame
    val regLastFrameComplete = RegInit(0.U(1.W))
  
@@ -120,7 +125,7 @@ index 4f31a0f..690c7c2 100644
    val overlayWidth = revision.overlayWidth
    val overlayHeight = revision.overlayHeight
    val overlayBits = if (HandheldTop.overlayFullDepth) { 16 } else { 2 }
-@@ -635,9 +664,35 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -635,9 +666,40 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
        framebuffers(i).readPorts(0).enable := framebufferIndex === i.U
        framebuffers(i).readPorts(0).address := framebufferReadAddress
      }
@@ -141,8 +146,13 @@ index 4f31a0f..690c7c2 100644
 +        val fixedR = (fixedBits + 1) / 3
 +        val fixedG = (fixedBits + 1) / 3
 +        val fixedB = fixedBits - fixedR - fixedG
++        val paletteOn = XpmCdcSingle(clock, coreVideo.paletteEnable)
++        val direct = index.asTypeOf(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
++          .convertTo(ColorRGB(8))
 +        val color = Wire(ColorRGB(8))
-+        when (index(videoPaletteBits - 1, videoPaletteBits - 2).andR) {
++        when (!paletteOn) {
++          color := direct
++        } .elsewhen (index(videoPaletteBits - 1, videoPaletteBits - 2).andR) {
 +          color.r := Color.convertRGB(index(fixedBits - 1, fixedBits - fixedR), color.r)
 +          color.g := Color.convertRGB(index(fixedB + fixedG - 1, fixedB), color.g)
 +          color.b := Color.convertRGB(index(fixedB - 1, 0), color.b)
@@ -158,7 +168,7 @@ index 4f31a0f..690c7c2 100644
  
      // Apply core video filter
      videoFilterIn := framebufferRead
-@@ -664,6 +719,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -664,6 +726,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
      val overlayInBounds = Wire(Bool())
      val videoOutput = ColorRGB(8, 8, 8).make(r = 0, g = 0, b = 0)
      val darkenVideo = XpmCdcSingle(clock, controlVideoFilter.darken)
@@ -166,7 +176,7 @@ index 4f31a0f..690c7c2 100644
      when (framebufferInBounds) {
        val color = framebufferColor.convertTo(videoOutput)
        when (darkenVideo) {
-@@ -733,16 +789,26 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -733,16 +796,26 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
  
        // Scale and center framebuffer within output video.
        val videoScale = (screenWidth / videoWidth).min(screenHeight / videoHeight)
@@ -201,7 +211,7 @@ index 4f31a0f..690c7c2 100644
  
        // Scale overlay
        val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
-@@ -777,19 +843,29 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -777,19 +850,29 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
  
        // Scale and center framebuffer without output video.
        val videoScale = (screenWidth / videoWidth).min(screenHeight / videoHeight)
