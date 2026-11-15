@@ -46,6 +46,7 @@ module gb_video
 	input             [4:0] vpos,         // PAL: first of the window's 256 lines shown, 0..16
 	input                   fit_height,   // PAL: all 256 lines, fitted to the screen by the framework
 	input                   palette_mode, // 1: palette indices, 0: dithered colours
+	input                   palette_test, // palette entries are never reused (a test)
 	input             [7:0] r_in,
 	input             [7:0] g_in,
 	input             [7:0] b_in,
@@ -200,6 +201,7 @@ gb_palette palette
 	.in_b         (pb),
 	.in_bayer     (pbayer),
 	.frame        (vblank_i & ~vb_prev),
+	.no_reuse     (palette_test),
 	.out_de       (pal_de),
 	.out_index    (pal_out),
 	.pal_we       (pal_we),

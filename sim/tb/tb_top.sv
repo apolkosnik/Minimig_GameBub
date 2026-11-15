@@ -50,6 +50,7 @@ module tb_top
 	output        video_vblank,
 	output        video_fit,
 	output        video_pal_on,
+	output [23:0] dbg_pixel_color,   // the colour of the pixel sent (gb_palette), with video_de
 	output        video_pal_we,
 	output  [9:0] video_pal_index,
 	output [23:0] video_pal_color,
@@ -209,6 +210,7 @@ sdram_sim sdram
 assign sd_din = mdl_oe ? mdl_dout : sd_oe ? sd_dout : 16'hFFFF;
 
 assign dbg_cpu_rst   = dut.cpu_rst;
+assign dbg_pixel_color = dut.video.palette.c2;
 assign dbg_chip_addr = dut.chip_addr;
 assign dbg_chip_as   = dut.chip_as;
 assign dbg_chip_rw   = dut.chip_rw;

@@ -39,6 +39,7 @@ module gb_palette
 	input       [7:0] in_b,
 	input       [1:0] in_bayer,    // dither threshold for the fixed colours (2 x 2 pattern)
 	input             frame,       // one clock per frame
+	input             no_reuse,    // test: an entry once given to a colour is never given to another
 
 	output reg        out_de,      // three clocks after in_de
 	output reg  [9:0] out_index,
@@ -159,7 +160,8 @@ always @(posedge clk) begin
 
 	// the pass: a clock an entry, in the clocks no pixel writes an age
 	if (sweep && !v2) begin
-		if (age_q != 3'd7) age[sweep_idx] <= age_q + 3'd1;
+		// (no_reuse: entries in use stay young; only the never used are free)
+		if (age_q != 3'd7 && !no_reuse) age[sweep_idx] <= age_q + 3'd1;
 		if (sweep_idx == ENTRIES - 10'd1) sweep <= 1'b0;
 		sweep_idx <= sweep_idx + 10'd1;
 	end

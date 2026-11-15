@@ -425,6 +425,10 @@
 				{
 					"label": "240 lines, palette",
 					"value": "0x2"
+				},
+				{
+					"label": "256 lines, palette test",
+					"value": "0x7"
 				}
 			],
 			"default": "0x1"

@@ -78,6 +78,8 @@ static int failures = 0;
 static const int VW = 640, VH = 256;   // the frame buffer
 static std::vector<uint32_t> fb(VW * VH);        // the last whole frame, as colours
 static std::vector<uint16_t> fbi(VW * VH);       // the frame being written: palette indices
+static std::vector<uint32_t> fbt(VW * VH);       // the colours the chipset produced for them
+static uint64_t pixels_wrong = 0, pixels_fixed_far = 0, pixels_checked = 0;
 // The framework's palette (patches/framework): written by the core, looked
 // up when a frame buffer is shown. The two frame buffers the framework
 // keeps are checked against it: an entry must not change while a frame
@@ -145,11 +147,30 @@ static void video_sample() {
 		// the pixel is a palette index: r, g, b are its top, middle and low bits
 		uint32_t r = top->video_r, g = top->video_g, b = top->video_b;
 		fbi[fb_y * VW + fb_x] = uint16_t((r << 7) | (g << 3) | b);
+		fbt[fb_y * VW + fb_x] = top->dbg_pixel_color;
 	}
 	if (vb_edge) {
 		// a frame completed: its colours as the framework would show it now
 		const bool pal_on = top->video_pal_on;
 		for (int i = 0; i < VW * VH; i++) fb[i] = pal_on ? palette_color(fbi[i]) : direct_color(fbi[i]);
+		// palette mode: every pixel shown must be the colour the chipset
+		// produced, from a palette entry exactly, or in the fixed colours
+		// the nearest of them (the dither moves a component one level)
+		if (pal_on && frames >= 2) {
+			const int lines = top->video_fit ? VH : 240;
+			for (int i = 0; i < VW * lines; i++) {
+				uint32_t t = fbt[i], p = fb[i];
+				pixels_checked++;
+				if (fbi[i] < 768) {
+					if (p != t && pixels_wrong++ < 5)
+						std::fprintf(stderr, "pixel (%d,%d) frame %d: index %u shows %06X, the chipset's colour %06X\n", i % VW, i / VW, frames, fbi[i], p, t);
+				} else {
+					int dr = std::abs(int(p >> 16) - int(t >> 16)), dg = std::abs(int((p >> 8) & 255) - int((t >> 8) & 255)), db = std::abs(int(p & 255) - int(t & 255));
+					if ((dr > 37 || dg > 37 || db > 85) && pixels_fixed_far++ < 5)
+						std::fprintf(stderr, "pixel (%d,%d) frame %d: fixed colour %06X for the chipset's %06X\n", i % VW, i / VW, frames, p, t);
+				}
+			}
+		}
 		{
 			uint32_t fixed = 0;
 			const int lines = top->video_fit ? VH : 240;
@@ -905,6 +926,10 @@ int main(int argc, char **argv) {
 		uint32_t fixed = hread(0x40);
 		std::printf("palette: %llu entries written, %u pixels of the last frame in fixed colours, %llu pixels of earlier frames changed colour\n",
 		            (unsigned long long)palette_writes, fixed, (unsigned long long)palette_stale);
+		std::printf("pixels: %llu checked in palette mode, %llu with a wrong palette colour, %llu with a fixed colour not the nearest\n",
+		            (unsigned long long)pixels_checked, (unsigned long long)pixels_wrong, (unsigned long long)pixels_fixed_far);
+		if (pixels_wrong) FAIL("%llu pixels shown in the wrong palette colour", (unsigned long long)pixels_wrong);
+		if (pixels_fixed_far) FAIL("%llu pixels shown in a fixed colour that is not the nearest", (unsigned long long)pixels_fixed_far);
 		if (palette_stale) FAIL("palette entries changed while frames that use them could be on screen (%llu pixels)", (unsigned long long)palette_stale);
 		if (expect_no_fixed && fixed) FAIL("%u pixels of the last frame found no palette entry", fixed);
 		if (coltest_end) {
