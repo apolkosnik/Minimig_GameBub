@@ -79,7 +79,8 @@ released when the game goes on.
 | Audio filter | the Amiga 500's fixed 4.4 kHz output filter |
 | Stereo mix | how much of each channel goes into the other (None, 12 %, 25 %, Mono) |
 | X / Y / Start / Select key | Space, Return, Esc, F1, F2, Help, Del or P |
-| Picture position (PAL) | which 240 of the 256 PAL lines are shown: Top (the default, so title bars are visible), Middle, Bottom or in between. NTSC's 200 lines always fit |
+| Picture height (PAL) | All 256 lines (fitted to the screen, the default) or 240 lines, even (each line exactly two rows, 16 lines cut) |
+| Picture position (PAL) | with 240 lines: which of the 256 PAL lines are shown, Top (the default), Middle, Bottom or in between |
 
 Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
 **Reset (apply)**; the others apply at once.
@@ -125,19 +126,26 @@ unselected ones quietly.
 * The 68030, RTG, Zorro III RAM and the expansion cards of the MiSTer core (Toccata,
   A2065, CDTV) are not built: on MiSTer they use its DDR3 memory or its ARM side. The
   core uses one of the two SDRAM chips (32 MB), which holds everything it needs.
-* The picture is 640 x 240, shown one to one across and doubled down (640 x 480 of the
-  handheld's 800 x 480 panel, or of HDMI): all 640 high resolution pixels of the standard
-  display window, so an 80 column Workbench or CLI is sharp; a low resolution pixel is
-  two pixels wide. Of the lines, 240: in PAL the top 240 of 256 (**Picture position**
-  chooses others); NTSC's 200 fit whole. Interlaced screens show one field's lines.
-* Colour: two 640 x 240 frame buffers fit the FPGA's block RAM at 10 bits per pixel (3
-  red, 4 green, 3 blue), so colours are dithered (a 2 x 2 pattern). Black, white and the
-  green of every OCS / ECS colour are exact; their red and blue are exact or alternate
-  between two neighbouring levels inside each low resolution pixel. AGA's 24 bit colours
-  are dithered to that. v0.4.1 was the last 320 x 240 build with 16 bit colour.
-* The framework scales a core's picture by the same factor in both directions;
-  `patches/framework/` adds scaling each direction separately, which this picture needs
-  (`tools/patch_framework.sh` applies it to the submodule).
+* The picture is 640 pixels wide, shown one to one across (640 of the handheld's 800 x
+  480 panel, or of HDMI): all 640 high resolution pixels of the standard display window,
+  so an 80 column Workbench or CLI is sharp; a low resolution pixel is two pixels wide.
+  The screen has 480 rows. **Picture height (PAL)** chooses between all 256 PAL lines
+  fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
+  is cut off, lines are slightly uneven) and 240 lines, each exactly two rows
+  (**Picture position** chooses which 240). NTSC's 200 lines always fit, two rows each.
+  Interlaced screens show one field's lines.
+* Colour: two 640 x 256 frame buffers fit the FPGA's block RAM at 10 bits per pixel, not
+  at the 24 of an AGA colour. A pixel is therefore stored as the index of its colour in a
+  palette of 768 entries of 24 bits that the core fills with the colours that appear
+  (`gb_palette`), and the framework looks the colour up when it shows the frame: colours
+  are exact. An entry is reused four frames after its colour was last on screen. Only
+  when more than 768 colours are in use within five frames (HAM pictures, colour ramps
+  that change every frame) are the newest shown in the nearest of 256 fixed, dithered
+  colours instead.
+* The framework scales a core's picture by the same whole factor in both directions;
+  `patches/framework/` adds scaling each direction separately, fitting all lines to the
+  screen height, and the palette, which this picture needs (`tools/patch_framework.sh` applies it to
+  the submodule).
 * PAL runs at 50 Hz on the 60 Hz panel.
 * Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
   (rev 4) with a floppy image; hard disks, the dock keyboard and mouse are tested in
@@ -169,7 +177,7 @@ unselected ones quietly.
 | Main_MiSTer minimig_fdd.cpp | `gb_floppy`: the same track encoding, sync word handling, header and data checks in hardware |
 | Main_MiSTer ide.cpp | `gb_ide`: the same commands, geometry rules and virtual RDB in hardware, on the management port of the unchanged `ide.sv`; sectors through the framework's on-demand file commands |
 | hps_io / hps_ext | `gb_io_master`: drives the same IO_UIO / IO_FPGA / IO_STROBE bus |
-| video_mixer, scaler | `gb_video`: 640 x 240 window into the framework's frame buffer, dithered to 10 bits |
+| video_mixer, scaler | `gb_video`: 640 x 256 window into the framework's frame buffer; `gb_palette`: 24 bit colours to 10 bit palette indices |
 | audio_out | `gb_audio`: A500 filter, stereo mix |
 | joysticks, PS/2 | `gb_input`: buttons, mouse emulation, keys |
 
@@ -273,6 +281,7 @@ needed; `sim/build.sh` first):
 | input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
+| colour | `coltest.s` gives every line its own background colour (256 colours a frame): a still picture is exact in every pixel; then the colours change every frame until the palette runs out, and no entry may change while a frame using it can still be shown |
 | ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |

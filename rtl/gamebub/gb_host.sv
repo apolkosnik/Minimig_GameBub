@@ -9,6 +9,8 @@
 //                         Kickstart as received
 //   0x0000_0024..3C       debug, read only: hard disk state, sectors read /
 //                         written, geometry and size of the two drives
+//   0x0000_0040           debug, read only: pixels of the last frame whose
+//                         colour found no palette entry (gb_palette)
 //   0x0000_1000, 1004     statistics: clocks the Amiga was paused / ran since
 //                         the last write (the Game Bub firmware's convention
 //                         for every core: it reads and clears them on pause)
@@ -20,7 +22,7 @@
 //                         USB keyboard on the dock): bits 7:0 the key's USB
 //                         HID usage (0xE0..E7 the modifiers), bit 8 set when
 //                         pressed, clear when released
-//   0x0000_1040..107C     settings (metadata/settings.json), read/write
+//   0x0000_1040..1080     settings (metadata/settings.json), read/write
 //   0x1000_0000 + n<<20   disk image slot n (0..3, files.json ids 0..3),
 //                         up to 1 MB each -> SDRAM
 //   0x2000_0000           Kickstart ROM image (files.json id 4), up to
@@ -118,6 +120,7 @@ module gb_host
 	output reg  [7:0] key_start,
 	output reg  [7:0] key_select,
 	output reg  [4:0] video_vpos,
+	output reg        video_fit,
 
 	// mouse from the host (firmware)
 	output reg        hmouse_valid,   // one clock per motion write
@@ -153,7 +156,8 @@ module gb_host
 	input      [31:0] ide_sectors_read,
 	input      [31:0] ide_sectors_written,
 	input      [31:0] ide_chs0, ide_chs1,
-	input      [31:0] ide_total0, ide_total1
+	input      [31:0] ide_total0, ide_total1,
+	input      [19:0] video_fixed_pixels   // pixels of the last frame not in the palette
 );
 
 localparam [15:0] CMD_GET_STATUS     = 16'h0000;
@@ -182,6 +186,7 @@ reg  [7:0] set_df1;
 reg  [7:0] set_filter;
 reg  [7:0] set_stereo;
 reg  [7:0] set_vpos;
+reg  [7:0] set_fit;       // 1: all 256 PAL lines fitted to the screen
 
 // memory presets: XHFFSSCC
 function automatic [7:0] mem_preset(input [2:0] p);
@@ -207,6 +212,7 @@ always @* begin
 	cfg_audmix   = set_stereo[1:0];
 	audio_filter = set_filter[0];
 	video_vpos   = set_vpos[4:0];
+	video_fit    = set_fit[0];
 end
 
 // --------------------------------------------------------------- files
@@ -309,6 +315,7 @@ function automatic [31:0] reg_read(input [15:0] a);
 		16'h0034: reg_read = ide_chs1;
 		16'h0038: reg_read = ide_total0;
 		16'h003C: reg_read = ide_total1;
+		16'h0040: reg_read = {12'd0, video_fixed_pixels};
 		16'h1000: reg_read = stat_stalls;
 		16'h1004: reg_read = stat_cycles;
 		16'h1030: reg_read = {hmouse_dy, hmouse_dx};
@@ -329,6 +336,7 @@ function automatic [31:0] reg_read(input [15:0] a);
 		16'h1074: reg_read = {24'd0, key_start};
 		16'h1078: reg_read = {24'd0, key_select};
 		16'h107C: reg_read = {24'd0, set_vpos};
+		16'h1080: reg_read = {24'd0, set_fit};
 		default:  reg_read = 32'd0;
 	endcase
 endfunction
@@ -381,6 +389,7 @@ always @(posedge clk) begin
 		key_start    <= 8'h50;   // F1
 		key_select   <= 8'h45;   // Esc
 		set_vpos     <= 8'd0;
+		set_fit      <= 8'd1;
 		hmouse_dx    <= 16'd0;
 		hmouse_dy    <= 16'd0;
 		hmouse_btn   <= 3'd0;
@@ -492,6 +501,7 @@ always @(posedge clk) begin
 							16'h1074: key_start   <= mem_dataWrite[7:0];
 							16'h1078: key_select  <= mem_dataWrite[7:0];
 							16'h107C: set_vpos    <= mem_dataWrite[7:0];
+							16'h1080: set_fit     <= mem_dataWrite[7:0];
 							default: ;
 						endcase
 					end

@@ -43,6 +43,10 @@ module minimig_gamebub
 	output logic        video_dataEnable,
 	output logic        video_vblank,
 	output logic        video_hblank,
+	output logic        video_fit,
+	output logic        video_palette_write,
+	output logic [9:0]  video_palette_index,
+	output logic [23:0] video_palette_color,
 	output logic [15:0] audio_left,
 	output logic [15:0] audio_right,
 	input  logic        host_mem_enable,
@@ -172,6 +176,8 @@ wire [31:0] drv_tracks;
 wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
 wire  [4:0] video_vpos;
+wire        video_fit_set;
+wire [19:0] video_fixed_pixels;
 wire  [7:0] fdd_error;
 wire [15:0] fdd_sectors_read, fdd_sectors_written;
 wire        hmouse_valid;
@@ -246,6 +252,7 @@ gb_host #(
 	.key_start        (key_start),
 	.key_select       (key_select),
 	.video_vpos       (video_vpos),
+	.video_fit        (video_fit_set),
 	.hmouse_valid     (hmouse_valid),
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
@@ -277,7 +284,8 @@ gb_host #(
 	.ide_chs0         (ide_chs0),
 	.ide_chs1         (ide_chs1),
 	.ide_total0       (ide_total0),
-	.ide_total1       (ide_total1)
+	.ide_total1       (ide_total1),
+	.video_fixed_pixels (video_fixed_pixels)
 );
 
 // ===========================================================================
@@ -903,15 +911,19 @@ gb_video video
 	.reset   (reset_d),
 	.ntsc    (ntsc),
 	.vpos    (video_vpos),
+	.fit_height (video_fit_set),
+	.fit     (video_fit),
 	.r_in    (red),
 	.g_in    (green),
 	.b_in    (blue),
 	.hsync_n (hs),
 	.vsync_n (vs),
-	.r       (video_data_r),
-	.g       (video_data_g),
-	.b       (video_data_b),
+	.index   ({video_data_r, video_data_g, video_data_b}),
 	.de      (video_dataEnable),
+	.pal_we    (video_palette_write),
+	.pal_index (video_palette_index),
+	.pal_color (video_palette_color),
+	.fixed_pixels (video_fixed_pixels),
 	.hblank  (video_hblank),
 	.vblank  (video_vblank)
 );

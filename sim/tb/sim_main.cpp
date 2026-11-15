@@ -75,8 +75,25 @@ static int failures = 0;
 #define FAIL(...) do { std::fprintf(stderr, "FAIL: " __VA_ARGS__); std::fprintf(stderr, "\n"); failures++; } while (0)
 
 // -------------------------------------------------------------- video
-static const int VW = 640, VH = 240;
-static std::vector<uint32_t> fb(VW * VH);
+static const int VW = 640, VH = 256;   // the frame buffer
+static std::vector<uint32_t> fb(VW * VH);        // the last whole frame, as colours
+static std::vector<uint16_t> fbi(VW * VH);       // the frame being written: palette indices
+// The framework's palette (patches/framework): written by the core, looked
+// up when a frame buffer is shown. The two frame buffers the framework
+// keeps are checked against it: an entry must not change while a frame
+// that uses it can still be on screen.
+static uint32_t palette[1024];
+static std::vector<uint16_t> shown_i[2] = { std::vector<uint16_t>(VW * VH), std::vector<uint16_t>(VW * VH) };
+static std::vector<uint32_t> shown_c[2] = { std::vector<uint32_t>(VW * VH), std::vector<uint32_t>(VW * VH) };
+static int shown_n = 0;
+static uint64_t palette_writes = 0, palette_stale = 0;
+static uint32_t palette_color(uint32_t index) {
+	if (index >= 768) {   // the fixed colours: 3 + 3 + 2 bits, each repeated to 8
+		uint32_t r = (index >> 5) & 7, g = (index >> 2) & 7, b = index & 3;
+		return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b * 0x55);
+	}
+	return palette[index];
+}
 static int fb_x = 0, fb_y = 0;
 static bool prev_hblank = true, prev_vblank = true;
 static int frames = 0;
@@ -90,10 +107,13 @@ static int frames_changed = 0;
 static void save_frame(const std::string &path) {
 	FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) return;
-	// as the framework shows it: every line twice
-	std::fprintf(f, "P6\n%d %d\n255\n", VW, 2 * VH);
-	for (int y = 0; y < 2 * VH; y++) for (int x = 0; x < VW; x++) {
-		uint32_t p = fb[(y / 2) * VW + x];
+	// as the framework shows it on 480 rows (patches/framework): the first
+	// 240 lines twice each, or with fit all 256 lines, line = row * 8 / 15
+	const int rows = 480;
+	bool fit = top->video_fit;
+	std::fprintf(f, "P6\n%d %d\n255\n", VW, rows);
+	for (int y = 0; y < rows; y++) for (int x = 0; x < VW; x++) {
+		uint32_t p = fb[(fit ? y * VH / rows : y / 2) * VW + x];
 		uint8_t px[3] = { uint8_t(p >> 16), uint8_t(p >> 8), uint8_t(p) };
 		std::fwrite(px, 1, 3, f);
 	}
@@ -106,16 +126,28 @@ static void video_sample() {
 	bool vb_edge = vb && !prev_vblank;
 	bool hb_edge = hb && !prev_hblank;
 
+	if (top->video_pal_we) {
+		palette[top->video_pal_index & 1023] = top->video_pal_color;
+		palette_writes++;
+	}
 	if (de && fb_x < VW && fb_y < VH) {
+		// the pixel is a palette index: r, g, b are its top, middle and low bits
 		uint32_t r = top->video_r, g = top->video_g, b = top->video_b;
-		// 3 + 4 + 3 bits to 8 as the framework does (the bits repeated)
-		r = (r << 5) | (r << 2) | (r >> 1);
-		g = (g << 4) | g;
-		b = (b << 5) | (b << 2) | (b >> 1);
-		fb[fb_y * VW + fb_x] = (r << 16) | (g << 8) | b;
+		fbi[fb_y * VW + fb_x] = uint16_t((r << 7) | (g << 3) | b);
 	}
 	if (vb_edge) {
-		// a frame completed
+		// a frame completed: its colours as the framework would show it now
+		for (int i = 0; i < VW * VH; i++) fb[i] = palette_color(fbi[i]);
+		// the two frames before it may still be on screen: their indices
+		// must still give the colours they had
+		// (the lines the framework shows: all 256 with fit, else the first 240)
+		const int shown_lines = top->video_fit ? VH : 240;
+		for (int k = 0; k < 2 && k < shown_n; k++)
+			for (int i = 0; i < VW * shown_lines; i++)
+				if (palette_color(shown_i[k][i]) != shown_c[k][i]) palette_stale++;
+		shown_i[1].swap(shown_i[0]); shown_c[1].swap(shown_c[0]);
+		shown_i[0] = fbi; shown_c[0] = fb;
+		if (shown_n < 2) shown_n++;
 		uint32_t h = 2166136261u;
 		bool blank = true;
 		for (auto p : fb) { h = (h ^ p) * 16777619u; if (p != fb[0]) blank = false; }
@@ -611,6 +643,9 @@ int main(int argc, char **argv) {
 	bool check_vidtest = false;
 	bool floppy_write_test = false;
 	bool ide_test = false;
+	bool expect_no_fixed = false;
+	double coltest_ms = -1;       // when to check the still picture of sim/asm/coltest.s
+	bool coltest_done = false, coltest_end = false;
 	long expect_hdd_read = -1;
 	std::string save_hdf;
 	double expect_lr = -1;   // expected mean |right| / mean |left|
@@ -642,6 +677,8 @@ int main(int argc, char **argv) {
 		else if (a == "--fw-latency-us") fw_latency = uint64_t(std::atof(next().c_str()) * 28.375);
 		else if (a == "--fw-verbose") fw_verbose = true;
 		else if (a == "--ide-test") ide_test = true;
+		else if (a == "--expect-no-fixed") expect_no_fixed = true;
+		else if (a == "--check-coltest") { coltest_ms = std::atof(next().c_str()); coltest_end = true; }
 		else if (a == "--expect-hdd-read") expect_hdd_read = std::atol(next().c_str());
 		else if (a == "--save-hdf") save_hdf = next();
 		else if (a == "--exit") do_exit = true;
@@ -702,7 +739,7 @@ int main(int argc, char **argv) {
 	std::vector<Setting> settings = {
 		{0x1044, 0}, {0x1048, 0}, {0x104C, 1}, {0x1050, 0}, {0x1054, 0}, {0x1058, 0},
 		{0x105C, 0}, {0x1060, 7}, {0x1064, 1}, {0x1068, 2},
-		{0x106C, 0x40}, {0x1070, 0x44}, {0x1074, 0x50}, {0x1078, 0x45}, {0x107C, 0},
+		{0x106C, 0x40}, {0x1070, 0x44}, {0x1074, 0x50}, {0x1078, 0x45}, {0x107C, 0}, {0x1080, 1},
 	};
 	for (auto &s : settings) hwrite(s.addr, s.value);
 	for (auto &s : extra_settings) hwrite(s.first, s.second);
@@ -806,6 +843,22 @@ int main(int argc, char **argv) {
 				c.stage = 2;
 			}
 		}
+		// sim/asm/coltest.s, the still picture: line L is one colour,
+		// (L * 17) & 0xFFF, each nibble twice
+		if (coltest_ms >= 0 && !coltest_done && ms >= coltest_ms) {
+			coltest_done = true;
+			int bad = 0;
+			for (int y = 0; y < VH; y++) {
+				uint32_t c = uint32_t(y * 17) & 0xFFF;
+				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
+				for (int x = 0; x < VW; x++)
+					if (fb[y * VW + x] != e && bad++ < 5) FAIL("coltest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
+			}
+			uint32_t fixed = hread(0x40);
+			if (fixed) FAIL("coltest: %u pixels of the still picture found no palette entry", fixed);
+			if (chip16(0x100) != 0) FAIL("coltest: the picture is already moving (F = %u)", chip16(0x100));
+			if (!bad) std::printf("%.0f ms: coltest still picture: 256 colours, all %d pixels exact\n", ms, VW * VH);
+		}
 		if (!boot_seen && top->dbg_boot_done) { boot_seen = true; boot_done_at = cyc28; }
 		core_service();
 		cycle28();
@@ -828,6 +881,48 @@ int main(int argc, char **argv) {
 	uint32_t sec_rd = hread(0x10), sec_wr = hread(0x14), ferr = hread(0x18);
 	std::printf("floppy: %u sectors read, %u written, last error %u\n", sec_rd, sec_wr, ferr);
 	std::printf("video: %d frames, %d not blank, %d changes\n", frames, nonblank_frames, frames_changed);
+	{
+		uint32_t fixed = hread(0x40);
+		std::printf("palette: %llu entries written, %u pixels of the last frame in fixed colours, %llu pixels of earlier frames changed colour\n",
+		            (unsigned long long)palette_writes, fixed, (unsigned long long)palette_stale);
+		if (palette_stale) FAIL("palette entries changed while frames that use them could be on screen (%llu pixels)", (unsigned long long)palette_stale);
+		if (expect_no_fixed && fixed) FAIL("%u pixels of the last frame found no palette entry", fixed);
+		if (coltest_end) {
+			// sim/asm/coltest.s at the end: 256 new colours a frame. Every
+			// pixel is its line's colour exactly or, where the palette had
+			// no entry free, the fixed colour nearest below or above it.
+			if (!coltest_done) FAIL("coltest: the still picture was not checked");
+			uint32_t f = chip16(0x100);
+			if (f < 20) FAIL("coltest: only %u moving frames", f);
+			int bad = 0, exact = 0, fixedpx = 0, tried = 0;
+			// the frame captured is one of the last few: find its F
+			for (uint32_t ff = f; ff + 6 > f && !tried; ff--) {
+				int ok = 0;
+				for (int y = 0; y < VH; y += 37) {
+					uint32_t c = (uint32_t(y) * 17 + ff * 2731) & 0xFFF;
+					uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
+					uint32_t p = fb[y * VW + 320];
+					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
+					if (dr <= 37 && dg <= 37 && db <= 85) ok++;
+				}
+				if (ok == 7) { tried = 1; f = ff; }
+			}
+			if (!tried) FAIL("coltest: the last frame matches none of the last frames' colours");
+			else for (int y = 0; y < VH; y++) {
+				uint32_t c = (uint32_t(y) * 17 + f * 2731) & 0xFFF;
+				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
+				for (int x = 0; x < VW; x++) {
+					uint32_t p = fb[y * VW + x];
+					if (p == e) { exact++; continue; }
+					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
+					if (dr <= 37 && dg <= 37 && db <= 85) fixedpx++;
+					else if (bad++ < 5) FAIL("coltest moving pixel (%d,%d) is %06X, its colour %06X", x, y, p, e);
+				}
+			}
+			std::printf("coltest moving picture (F = %u): %d pixels exact, %d in fixed colours, %d wrong\n", f, exact, fixedpx, bad);
+			if (fixedpx == 0) FAIL("coltest: the palette never ran out, the fixed colours were not used");
+		}
+	}
 	std::printf("audio: mean |sample| %.1f (left %.1f, right %.1f)\n",
 	            audio_samples ? double(audio_abs_sum) / audio_samples / 2 : 0.0,
 	            audio_samples ? double(audio_abs_l) / audio_samples : 0.0,
@@ -986,22 +1081,27 @@ int main(int argc, char **argv) {
 	}
 
 	// sim/asm/vidtest.s: 320 x 256 picture in the standard PAL display
-	// window; the frame shows 240 of its lines from the one the Picture
-	// position setting gives (0x107C, 0..16; gb_video V_START), all 320
-	// pixels (H_START). Colour 1 yellow, colour 0 blue.
+	// window; the frame holds all 256 of its lines (Picture height, 0x1080,
+	// 1: the core tells the framework to fit them) or 240 from the one the
+	// Picture position setting gives (0x107C, 0..16; gb_video V_START), all
+	// 640 pixels (H_START). Colour 1 yellow, colour 0 blue.
 	if (check_vidtest) {
 		const uint32_t Y = 0xFFFF00, B = 0x0000FF;
-		int vpos = 0;
+		int vpos = 0, fit = 1;
 		for (auto &e : extra_settings) if (e.first == 0x107C) vpos = int(e.second);
+		for (auto &e : extra_settings) if (e.first == 0x1080) fit = int(e.second) & 1;
+		if (bool(top->video_fit) != bool(fit)) FAIL("the core's fit output is %d, the setting %d", int(top->video_fit), fit);
+		if (fit) vpos = 0;
+		const int lines = fit ? 256 : 240;
 		int bad = 0;
-		for (int y = 0; y < VH; y++) for (int x = 0; x < VW; x++) {
+		for (int y = 0; y < lines; y++) for (int x = 0; x < VW; x++) {
 			int line = y + vpos;
 			int lx = x / 2;   // the low resolution pixel, shown twice
 			bool one = (line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4;
 			uint32_t e = one ? Y : B;
 			if (fb[y * VW + x] != e && bad++ < 5) FAIL("vidtest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
 		}
-		if (!bad) std::printf("vidtest picture: all %d pixels as expected (lines %d to %d of the display window)\n", VW * VH, vpos, vpos + VH - 1);
+		if (!bad) std::printf("vidtest picture: all %d pixels as expected (lines %d to %d of the display window)\n", VW * lines, vpos, vpos + lines - 1);
 	}
 
 	if (do_exit) {

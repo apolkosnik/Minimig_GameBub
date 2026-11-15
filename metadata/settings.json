@@ -432,6 +432,23 @@
 				}
 			],
 			"default": "0x0"
+		},
+		{
+			"id": 17,
+			"label": "Picture height (PAL)",
+			"address": "0x00001080",
+			"type": "list",
+			"items": [
+				{
+					"label": "240 lines, even",
+					"value": "0x0"
+				},
+				{
+					"label": "All 256 lines",
+					"value": "0x1"
+				}
+			],
+			"default": "0x1"
 		}
 	]
 }

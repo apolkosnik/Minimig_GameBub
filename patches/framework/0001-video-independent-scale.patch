@@ -1,89 +1,241 @@
 diff --git a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
-index b9c2409..1831c42 100644
+index b9c2409..4c4b43b 100644
 --- a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
 +++ b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
-@@ -17,6 +17,11 @@ class VideoV0(
+@@ -17,9 +17,40 @@ class VideoV0(
    val colorDepthB: Int,
    /// Target frame period, in seconds.
    val framePeriod: Double,
-+  /// If true, the video is scaled onto the screen by the largest whole
-+  /// factor that fits in each direction separately (pixels that are not
-+  /// square: 640 x 240 becomes 640 x 480). If false, by the same factor in
-+  /// both directions.
++  /// If true, the video is scaled onto the screen in each direction
++  /// separately (pixels that are not square): across by the largest whole
++  /// factor that fits, down by the whole factor nearest to screen height /
++  /// video height, showing as many of the video's lines from its first as
++  /// the screen has room for (640 x 256 on a 480 line screen: 640 x 480,
++  /// the first 240 lines twice each), or, while `fit` is high, all of its
++  /// lines over the whole screen height (lines repeated unevenly). If
++  /// false, by the same factor in both directions.
 +  val independentScale: Boolean = false,
++  /// If not 0, `data` is not a colour but an index of this many bits (r in
++  /// its top bits, then g, then b; the colour depths must add up to it)
++  /// into a palette of 24 bit colours that the core fills through
++  /// `palette`. The frame buffers hold the indices; the palette is looked
++  /// up as they are shown, so an entry must keep its colour for as long as
++  /// a frame that uses it may be on screen (a few frames after its last
++  /// use). The top quarter of the indices is a fixed set that is not in the
++  /// palette: with the top two index bits set, the rest is a colour of
++  /// (n + 1) / 3, (n + 1) / 3 and the remaining bits of red, green and blue
++  /// (10 bits: 3, 3, 2).
++  val paletteBits: Int = 0,
  ) extends Bundle {
++  require(paletteBits == 0 || paletteBits == colorDepthR + colorDepthG + colorDepthB)
    val data = Output(ColorRGB.apply(colorDepthR, colorDepthG, colorDepthB))
    val dataEnable = Output(Bool())
+   val vblank = Output(Bool())
+   val hblank = Output(Bool())
++  /// With `independentScale`: show all of the video's lines over the whole
++  /// screen height (may change between frames).
++  val fit = if (independentScale) Some(Output(Bool())) else None
++  /// With `paletteBits`: writes a palette entry (index, 24 bit colour: red
++  /// in bits 23:16, green 15:8, blue 7:0) in any clock that `write` is high.
++  val palette = if (paletteBits > 0) Some(Output(new Bundle {
++    val write = Bool()
++    val index = UInt(paletteBits.W)
++    val color = UInt(24.W)
++  })) else None
+ }
 diff --git a/src/main/scala/platform/handheld/HandheldTop.scala b/src/main/scala/platform/handheld/HandheldTop.scala
-index 4f31a0f..5d171d5 100644
+index 4f31a0f..690c7c2 100644
 --- a/src/main/scala/platform/handheld/HandheldTop.scala
 +++ b/src/main/scala/platform/handheld/HandheldTop.scala
-@@ -211,6 +211,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -203,6 +203,10 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val dataEnable = Bool()
+     val vblank = Bool()
+     val hblank = Bool()
++    val fit = Bool()
++    val paletteWrite = Bool()
++    val paletteIndex = UInt(16.W)
++    val paletteColor = UInt(24.W)
+   })
+   val (
+     videoWidth: Int,
+@@ -211,6 +215,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
      videoColorDepthR: Int,
      videoColorDepthG: Int,
      videoColorDepthB: Int,
 +    videoIndependentScale: Boolean,
++    videoPaletteBits: Int,
    ) = core.getInterface("video") match {
      case Some(video: VideoV0) => {
        coreVideo.dataR := video.data.r
-@@ -226,6 +227,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -219,6 +225,10 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       coreVideo.dataEnable := video.dataEnable
+       coreVideo.hblank := video.hblank
+       coreVideo.vblank := video.vblank
++      coreVideo.fit := video.fit.getOrElse(false.B)
++      coreVideo.paletteWrite := video.palette.map(_.write).getOrElse(false.B)
++      coreVideo.paletteIndex := video.palette.map(_.index).getOrElse(0.U)
++      coreVideo.paletteColor := video.palette.map(_.color).getOrElse(0.U)
+       (
+         video.videoWidth,
+         video.videoHeight,
+@@ -226,6 +236,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
          video.colorDepthR,
          video.colorDepthG,
          video.colorDepthB,
 +        video.independentScale,
++        video.paletteBits,
        )
      }
      case Some(x) => throw new CoreException("Unknown 'video': " + x.getClass())
-@@ -733,16 +735,18 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -233,7 +245,13 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+   }
+ 
+   // Video filter
+-  val videoFilterIn = Wire(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
++  // (A core with a palette: its colours are the palette's 24 bits.)
++  val videoShownDepthR = if (videoPaletteBits > 0) 8 else videoColorDepthR
++  val videoShownDepthG = if (videoPaletteBits > 0) 8 else videoColorDepthG
++  val videoShownDepthB = if (videoPaletteBits > 0) 8 else videoColorDepthB
++  // Clocks from a frame buffer's output to the colour: the palette's read.
++  val videoPaletteLatency = if (videoPaletteBits > 0) 2 else 0
++  val videoFilterIn = Wire(ColorRGB(videoShownDepthR, videoShownDepthG, videoShownDepthB))
+   val videoFilterOut = Wire(ColorRGB(8))
+   val videoFilterReset = Wire(Reset())
+   val (
+@@ -596,6 +614,17 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+   /// Last completed frame
+   val regLastFrameComplete = RegInit(0.U(1.W))
+ 
++  // The core's palette: written by the core, read as a frame buffer is shown.
++  val videoPalette = if (videoPaletteBits > 0) Some(SRAM(
++    1 << videoPaletteBits, UInt(24.W),
++    readPortClocks = Seq(io.clock_av), writePortClocks = Seq(clock), readwritePortClocks = Seq(),
++  )) else None
++  videoPalette.foreach { palette =>
++    palette.writePorts(0).enable := coreVideo.paletteWrite
++    palette.writePorts(0).address := coreVideo.paletteIndex
++    palette.writePorts(0).data := coreVideo.paletteColor
++  }
++
+   val overlayWidth = revision.overlayWidth
+   val overlayHeight = revision.overlayHeight
+   val overlayBits = if (HandheldTop.overlayFullDepth) { 16 } else { 2 }
+@@ -635,9 +664,35 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       framebuffers(i).readPorts(0).enable := framebufferIndex === i.U
+       framebuffers(i).readPorts(0).address := framebufferReadAddress
+     }
+-    val framebufferRead = MuxLookup(framebufferIndex, 0.U)(
++    val framebufferRaw = MuxLookup(framebufferIndex, 0.U)(
+       (0 until 2).map(i => i.U -> RegNext(RegNext(framebuffers(i).readPorts(0).data)))
+-    ).asTypeOf(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
++    )
++    val framebufferRead = videoPalette match {
++      case Some(palette) => {
++        // The index's colour from the palette (videoPaletteLatency clocks),
++        // or of the fixed set in the top quarter of the indices.
++        palette.readPorts(0).enable := true.B
++        palette.readPorts(0).address := framebufferRaw
++        val entry = RegNext(palette.readPorts(0).data)
++        val index = RegNext(RegNext(framebufferRaw))
++        val fixedBits = videoPaletteBits - 2
++        val fixedR = (fixedBits + 1) / 3
++        val fixedG = (fixedBits + 1) / 3
++        val fixedB = fixedBits - fixedR - fixedG
++        val color = Wire(ColorRGB(8))
++        when (index(videoPaletteBits - 1, videoPaletteBits - 2).andR) {
++          color.r := Color.convertRGB(index(fixedBits - 1, fixedBits - fixedR), color.r)
++          color.g := Color.convertRGB(index(fixedB + fixedG - 1, fixedB), color.g)
++          color.b := Color.convertRGB(index(fixedB - 1, 0), color.b)
++        } .otherwise {
++          color.r := entry(23, 16)
++          color.g := entry(15, 8)
++          color.b := entry(7, 0)
++        }
++        color
++      }
++      case None => framebufferRaw.asTypeOf(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
++    }
+ 
+     // Apply core video filter
+     videoFilterIn := framebufferRead
+@@ -664,6 +719,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val overlayInBounds = Wire(Bool())
+     val videoOutput = ColorRGB(8, 8, 8).make(r = 0, g = 0, b = 0)
+     val darkenVideo = XpmCdcSingle(clock, controlVideoFilter.darken)
++    val fitVideo = XpmCdcSingle(clock, coreVideo.fit)
+     when (framebufferInBounds) {
+       val color = framebufferColor.convertTo(videoOutput)
+       when (darkenVideo) {
+@@ -733,16 +789,26 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
  
        // Scale and center framebuffer within output video.
        val videoScale = (screenWidth / videoWidth).min(screenHeight / videoHeight)
 -      val videoOffsetX = (screenWidth - (videoWidth * videoScale)) / 2
 -      val videoOffsetY = (screenHeight - (videoHeight * videoScale)) / 2
+-      val framebufferReadDelay = 3 /* reading */ + videoFilterLatency
 +      val videoScaleX = if (videoIndependentScale) screenWidth / videoWidth else videoScale
-+      val videoScaleY = if (videoIndependentScale) screenHeight / videoHeight else videoScale
++      val videoScaleY = if (videoIndependentScale) {
++        math.max(1, math.round(screenHeight.toFloat / videoHeight))
++      } else videoScale
++      // Lines shown at that factor, and all of them over the whole height.
++      val videoLines = videoHeight.min(screenHeight / videoScaleY)
++      val fitDivisor = BigInt(videoHeight).gcd(BigInt(screenHeight)).toInt
 +      val videoOffsetX = (screenWidth - (videoWidth * videoScaleX)) / 2
-+      val videoOffsetY = (screenHeight - (videoHeight * videoScaleY)) / 2
-       val framebufferReadDelay = 3 /* reading */ + videoFilterLatency
++      val videoOffsetY = (screenHeight - (videoLines * videoScaleY)) / 2
++      val framebufferReadDelay = 3 /* reading */ + videoPaletteLatency + videoFilterLatency
++      val videoLine = Mux(fitVideo,
++        (videoY * (videoHeight / fitDivisor).U) / (screenHeight / fitDivisor).U,
++        (videoY - videoOffsetY.U) / videoScaleY.U)
        framebufferReadAddress :=
 -        (((videoY - videoOffsetY.U) / videoScale.U) * videoWidth.U) +
 -          ((videoX - videoOffsetX.U + framebufferReadDelay.U) / videoScale.U)
-+        (((videoY - videoOffsetY.U) / videoScaleY.U) * videoWidth.U) +
++        (videoLine * videoWidth.U) +
 +          ((videoX - videoOffsetX.U + framebufferReadDelay.U) / videoScaleX.U)
        framebufferInBounds := videoX >= videoOffsetX.U &&
 -        videoX < (videoOffsetX + (videoWidth * videoScale)).U &&
-+        videoX < (videoOffsetX + (videoWidth * videoScaleX)).U &&
-         videoY >= videoOffsetY.U &&
+-        videoY >= videoOffsetY.U &&
 -        videoY < (videoOffsetY + (videoHeight * videoScale)).U
-+        videoY < (videoOffsetY + (videoHeight * videoScaleY)).U
++        videoX < (videoOffsetX + (videoWidth * videoScaleX)).U &&
++        (fitVideo || (videoY >= videoOffsetY.U &&
++        videoY < (videoOffsetY + (videoLines * videoScaleY)).U))
  
        // Scale overlay
        val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
-@@ -777,19 +781,21 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+@@ -777,19 +843,29 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
  
        // Scale and center framebuffer without output video.
        val videoScale = (screenWidth / videoWidth).min(screenHeight / videoHeight)
 -      val videoOffsetX = (screenWidth - (videoWidth * videoScale)) / 2 + revision.displayOffsetX
 -      val videoOffsetY = (screenHeight - (videoHeight * videoScale)) / 2
+-      val framebufferReadDelay = 3 /* reading */ + videoFilterLatency
 +      val videoScaleX = if (videoIndependentScale) screenWidth / videoWidth else videoScale
-+      val videoScaleY = if (videoIndependentScale) screenHeight / videoHeight else videoScale
++      val videoScaleY = if (videoIndependentScale) {
++        math.max(1, math.round(screenHeight.toFloat / videoHeight))
++      } else videoScale
++      // Lines shown at that factor, and all of them over the whole height.
++      val videoLines = videoHeight.min(screenHeight / videoScaleY)
++      val fitDivisor = BigInt(videoHeight).gcd(BigInt(screenHeight)).toInt
 +      val videoOffsetX = (screenWidth - (videoWidth * videoScaleX)) / 2 + revision.displayOffsetX
-+      val videoOffsetY = (screenHeight - (videoHeight * videoScaleY)) / 2
-       val framebufferReadDelay = 3 /* reading */ + videoFilterLatency
++      val videoOffsetY = (screenHeight - (videoLines * videoScaleY)) / 2
++      val framebufferReadDelay = 3 /* reading */ + videoPaletteLatency + videoFilterLatency
        val framebufferReadDelayX = if (revision.displayRotate) 0 else framebufferReadDelay
        val framebufferReadDelayY = if (revision.displayRotate) framebufferReadDelay else 0
++      val videoLine = Mux(fitVideo,
++        ((dpiY + framebufferReadDelayY.U) * (videoHeight / fitDivisor).U) / (screenHeight / fitDivisor).U,
++        (dpiY - videoOffsetY.U + framebufferReadDelayY.U) / videoScaleY.U)
        framebufferReadAddress :=
 -        (((dpiY - videoOffsetY.U + framebufferReadDelayY.U) / videoScale.U) * videoWidth.U) +
 -          ((dpiX - videoOffsetX.U + framebufferReadDelayX.U) / videoScale.U)
-+        (((dpiY - videoOffsetY.U + framebufferReadDelayY.U) / videoScaleY.U) * videoWidth.U) +
++        (videoLine * videoWidth.U) +
 +          ((dpiX - videoOffsetX.U + framebufferReadDelayX.U) / videoScaleX.U)
        framebufferInBounds :=
          dpiX >= videoOffsetX.U &&
 -        dpiX < (videoOffsetX + (videoWidth * videoScale)).U &&
-+        dpiX < (videoOffsetX + (videoWidth * videoScaleX)).U &&
-         dpiY >= videoOffsetY.U &&
+-        dpiY >= videoOffsetY.U &&
 -        dpiY < (videoOffsetY + (videoHeight * videoScale)).U
-+        dpiY < (videoOffsetY + (videoHeight * videoScaleY)).U
++        dpiX < (videoOffsetX + (videoWidth * videoScaleX)).U &&
++        (fitVideo || (dpiY >= videoOffsetY.U &&
++        dpiY < (videoOffsetY + (videoLines * videoScaleY)).U))
  
        // Scale overlay
        val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
