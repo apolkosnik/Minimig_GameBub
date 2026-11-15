@@ -287,6 +287,13 @@ needed; `sim/build.sh` first):
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
 
+`sim/gls/run_palette_gls.sh` (Vivado 2018.3) synthesizes `gb_palette` for the board's
+FPGA and runs the netlist next to the RTL in xsim: a fade of 256 colours over 16 frames,
+then a still picture; every clock must match and the still frames must need no fixed
+colours. Run it after any change to `gb_palette`: v0.6 to v0.6.3 passed every Verilator
+test while Vivado had dropped the palette RAM's address choice, and on the FPGA no colour
+was found again (dithering and flicker in palette mode).
+
 Results of the last run (Kickstart 1.3 rev 34.5, 3.1 rev 40.68 A1200, WhichAmiga 1.4):
 all fifteen pass. Kickstart 1.3 shows its insert disk picture, boots WhichAmiga's OFS disk
 to the CLI; Kickstart 3.1 boots the FFS disk and WhichAmiga reports a 68EC020, AGA Lisa

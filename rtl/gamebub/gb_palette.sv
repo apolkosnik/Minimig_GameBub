@@ -60,13 +60,17 @@ module gb_palette
 
 localparam [9:0] ENTRIES = 10'd768;
 
-// the palette as the framework has it (port A: first candidate and writes,
-// port B: second candidate)
-reg [23:0] pal [0:1023];
-reg  [9:0] a_addr;
-reg        a_we;
+// the palette as the framework has it, twice: one copy for each candidate,
+// each a block RAM with one write port (new entries) and one read port.
+// (One RAM with a port that wrote new entries and read the first
+// candidate, its address chosen between the two: Vivado 2018.3 left the
+// choice out and wrote new colours over the candidate's entry, so on the
+// FPGA no colour was found again and the entries ran out at once; every
+// simulation of the RTL was right. sim/gls/run_palette_gls.sh compares the
+// netlist with the RTL.)
+reg [23:0] pal1 [0:1023];
+reg [23:0] pal2 [0:1023];
 reg [23:0] a_q, b_q;
-reg  [9:0] b_addr;
 
 // colour -> entry, two ways
 reg  [9:0] ht1 [0:2047];
@@ -76,18 +80,24 @@ reg  [2:0] age [0:1023];
 
 integer i;
 initial begin
-	for (i = 0; i < 1024; i = i + 1) begin pal[i] = 24'd0; age[i] = 3'd7; end
+	for (i = 0; i < 1024; i = i + 1) begin pal1[i] = 24'd0; pal2[i] = 24'd0; age[i] = 3'd7; end
 	for (i = 0; i < 2048; i = i + 1) begin ht1[i] = 10'd0; ht2[i] = 10'd0; end
 end
 
-// stage 1: the pixel's colour, its two candidates
+// stage 1: the pixel's colour, its two candidates. The tables are block
+// RAM, read as the pixel comes in (by hashes of the incoming colour).
 reg        v1, v2;
 reg [23:0] c1, c2;
 reg  [1:0] bayer1, bayer2;
-wire [10:0] h1 = c1[10:0] ^ c1[21:11] ^ {9'd0, c1[23:22]};
-wire [10:0] h2 = {c1[4:0], c1[23:18]} ^ {c1[12:5], c1[15:13]} ^ {c1[17:16], 9'd0};
-wire  [9:0] cand1 = ht1[h1];
-wire  [9:0] cand2 = ht2[h2];
+wire [23:0] cin = {in_r, in_g, in_b};
+wire [10:0] h1_in = cin[10:0] ^ cin[21:11] ^ {9'd0, cin[23:22]};
+wire [10:0] h2_in = {cin[4:0], cin[23:18]} ^ {cin[12:5], cin[15:13]} ^ {cin[17:16], 9'd0};
+reg  [10:0] h1, h2;
+reg   [9:0] ht1_q, ht2_q;      // the tables' read registers
+reg         fwd1, fwd2;        // ... or the entry given away as they were read
+reg   [9:0] fwd_idx;
+wire  [9:0] cand1 = fwd1 ? fwd_idx : ht1_q;
+wire  [9:0] cand2 = fwd2 ? fwd_idx : ht2_q;
 reg  [10:0] h1_2, h2_2;
 reg   [9:0] cand1_2, cand2_2;
 
@@ -120,17 +130,14 @@ wire [10:0] qg = c2[15:8]  * 3'd7 + {3'd0, thr};
 wire  [9:0] qb = c2[7:0]   * 2'd3 + {2'd0, thr};
 wire  [9:0] fixed_idx = {2'b11, qr[10:8], qg[10:8], qb[9:8]};
 
-always @* begin
-	a_we   = alloc;
-	a_addr = alloc ? free_idx : cand1;
-	b_addr = cand2;
-end
-
 always @(posedge clk) begin
-	if (a_we) pal[a_addr] <= c2;
-	a_q <= pal[a_addr];
+	if (alloc) pal1[free_idx] <= c2;
+	a_q <= pal1[cand1];
 end
-always @(posedge clk) b_q <= pal[b_addr];
+always @(posedge clk) begin
+	if (alloc) pal2[free_idx] <= c2;
+	b_q <= pal2[cand2];
+end
 
 always @(posedge clk) begin
 	out_de <= 1'b0;
@@ -139,8 +146,17 @@ always @(posedge clk) begin
 	// stage 1
 	v1 <= in_de;
 	if (in_de) begin
-		c1     <= {in_r, in_g, in_b};
+		c1     <= cin;
 		bayer1 <= in_bayer;
+		h1     <= h1_in;
+		h2     <= h2_in;
+		// the tables as they are after this clock: an entry given away in
+		// this very clock (stage 2 below) is passed on to the new pixel
+		ht1_q   <= ht1[h1_in];
+		ht2_q   <= ht2[h2_in];
+		fwd1    <= alloc && h1_2 == h1_in;
+		fwd2    <= alloc && h2_2 == h2_in;
+		fwd_idx <= free_idx;
 	end
 
 	// stage 2: registered with the palette's read
