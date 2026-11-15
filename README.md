@@ -79,8 +79,7 @@ released when the game goes on.
 | Audio filter | the Amiga 500's fixed 4.4 kHz output filter |
 | Stereo mix | how much of each channel goes into the other (None, 12 %, 25 %, Mono) |
 | X / Y / Start / Select key | Space, Return, Esc, F1, F2, Help, Del or P |
-| Picture height (PAL) | All 256 lines (fitted to the screen, the default) or 240 lines, even (each line exactly two rows, 16 lines cut) |
-| Picture position (PAL) | with 240 lines: which of the 256 PAL lines are shown, Top (the default), Middle, Bottom or in between |
+| Picture height (PAL) | All 256 lines (fitted to the screen, the default) or 240 lines, even (each line exactly two rows, the bottom 16 lines cut) |
 
 Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
 **Reset (apply)**; the others apply at once.
@@ -131,8 +130,8 @@ unselected ones quietly.
   so an 80 column Workbench or CLI is sharp; a low resolution pixel is two pixels wide.
   The screen has 480 rows. **Picture height (PAL)** chooses between all 256 PAL lines
   fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
-  is cut off, lines are slightly uneven) and 240 lines, each exactly two rows
-  (**Picture position** chooses which 240). NTSC's 200 lines always fit, two rows each.
+  is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
+  (the firmware takes 16 settings at most, so there is none for which 240). NTSC's 200 lines always fit, two rows each.
   Interlaced screens show one field's lines.
 * Colour: two 640 x 256 frame buffers fit the FPGA's block RAM at 10 bits per pixel, not
   at the 24 of an AGA colour. A pixel is therefore stored as the index of its colour in a
