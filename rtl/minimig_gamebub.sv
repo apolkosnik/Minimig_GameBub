@@ -13,7 +13,7 @@
 //                              gb_ide (hard disk images on the Gayle IDE
 //                              port, on-demand file commands)
 //                              gb_host (Game Bub MCU: files, settings)
-//   video_mixer / scaler       gb_video (320 x 240 into the framework)
+//   video_mixer / scaler       gb_video (640 x 240 into the framework)
 //   audio filters              gb_audio
 //   joysticks, PS/2            gb_input (Game Bub controllers, InputExtendedV0)
 //
@@ -37,9 +37,9 @@ module minimig_gamebub
 	output logic        clocks_clockOutDisplay,
 	output logic        clocks_clockOutSpi,
 	output logic        clocks_locked,
-	output logic [4:0]  video_data_r,
-	output logic [5:0]  video_data_g,
-	output logic [4:0]  video_data_b,
+	output logic [2:0]  video_data_r,
+	output logic [3:0]  video_data_g,
+	output logic [2:0]  video_data_b,
 	output logic        video_dataEnable,
 	output logic        video_vblank,
 	output logic        video_hblank,

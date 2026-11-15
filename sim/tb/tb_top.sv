@@ -42,9 +42,9 @@ module tb_top
 	input  [47:0] sticks,
 
 	// VideoV0 / AudioV0
-	output  [4:0] video_r,
-	output  [5:0] video_g,
-	output  [4:0] video_b,
+	output  [2:0] video_r,
+	output  [3:0] video_g,
+	output  [2:0] video_b,
 	output        video_de,
 	output        video_hblank,
 	output        video_vblank,

@@ -31,12 +31,16 @@ class MinimigCore extends Module with Core {
       clockSpiHz = (mmcmVcoHz / 5).toInt,
     )
     val video = new VideoV0(
-      videoWidth = 320,
+      // 640 high resolution pixels, shown one to one across and doubled
+      // down (patches/framework: independentScale). Two frame buffers of
+      // 640 x 240 fit the block RAM at 10 bits per pixel.
+      videoWidth = 640,
       videoHeight = 240,
-      colorDepthR = 5,
-      colorDepthG = 6,
-      colorDepthB = 5,
+      colorDepthR = 3,
+      colorDepthG = 4,
+      colorDepthB = 3,
       framePeriod = framePeriod,
+      independentScale = true,
     )
     val audio = new AudioV0()
     val host = new HostV0()

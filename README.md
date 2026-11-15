@@ -125,13 +125,23 @@ unselected ones quietly.
 * The 68030, RTG, Zorro III RAM and the expansion cards of the MiSTer core (Toccata,
   A2065, CDTV) are not built: on MiSTer they use its DDR3 memory or its ARM side. The
   core uses one of the two SDRAM chips (32 MB), which holds everything it needs.
-* The picture is the framework's 320 x 240: the 320 low resolution pixels of the standard
-  display window (high resolution pixels are averaged in pairs, so a 640 pixel wide
-  Workbench is readable but soft) and 240 of its lines. In PAL that is the top 240 of 256;
-  **Picture position** chooses others. An NTSC Workbench (200 lines) fits whole.
+* The picture is 640 x 240, shown one to one across and doubled down (640 x 480 of the
+  handheld's 800 x 480 panel, or of HDMI): all 640 high resolution pixels of the standard
+  display window, so an 80 column Workbench or CLI is sharp; a low resolution pixel is
+  two pixels wide. Of the lines, 240: in PAL the top 240 of 256 (**Picture position**
+  chooses others); NTSC's 200 fit whole. Interlaced screens show one field's lines.
+* Colour: two 640 x 240 frame buffers fit the FPGA's block RAM at 10 bits per pixel (3
+  red, 4 green, 3 blue), so colours are dithered (a 2 x 2 pattern). Black, white and the
+  green of every OCS / ECS colour are exact; their red and blue are exact or alternate
+  between two neighbouring levels inside each low resolution pixel. AGA's 24 bit colours
+  are dithered to that. v0.4.1 was the last 320 x 240 build with 16 bit colour.
+* The framework scales a core's picture by the same factor in both directions;
+  `patches/framework/` adds scaling each direction separately, which this picture needs
+  (`tools/patch_framework.sh` applies it to the submodule).
 * PAL runs at 50 Hz on the 60 Hz panel.
-* **Not yet run on a Game Bub.** Everything is tested in simulation (see *Simulation*);
-  the bitstream builds and meets timing.
+* Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
+  (rev 4) with a floppy image; hard disks, the dock keyboard and mouse are tested in
+  simulation (see *Simulation*) and by the firmware's unit tests.
 
 ## How it works
 
@@ -159,7 +169,7 @@ unselected ones quietly.
 | Main_MiSTer minimig_fdd.cpp | `gb_floppy`: the same track encoding, sync word handling, header and data checks in hardware |
 | Main_MiSTer ide.cpp | `gb_ide`: the same commands, geometry rules and virtual RDB in hardware, on the management port of the unchanged `ide.sv`; sectors through the framework's on-demand file commands |
 | hps_io / hps_ext | `gb_io_master`: drives the same IO_UIO / IO_FPGA / IO_STROBE bus |
-| video_mixer, scaler | `gb_video`: 320 x 240 window into the framework's frame buffer |
+| video_mixer, scaler | `gb_video`: 640 x 240 window into the framework's frame buffer, dithered to 10 bits |
 | audio_out | `gb_audio`: A500 filter, stereo mix |
 | joysticks, PS/2 | `gb_input`: buttons, mouse emulation, keys |
 
@@ -228,6 +238,7 @@ and Python 3.12 or 3.13.
 ```
 git clone --recurse-submodules https://github.com/apolkosnik/Minimig_GameBub
 cd Minimig_GameBub
+tools/patch_framework.sh
 ./mill root.buildCore --target gamebub_rev4
 ```
 
@@ -258,7 +269,7 @@ needed; `sim/build.sh` first):
 
 | Test | |
 |---|---|
-| video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 320 x 240 frame is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
+| video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 640 x 240 frame is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
 | input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |

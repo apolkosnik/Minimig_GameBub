@@ -75,7 +75,7 @@ static int failures = 0;
 #define FAIL(...) do { std::fprintf(stderr, "FAIL: " __VA_ARGS__); std::fprintf(stderr, "\n"); failures++; } while (0)
 
 // -------------------------------------------------------------- video
-static const int VW = 320, VH = 240;
+static const int VW = 640, VH = 240;
 static std::vector<uint32_t> fb(VW * VH);
 static int fb_x = 0, fb_y = 0;
 static bool prev_hblank = true, prev_vblank = true;
@@ -90,9 +90,11 @@ static int frames_changed = 0;
 static void save_frame(const std::string &path) {
 	FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) return;
-	std::fprintf(f, "P6\n%d %d\n255\n", VW, VH);
-	for (int i = 0; i < VW * VH; i++) {
-		uint8_t px[3] = { uint8_t(fb[i] >> 16), uint8_t(fb[i] >> 8), uint8_t(fb[i]) };
+	// as the framework shows it: every line twice
+	std::fprintf(f, "P6\n%d %d\n255\n", VW, 2 * VH);
+	for (int y = 0; y < 2 * VH; y++) for (int x = 0; x < VW; x++) {
+		uint32_t p = fb[(y / 2) * VW + x];
+		uint8_t px[3] = { uint8_t(p >> 16), uint8_t(p >> 8), uint8_t(p) };
 		std::fwrite(px, 1, 3, f);
 	}
 	std::fclose(f);
@@ -106,9 +108,10 @@ static void video_sample() {
 
 	if (de && fb_x < VW && fb_y < VH) {
 		uint32_t r = top->video_r, g = top->video_g, b = top->video_b;
-		r = (r << 3) | (r >> 2);
-		g = (g << 2) | (g >> 4);
-		b = (b << 3) | (b >> 2);
+		// 3 + 4 + 3 bits to 8 as the framework does (the bits repeated)
+		r = (r << 5) | (r << 2) | (r >> 1);
+		g = (g << 4) | g;
+		b = (b << 5) | (b << 2) | (b >> 1);
 		fb[fb_y * VW + fb_x] = (r << 16) | (g << 8) | b;
 	}
 	if (vb_edge) {
@@ -993,7 +996,8 @@ int main(int argc, char **argv) {
 		int bad = 0;
 		for (int y = 0; y < VH; y++) for (int x = 0; x < VW; x++) {
 			int line = y + vpos;
-			bool one = (line % 16 == 0) || line == 255 || x < 16 || x >= 304 || ((x - 16) % 8) < 4;
+			int lx = x / 2;   // the low resolution pixel, shown twice
+			bool one = (line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4;
 			uint32_t e = one ? Y : B;
 			if (fb[y * VW + x] != e && bad++ < 5) FAIL("vidtest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
 		}
