@@ -36,14 +36,9 @@ DEFAULT_COMMIT = "7d5d3c2f685af4ce3eb361c22893fccd153f2d87"
 
 # Upstream files used by the Game Bub core (paths relative to upstream root).
 # Expansion hardware that needs the MiSTer HPS or DDR3 (A2065, Toccata, CDTV,
-# Akiko/CD32, RTG, MT32-pi, IDE fast path) is intentionally not imported.
+# Akiko/CD32, MT32-pi, IDE fast path) is intentionally not imported. RTG's
+# registers (rtg.v) are; its display is the port's own (rtl/gamebub).
 FILES = [
-    "rtl/MiSTerFloppyFifo.v",
-    "rtl/MiSTerFloppyPLL.v",
-    "rtl/MiSTerFloppyRAWIO.v",
-    "rtl/MiSTerFloppySHUGART.v",
-    "rtl/MiSTerFloppyVirtualFluxDrive.v",
-    "rtl/MiSTerFloppyi2c.v",
     "rtl/agnus.v",
     "rtl/agnus_audiodma.v",
     "rtl/agnus_beamcounter.v",
@@ -90,6 +85,12 @@ FILES = [
     "rtl/minimig_m68k_bridge.v",
     "rtl/minimig_sram_bridge.v",
     "rtl/minimig_syscontrol.v",
+    "rtl/MiSTerFloppyFifo.v",
+    "rtl/MiSTerFloppyi2c.v",
+    "rtl/MiSTerFloppyPLL.v",
+    "rtl/MiSTerFloppyRAWIO.v",
+    "rtl/MiSTerFloppySHUGART.v",
+    "rtl/MiSTerFloppyVirtualFluxDrive.v",
     "rtl/paula.v",
     "rtl/paula_audio.v",
     "rtl/paula_audio_channel.v",
@@ -99,12 +100,13 @@ FILES = [
     "rtl/paula_floppy_fifo.v",
     "rtl/paula_intcontroller.v",
     "rtl/paula_uart.v",
+    "rtl/rtg.v",
     "rtl/sdram_ctrl.v",
-    "rtl/userio.v",
-    "rtl/tg68k/TG68K_Pack.vhd",
     "rtl/tg68k/TG68K_ALU.vhd",
     "rtl/tg68k/TG68K_MMU030.vhd",
+    "rtl/tg68k/TG68K_Pack.vhd",
     "rtl/tg68k/TG68KdotC_Kernel.vhd",
+    "rtl/userio.v",
 ]
 
 # Files that are needed by the transformations but are not copied themselves.
