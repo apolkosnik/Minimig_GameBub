@@ -81,14 +81,17 @@ module tb_top
 	output [12:0] dbg_dmacon,
 	output [20:1] dbg_cop_addr,      // copper's chip address pointer
 	output        dbg_sd_clk,
-	output [38:0] dbg_sd_bus
+	output [39:0] dbg_sd_bus
 );
 
-wire        sd_clk, sd_cke, sd_cs, sd_ras, sd_cas, sd_we, sd_oe;
+wire        sd_clk, sd_ras, sd_cas, sd_we, sd_oe;
+wire  [1:0] sd_cke, sd_cs;      // one per chip
 wire  [1:0] sd_dqm, sd_ba;
 wire [12:0] sd_a;
 wire [15:0] sd_dout, sd_din, mdl_dout;
 wire        mdl_oe;
+wire [15:0] mdl1_dout;
+wire        mdl1_oe;
 
 minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 (
@@ -188,11 +191,12 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.sdram_dataDir           (sd_oe)
 );
 
+// the two SDRAM chips on the one bus: chip 0 (sdram) and chip 1 (sdram1)
 sdram_sim sdram
 (
 	.clk       (sd_clk),
-	.cke       (sd_cke),
-	.cs_n      (sd_cs),
+	.cke       (sd_cke[0]),
+	.cs_n      (sd_cs[0]),
 	.ras_n     (sd_ras),
 	.cas_n     (sd_cas),
 	.we_n      (sd_we),
@@ -205,9 +209,42 @@ sdram_sim sdram
 	.dq_out_en (mdl_oe)
 );
 
+sdram_sim sdram1
+(
+	.clk       (sd_clk),
+	.cke       (sd_cke[1]),
+	.cs_n      (sd_cs[1]),
+	.ras_n     (sd_ras),
+	.cas_n     (sd_cas),
+	.we_n      (sd_we),
+	.ba        (sd_ba),
+	.a         (sd_a),
+	.dqm       (sd_dqm),
+	.dq_in     (sd_dout),
+	.dq_in_en  (sd_oe),
+	.dq_out    (mdl1_dout),
+	.dq_out_en (mdl1_oe)
+);
+
+// both chips driving the data bus at once (counted as an error of chip 0)
+always @(posedge sd_clk)
+	if (mdl_oe && mdl1_oe) begin
+		sdram.errors = sdram.errors + 1;
+		if (sdram.errors <= 20) $display("[sdram] ERROR at %0t: both chips drive the data bus", $time);
+	end
+
 // the bus as the pins see it: what the SDRAM drives, else what the FPGA
 // drives (the framework's top level makes the tri-state buffer)
-assign sd_din = mdl_oe ? mdl_dout : sd_oe ? sd_dout : 16'hFFFF;
+assign sd_din = mdl_oe ? mdl_dout : mdl1_oe ? mdl1_dout : sd_oe ? sd_dout : 16'hFFFF;
+
+`ifdef RAMTRACE
+// (debug) the CPU's RAM port accesses to the second SDRAM chip, at the end
+// of each (ramready while the port is selected)
+always @(posedge dut.clk_sys)
+	if (dut.ram_sel && dut.ram_ready && dut.cpu_sdram_addr[25])
+		$display("RAM %07X %s st%0d uds%b lds%b din %04X dout %04X", {dut.cpu_sdram_addr, 1'b0},
+		         (dut.cpu_state == 3) ? "W" : "R", dut.cpu_state, dut.ram_uds, dut.ram_lds, dut.ram_din, dut.ram_dout);
+`endif
 
 assign dbg_cpu_rst   = dut.cpu_rst;
 assign dbg_pixel_color = dut.video.palette.c2;

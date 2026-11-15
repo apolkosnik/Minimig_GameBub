@@ -113,8 +113,8 @@ module minimig_gamebub
 	input  logic [7:0]  input_slots_1_analog_leftTrigger,
 	input  logic [7:0]  input_slots_1_analog_rightTrigger,
 	output logic        sdram_clock,
-	output logic        sdram_cke,
-	output logic        sdram_cs,
+	output logic [1:0]  sdram_cke,
+	output logic [1:0]  sdram_cs,
 	output logic        sdram_ras,
 	output logic        sdram_cas,
 	output logic        sdram_we,
@@ -494,10 +494,10 @@ wire  [2:0] cachecfg;
 wire  [6:0] memcfg;
 wire        bootrom;
 
-// Only 68000, 68010 and 68EC020 are offered: the 68030 needs the 32 bit
-// DDR3 fast RAM path, a full 68020 the Zorro III/RTG boards. Folding the
-// other encodings here lets synthesis drop the 68030 MMU.
-wire  [4:0] cpucfg_m = {2'b00, cpucfg[1], (cpucfg[1:0] == 2'b10) ? 2'b11 : cpucfg[1:0]};
+// 68000, 68010, 68EC020, 68020 and 68030 (with its MMU). The 68020 and
+// 68030 address 32 bits: Zorro III RAM and the RTG board's memory are in
+// the second SDRAM chip (see the SDRAM section).
+wire  [4:0] cpucfg_m = cpucfg;
 
 wire cpu_type = cpucfg_m[1];
 reg  cpu_ph1;
@@ -602,7 +602,7 @@ cpu_wrapper cpu_wrapper
 	.cpucfg       (cpucfg_m        ),
 	.ntsc         (ntsc            ),
 	.cachecfg     (cachecfg        ),
-	.fastramcfg   ({1'b0, memcfg[5:4]}),   // Zorro II RAM only
+	.fastramcfg   (memcfg[6:4]     ),   // 0-3 Zorro II RAM, 6: Zorro III 16 MB (8 MB Zorro II on a 24 bit CPU)
 	.bootrom      (bootrom         ),
 
 	.toccata_ena  (toccata_ena     ),
@@ -659,10 +659,16 @@ wire        _ram_ble;      // sram lower byte select
 wire        _ram_we;       // sram write enable
 wire        _ram_oe;       // sram output enable
 
-// CPU RAM: main memory as on MiSTer, Zorro II RAM ($200000-$9FFFFF,
-// ramaddr[28] set) in the next 8 MB
+// CPU RAM. Chip 0: main memory as on MiSTer, Zorro II RAM ($200000-$9FFFFF,
+// ramaddr[28] set) in the next 8 MB. Chip 1 (cpu_sdram_addr[25]): the RTG
+// board's 8 MB of video memory (ramaddr[28:23] = 001110) at 0, the 16 MB
+// Zorro III board (ramaddr[27] set) at 16 MB.
+wire        z3_sel   = ram_addr[27] & ~ram_addr[28];
+wire        rtg_sel  = (ram_addr[28:23] == 6'b001110);
 wire        zram_sel = |ram_addr[28:26];
-wire [24:1] cpu_sdram_addr = {1'b0, zram_sel, ram_addr[22:1]};
+wire [25:1] cpu_sdram_addr = z3_sel  ? {2'b11, ram_addr[23:1]} :
+                             rtg_sel ? {3'b100, ram_addr[22:1]} :
+                                       {2'b00, zram_sel, ram_addr[22:1]};
 
 sdram_ctrl ram1
 (

@@ -239,7 +239,13 @@ localparam [3:0]
 	CPU_SM_FILL3 = 4'd8,
 	CPU_SM_FILL4 = 4'd9,
 	CPU_SM_FILLW = 4'd10,
-	CPU_SM_INVAL = 4'd11;
+	CPU_SM_INVAL = 4'd11,
+	CPU_SM_DRAIN = 4'd12;   // Game Bub port: the rest of an uncached burst
+
+// Game Bub port: an uncached read takes the first word of the SDRAM's four
+// word burst; the other three still arrive (sdr_read_ack) and must not be
+// taken as the answer to the next read
+reg   [1:0] drain_cnt;
 
 assign cpu_idle = (cpu_sm_state == CPU_SM_IDLE);
 
@@ -456,7 +462,8 @@ always @ (posedge clk) begin
           cpu_ack <= 1'b1;
           if (cache_inhibit || (!cpu_ir && !cc_den)) begin
             fill_active  <= 1'b0;
-            cpu_sm_state <= CPU_SM_FILLW;
+            drain_cnt    <= 2'd3;
+            cpu_sm_state <= CPU_SM_DRAIN;
           end else begin
             // update tag ram
             if (cpu_ir) begin
@@ -539,6 +546,12 @@ always @ (posedge clk) begin
             fill_active  <= 1'b0;
             cpu_sm_state <= CPU_SM_IDLE;
           end
+        end
+      end
+      CPU_SM_DRAIN : begin
+        if (sdr_read_ack) begin
+          drain_cnt <= drain_cnt - 2'd1;
+          if (drain_cnt == 2'd1) cpu_sm_state <= CPU_SM_FILLW;
         end
       end
       CPU_SM_INVAL : begin

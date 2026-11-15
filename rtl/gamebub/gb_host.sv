@@ -178,8 +178,8 @@ localparam [20:0] MAX_IMAGE = 21'h100000;
 
 // ------------------------------------------------------------- settings
 reg  [7:0] set_chipset;   // 0 OCS, 1 ECS, 2 AGA
-reg  [7:0] set_cpu;       // 0 68000, 1 68010, 2 68EC020
-reg  [7:0] set_memory;    // preset 0..7
+reg  [7:0] set_cpu;       // 0 68000, 1 68010, 2 68EC020, 3 68020, 4 68030
+reg  [7:0] set_memory;    // preset 0..8
 reg  [7:0] set_video;     // 0 PAL, 1 NTSC
 reg  [7:0] set_drives;    // number of drives - 1
 reg  [7:0] set_fspeed;    // 0 normal, 1 turbo
@@ -208,8 +208,9 @@ always @* begin
 	// XXGEANT: G AGA, E ECS, A A1000 boot ROM, N NTSC, T turbo
 	cfg_chipset  = {1'b0, set_chipset == 8'd2, set_chipset == 8'd1, 1'b0, set_video[0], 1'b0};
 	// SSPCCCTT: 68EC020 = TT 11 with P (A1200 speed)
-	cfg_cpu      = (set_cpu == 8'd2) ? 8'h23 : (set_cpu == 8'd1) ? 8'h01 : 8'h00;
-	cfg_memory   = mem_preset(set_memory[2:0]);
+	cfg_cpu      = (set_cpu == 8'd4) ? 8'h02 : (set_cpu == 8'd3) ? 8'h03 :
+	               (set_cpu == 8'd2) ? 8'h23 : (set_cpu == 8'd1) ? 8'h01 : 8'h00;
+	cfg_memory   = (set_memory == 8'd8) ? 8'hA3 : mem_preset(set_memory[2:0]);
 	cfg_floppy   = {2'b00, set_drives[1:0], set_fspeed[0]};
 	cfg_audmix   = set_stereo[1:0];
 	audio_filter = set_filter[0];

@@ -92,7 +92,7 @@ module cpu_wrapper
 	output reg [31:0] nmi_addr,
 
 	output reg        z2ram_ena,
-	output reg  [4:0] z3ram_base0,
+	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units
 	output reg        z3ram_ena0,
 	output reg  [3:0] z3ram_base1,
 	output reg        z3ram_ena1,
@@ -775,7 +775,9 @@ always @(*) begin
 	else if(ac_memcard[2]) begin
 		case (chip_addr[6:1])
 			6'b000000: autocfg_data = 4'b1010;	// Zorro-III card, add mem, no ROM
-			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0011 : 4'b0100; // 128MB or 256MB, extended
+			// Game Bub port: the 128 MB board is a 16 MB board (in the
+			// second SDRAM chip), extended size code 000
+			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0000 : 4'b0100; // 16MB or 256MB, extended
 			6'b000010: autocfg_data = 4'b1110;	// ProductID=0x10 (only setting upper nibble)
 			6'b000100: autocfg_data = 4'b0000;	// Memory card, not silenceable, Extended size, reserved.
 			6'b000101: autocfg_data = 4'b1111;	// 0000 - logical size matches physical size TODO change this to 0001, so it is autosized by the OS, WHEN it will be 24MB.
@@ -860,7 +862,7 @@ always @(posedge clk) begin
 					ac_memcard <= {ac_memcard[0], ac_memcard[0], 1'b0};
 				end
 				else begin
-					z3ram_base0 <= cpu_dout[15:11]; //128MB chunk
+					z3ram_base0 <= cpu_dout[15:8]; //16MB chunk (Game Bub port)
 					z3ram_ena0 <= 1;
 					ac_memcard <= 0;
 				end

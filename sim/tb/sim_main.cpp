@@ -712,6 +712,7 @@ int main(int argc, char **argv) {
 	std::string save_hdf;
 	double expect_lr = -1;   // expected mean |right| / mean |left|
 	std::vector<std::pair<uint32_t, uint32_t>> dumps;   // SDRAM word address, words
+	std::vector<std::pair<uint32_t, uint32_t>> dumps1;  // the same in chip 1
 
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -751,6 +752,7 @@ int main(int argc, char **argv) {
 		else if (a == "--check-vidtest") check_vidtest = true;
 		else if (a == "--floppy-write-test") floppy_write_test = true;
 		else if (a == "--expect-audio-ratio") expect_lr = std::atof(next().c_str());
+		else if (a == "--dump1") { std::string v = next(); auto e = v.find(':'); dumps1.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--dump") { std::string v = next(); auto e = v.find(':'); dumps.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--trace-cpu") cpu_trace = std::fopen(next().c_str(), "w");
 		else if (a == "--trace-from") trace_from = uint64_t(std::atof(next().c_str()) * 28375.0);
@@ -1223,6 +1225,15 @@ int main(int argc, char **argv) {
 	}
 
 	std::printf("Agnus: DMACON %04X, copper at %06X\n", top->dbg_dmacon, top->dbg_cop_addr << 1);
+	if (!dumps1.empty()) {
+		svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+		for (auto &d : dumps1) {
+			std::printf("SDRAM chip 1 words at %06X:", d.first);
+			for (uint32_t i = 0; i < d.second; i++) std::printf("%s%04X", (i % 16) ? " " : "\n  ", sdram_peek16(d.first + i));
+			std::printf("\n");
+		}
+		svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+	}
 	for (auto &d : dumps) {
 		std::printf("SDRAM words at %06X:", d.first);
 		for (uint32_t i = 0; i < d.second; i++) std::printf("%s%04X", (i % 16) ? " " : "\n  ", sdram_peek16(d.first + i));
@@ -1230,6 +1241,12 @@ int main(int argc, char **argv) {
 	}
 
 	int sd_err = sdram_errors();
+	// chip 1's model (the scope is chip 0's everywhere else)
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+	int sd_err1 = sdram_errors();
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+	if (sd_err1) std::printf("SDRAM chip 1 model: %d errors\n", sd_err1);
+	sd_err += sd_err1;
 	if (sd_err) FAIL("SDRAM protocol errors: %d", sd_err);
 	std::printf("SDRAM pins: %llu clock edges, %llu with outputs changing at the rising edge\n",
 	            (unsigned long long)sd_edges, (unsigned long long)sd_edge_errors);

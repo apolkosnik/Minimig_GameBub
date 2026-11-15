@@ -76,6 +76,11 @@ run colour --kick asm/coltest.rom --check-coltest 1100 --ms 4000 --set 1080=3
 run ham    --kick asm/hamtest.rom --ms 900 --set 1080=3
 run aga256 --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=3 --expect-no-fixed
 run aga256t --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=7 --expect-no-fixed
+# z3test.rom: the 68030 / 68020, the 16 MB Zorro III board and the RTG
+# board's memory in the second SDRAM chip (autoconfig, patterns, lanes)
+Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:10A:F000:A000 --check-word 790:10C:F000:0000 --check-word 790:10E:F000:8000 --check-word 790:110:F000:0000"
+run z3_030 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0001
+run z3_020 --kick asm/z3test.rom --ms 800 --set 1048=3 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \
@@ -110,6 +115,9 @@ if [ -n "${KICK13:-}" ]; then
 fi
 if [ -n "${KICK31:-}" ] && [ -n "${ADF31:-}" ]; then
 	run ks31_aga --kick "$KICK31" --disk 0 "$ADF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-sectors 100
+	# the 68030 with the 16 MB Zorro III board (second SDRAM chip)
+	mkdir -p $OUT/ks31_030
+	run ks31_030 --kick "$KICK31" --disk 0 "$ADF31" --set 1044=2 --set 1048=4 --set 104C=8 --ms 12000 --expect-sectors 100 --frames-dir $OUT/ks31_030 --shot-every 100
 fi
 if [ -n "${KICK31:-}" ]; then
 	[ -n "${HDF31:-}" ] && run ks31_hdf --kick "$KICK31" --hdf 0 "$HDF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60

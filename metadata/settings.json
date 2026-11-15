@@ -45,6 +45,14 @@
 				{
 					"label": "68EC020",
 					"value": "0x2"
+				},
+				{
+					"label": "68020",
+					"value": "0x3"
+				},
+				{
+					"label": "68030",
+					"value": "0x4"
 				}
 			],
 			"default": "0x0"
@@ -86,6 +94,10 @@
 				{
 					"label": "2M + 8M fast",
 					"value": "0x7"
+				},
+				{
+					"label": "2M + 16M Z3 fast",
+					"value": "0x8"
 				}
 			],
 			"default": "0x1"
