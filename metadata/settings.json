@@ -76,10 +76,6 @@
 					"value": "0x2"
 				},
 				{
-					"label": "1M + 512K slow",
-					"value": "0x3"
-				},
-				{
 					"label": "2M chip",
 					"value": "0x4"
 				},
