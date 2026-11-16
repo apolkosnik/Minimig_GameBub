@@ -226,12 +226,26 @@ sdram_sim sdram1
 	.dq_out_en (mdl1_oe)
 );
 
-// both chips driving the data bus at once (counted as an error of chip 0)
-always @(posedge sd_clk)
-	if (mdl_oe && mdl1_oe) begin
+// The data bus, edge by edge (counted as errors of chip 0): the beat of an
+// SDRAM clock edge comes from one device at most (the FPGA: sd_oe in the
+// clk_114 cycle around the edge; a chip: the beat it drives for the edge),
+// and between beats of different devices there is an edge with none (the
+// time a chip takes to stop driving after its last beat, tHZ, is most of
+// an 8.8 ns clock; the next device starts driving a clock before its beat).
+reg [2:0] bus_prev = 3'b000;
+always @(posedge sd_clk) begin
+	reg [2:0] drv;
+	drv = {sd_oe, sdram1.beat_v, sdram.beat_v};
+	if (drv != 3'b000 && drv != 3'b001 && drv != 3'b010 && drv != 3'b100) begin
 		sdram.errors = sdram.errors + 1;
-		if (sdram.errors <= 20) $display("[sdram] ERROR at %0t: both chips drive the data bus", $time);
+		if (sdram.errors <= 20) $display("[sdram] ERROR at %0t: data bus driven by %b (FPGA, chip 1, chip 0)", $time, drv);
 	end
+	else if (drv != 3'b000 && bus_prev != 3'b000 && drv != bus_prev) begin
+		sdram.errors = sdram.errors + 1;
+		if (sdram.errors <= 20) $display("[sdram] ERROR at %0t: data bus passes from %b to %b without an idle clock", $time, bus_prev, drv);
+	end
+	bus_prev <= drv;
+end
 
 // the bus as the pins see it: what the SDRAM drives, else what the FPGA
 // drives (the framework's top level makes the tri-state buffer)

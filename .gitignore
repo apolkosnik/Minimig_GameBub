@@ -6,3 +6,4 @@
 /sim/asm/*.rom
 /sim/asm/*.bin
 /sim/gls/work
+/sim/sdr/obj_*

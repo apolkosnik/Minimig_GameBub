@@ -670,9 +670,10 @@ wire [25:1] cpu_sdram_addr = z3_sel  ? {2'b11, ram_addr[23:1]} :
                              rtg_sel ? {3'b100, ram_addr[22:1]} :
                                        {2'b00, zram_sel, ram_addr[22:1]};
 
-sdram_ctrl ram1
+gb_sdram_ctrl ram1
 (
 	.sysclk       (clk_114         ),
+	.sdclk        (clk_114         ),
 	.reset_n      (~reset_114      ),
 	.c_7m         (c1              ),
 
@@ -721,7 +722,14 @@ sdram_ctrl ram1
 	.hostDQM      (hp_dqm          ),
 	.hostWR       (hp_wr           ),
 	.hostRD       (hp_rd           ),
-	.hostAck      (hp_ack          )
+	.hostAck      (hp_ack          ),
+
+	.burstAddr    (21'd0           ),
+	.burstReq     (1'b0            ),
+	.burstUrgent  (1'b0            ),
+	.burstAck     (                ),
+	.burstData    (                ),
+	.burstValid   (                )
 );
 
 // ===========================================================================

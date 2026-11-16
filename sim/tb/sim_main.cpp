@@ -242,11 +242,12 @@ static bool h_busy = false;
 static std::FILE *cpu_trace = nullptr;
 static uint64_t trace_from = 0;   // clk_28 cycle
 
-// The SDRAM pins: sdram_ctrl drives them all from clk_114 registers (put in
-// the I/O blocks by rtl/gamebub/minimig.xdc) and makes the SDRAM clock from
-// one of them. Its commands, address, DQM and data must only change at the
-// clk_114 edges at which the SDRAM clock falls, so that the SDRAM sees them
-// stable a whole clk_114 period before and after its rising edge.
+// The SDRAM pins: gb_sdram_ctrl drives them all from clk_114 registers (put
+// in the I/O blocks by rtl/gamebub/minimig.xdc) and forwards clk_114,
+// inverted, as the SDRAM clock (an ODDR). Its commands, address, DQM and
+// data must only change at the clk_114 edges at which the SDRAM clock
+// falls, so that the SDRAM sees them stable half a clk_114 period before
+// and after its rising edge. Checked after both clk_114 edges.
 static uint64_t sd_edges = 0, sd_edge_errors = 0;
 static bool sd_prev_clk = false;
 static uint64_t sd_prev_bus = 0;
@@ -323,6 +324,7 @@ static void cycle28() {
 		sdram_pin_check();
 		top->clk_114 = 0;
 		top->eval();
+		sdram_pin_check();
 	}
 	cyc28++;
 

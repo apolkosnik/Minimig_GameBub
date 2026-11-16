@@ -62,6 +62,8 @@ struct.pack_into('>III', rdb, 64, 0, 17, 4)   # cylinders (not used), sectors, h
 d[0:512] = rdb
 open(sys.argv[1] + '/rdb.hdf', 'wb').write(d)
 PY
+# the SDRAM controller on its own, every port at once (sim/sdr)
+sdr/run_sdr.sh > $OUT/sdr.log 2>&1 && echo "sdram_ctrl   TEST PASSED" || { echo "sdram_ctrl   TEST FAILED"; FAILED_SDR=1; }
 pids=()
 names=()
 run() {
@@ -123,7 +125,7 @@ if [ -n "${KICK31:-}" ]; then
 	[ -n "${HDF31:-}" ] && run ks31_hdf --kick "$KICK31" --hdf 0 "$HDF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60
 	[ -n "${HDFRDB31:-}" ] && run ks31_rdb --kick "$KICK31" --hdf 0 "$HDFRDB31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60
 fi
-fail=0
+fail=${FAILED_SDR:-0}
 for i in "${!pids[@]}"; do
 	wait ${pids[$i]}
 	r=$(grep -E "TEST (PASSED|FAILED)" $OUT/${names[$i]}.log || echo "TEST DID NOT FINISH")

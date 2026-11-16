@@ -53,3 +53,15 @@ endmodule
 module BUFG (input I, output O);
 	assign O = I;
 endmodule
+
+// output DDR register: D1 after the rising edge of C, D2 after the falling
+// edge (gb_sdram_ctrl forwards the SDRAM clock with D1 = 0, D2 = 1)
+module ODDR #(
+	parameter DDR_CLK_EDGE = "OPPOSITE_EDGE",
+	parameter INIT = 1'b0,
+	parameter SRTYPE = "SYNC"
+) (
+	output Q, input C, input CE, input D1, input D2, input R, input S
+);
+	assign Q = C ? D1 : D2;
+endmodule
