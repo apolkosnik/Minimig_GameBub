@@ -31,17 +31,27 @@ class MinimigCore extends Module with Core {
       clockSpiHz = (mmcmVcoHz / 5).toInt,
     )
     val video = new VideoV0(
-      videoWidth = 320,
-      videoHeight = 240,
-      colorDepthR = 5,
-      colorDepthG = 6,
-      colorDepthB = 5,
+      // 640 high resolution pixels, shown one to one across; down, the
+      // first 240 lines doubled or all 256 fitted to the screen's 480
+      // (patches/framework: independentScale, fit). Two frame buffers of
+      // 640 x 256 fit the block RAM at 10 bits per pixel: a pixel is the
+      // index of its colour in a palette the core fills (paletteBits).
+      videoWidth = 640,
+      videoHeight = 256,
+      colorDepthR = 3,
+      colorDepthG = 4,
+      colorDepthB = 3,
       framePeriod = framePeriod,
+      independentScale = true,
+      paletteBits = 10,
+      // RTG: the board's picture (second SDRAM chip) on HDMI
+      // (patches/framework 0003)
+      externalPicture = true,
     )
     val audio = new AudioV0()
     val host = new HostV0()
     val input = new InputExtendedV0(numSlots = 2)
-    val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = 1)
+    val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = 2)
   })
 
   bindExtModule("minimig_gamebub", io, Map(

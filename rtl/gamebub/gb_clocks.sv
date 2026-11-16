@@ -5,6 +5,10 @@
 //   CLKOUT1  /32   28.385 MHz  Amiga / system clock    (PAL 28.375 +0.036 %)
 //   CLKOUT2  /5   181.667 MHz  host SPI (>= 160 MHz required)
 //   CLKOUT3  /N   display clock (N from MinimigCore.scala)
+//   CLKOUT4  /8   113.542 MHz  SDRAM clock, clk_114 delayed by 39.375 deg
+//                 (0.963 ns, 7 steps of 1/8 VCO period): drives only the ODDR
+//                 that forwards it (inverted) to the SDRAM pins; the delay
+//                 centres the command and read data windows (minimig.xdc)
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -16,13 +20,14 @@ module gb_clocks
 	input  wire clk_in_50mhz,
 	output wire clk_114,
 	output wire clk_sys,
+	output wire clk_sdram,
 	output wire clk_display,
 	output wire clk_spi,
 	output wire locked
 );
 
 wire clk_fb, clk_fb_buf;
-wire clk_114_u, clk_sys_u;
+wire clk_114_u, clk_sys_u, clk_sdram_u;
 
 MMCME2_BASE #(
 	.BANDWIDTH          ("OPTIMIZED"),
@@ -35,16 +40,19 @@ MMCME2_BASE #(
 	.CLKOUT1_DIVIDE     (32),
 	.CLKOUT2_DIVIDE     (5),
 	.CLKOUT3_DIVIDE     (DISPLAY_DIVIDER),
+	.CLKOUT4_DIVIDE     (8),
 
 	.CLKOUT0_PHASE      (0.0),
 	.CLKOUT1_PHASE      (0.0),
 	.CLKOUT2_PHASE      (0.0),
 	.CLKOUT3_PHASE      (0.0),
+	.CLKOUT4_PHASE      (39.375),
 
 	.CLKOUT0_DUTY_CYCLE (0.5),
 	.CLKOUT1_DUTY_CYCLE (0.5),
 	.CLKOUT2_DUTY_CYCLE (0.5),
 	.CLKOUT3_DUTY_CYCLE (0.5),
+	.CLKOUT4_DUTY_CYCLE (0.5),
 
 	.STARTUP_WAIT       ("FALSE")
 ) mmcm (
@@ -56,7 +64,7 @@ MMCME2_BASE #(
 	.CLKOUT2B  (),
 	.CLKOUT3   (clk_display),
 	.CLKOUT3B  (),
-	.CLKOUT4   (),
+	.CLKOUT4   (clk_sdram_u),
 	.CLKOUT5   (),
 	.CLKOUT6   (),
 	.CLKFBOUT  (clk_fb),
@@ -73,5 +81,6 @@ MMCME2_BASE #(
 BUFG bufg_fb  (.I(clk_fb),    .O(clk_fb_buf));
 BUFG bufg_114 (.I(clk_114_u), .O(clk_114));
 BUFG bufg_sys (.I(clk_sys_u), .O(clk_sys));
+BUFG bufg_sdram (.I(clk_sdram_u), .O(clk_sdram));
 
 endmodule

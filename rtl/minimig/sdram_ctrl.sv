@@ -33,6 +33,9 @@
 //   image server, ROM staging) word access to the SDRAM. It is served in
 //   slots the chipset and CPU writes leave free and wins over CPU cache
 //   fills after it has waited HOST_STARVE slots.
+// - Two SDRAM chips on the one bus, each with its own chip select: the CPU
+//   port's address bit 25 picks the chip (chip RAM and the host port use
+//   chip 0); initialisation and refresh go to both.
 //
 
 
@@ -49,7 +52,7 @@ module sdram_ctrl
 	// sdram
 	output reg [12:0] sd_addr,
 	output reg  [1:0] sd_ba,
-	output            sd_cs,
+	output reg  [1:0] sd_cs,     // active low, one per chip
 	output reg        sd_we,
 	output reg        sd_ras,
 	output reg        sd_cas,
@@ -58,7 +61,7 @@ module sdram_ctrl
 	output reg [15:0] sd_data_out,
 	output reg        sd_data_oe,
 	output reg        sd_clk,
-	output            sd_cke,
+	output      [1:0] sd_cke,
 	// chip
 	input      [24:1] chipAddr,
 	input             chipL,
@@ -72,7 +75,7 @@ module sdram_ctrl
 	input      [15:0] chipWR2,
 	output reg [15:0] chipRD2,
 	// cpu
-	input      [24:1] cpuAddr,
+	input      [25:1] cpuAddr,   // bit 25: chip 1
 	input             cpuCS,
 	input       [1:0] cpustate,
 	input             cpuL,
@@ -90,8 +93,7 @@ module sdram_ctrl
 	output reg        hostAck    // one clock; hostRD is valid with it on reads
 );
 
-assign sd_cs = 0;
-assign sd_cke = 1;
+assign sd_cke = 2'b11;
 
 //// parameters ////
 localparam [2:0]
@@ -186,7 +188,7 @@ reg        write_ena;
 reg        write_req;
 reg        write_ack;
 reg  [1:0] write_dqm;
-reg [24:1] writeAddr;
+reg [25:1] writeAddr;
 reg [15:0] writeDat;
 reg        fwd_en = 1'b0;
 reg  [1:0] fwd_pos;
@@ -329,6 +331,12 @@ assign      cpu_slot = p_act & ~chip_req;
 assign      row_chip = act_chip ? chipAddr[24:10] : {p_ba, p_addr};
 wire [14:0] row      = (cpu_slot & write_req) ? writeAddr[24:10] : (cpu_slot & host_go) ? hostAddr[24:10] : (cpu_slot & cache_req) ? cpuAddr[24:10] : row_chip;
 wire        ras      = p_ras & ~act_chip & ~act_cpu;
+// the chip of the row (held from the ACTIVE to the READ / WRITE, as the row
+// address is), and commands for both chips (initialisation, refresh)
+reg         p_chip1 = 0;
+reg         p_all   = 1;
+wire        chip1    = (cpu_slot & write_req) ? writeAddr[25] : (cpu_slot & host_go) ? 1'b0 :
+                       (cpu_slot & cache_req) ? cpuAddr[25] : act_chip ? 1'b0 : p_chip1;
 wire        cas      = p_cas | act_chip | act_cpu;
 
 always @ (posedge sysclk) begin
@@ -342,6 +350,7 @@ always @ (posedge sysclk) begin
 	sd_clk <= sdram_state[0];
 
 	{sd_ba, sd_addr} <= row;
+	sd_cs   <= (p_all & ~act_chip & ~act_cpu) ? 2'b00 : chip1 ? 2'b01 : 2'b10;
 	sd_ras  <= ras;
 	sd_cas  <= cas;
 	sd_we   <= p_we;
@@ -403,7 +412,7 @@ always @ (posedge sysclk) begin
 					a_wr2        <= chip32 & !chipRW;
 					a_rd2        <= chip32 &  chipRW;
 					datawr2      <= chipWR2;
-					if(chipRW & write_req & (writeAddr[24:3] == chipAddr[24:3])) begin
+					if(chipRW & write_req & ~writeAddr[25] & (writeAddr[24:3] == chipAddr[24:3])) begin
 						fwd_en  <= 1'b1;
 						fwd_pos <= writeAddr[2:1] - chipAddr[2:1];
 						fwd_dat <= writeDat;
@@ -449,6 +458,10 @@ always @ (posedge sysclk) begin
 	rcnt <= rcnt_n;
 
 	{p_ba, p_addr} <= row;
+	p_chip1 <= chip1;
+	// an ACTIVE takes the slot of a refresh: its chip, not both, for the
+	// rest of the SDRAM clock
+	if(act_chip | act_cpu) p_all <= 0;
 	p_ras <= ras;
 	p_cas <= cas;
 	p_act <= 0;
@@ -457,11 +470,13 @@ always @ (posedge sysclk) begin
 		p_cas <= 1;
 		p_we  <= 1;
 		p_oe  <= 0;
+		p_all <= 0;   // held for the SDRAM clock, as the command is
 	end
 
 	if(!next_init) begin
 		p_dqm <= 3;
 		p_ba  <= 0;
+		p_all <= 1;
 		if(next_state == 0) begin
 			case(next_initstate)
 				4 : begin // PRECHARGE
@@ -491,9 +506,10 @@ always @ (posedge sysclk) begin
 				p_dqm           <= 3;
 				p_act           <= 1;
 				if(&rcnt_n) begin
-					// REFRESH
+					// REFRESH (both chips)
 					p_ras        <= 0;
 					p_cas        <= 0;
+					p_all        <= 1;
 				end
 			end
 

@@ -405,41 +405,33 @@
 			"default": "0x45"
 		},
 		{
-			"id": 16,
-			"label": "Picture position",
-			"address": "0x0000107C",
+			"id": 17,
+			"label": "Picture",
+			"address": "0x00001080",
 			"type": "list",
 			"items": [
 				{
-					"label": "Up 8",
+					"label": "256 lines, dithered",
+					"value": "0x1"
+				},
+				{
+					"label": "256 lines, palette",
+					"value": "0x3"
+				},
+				{
+					"label": "240 lines, dithered",
 					"value": "0x0"
 				},
 				{
-					"label": "Up 4",
-					"value": "0x4"
+					"label": "240 lines, palette",
+					"value": "0x2"
 				},
 				{
-					"label": "Up 2",
-					"value": "0x6"
-				},
-				{
-					"label": "Default",
-					"value": "0x8"
-				},
-				{
-					"label": "Down 2",
-					"value": "0xA"
-				},
-				{
-					"label": "Down 4",
-					"value": "0xC"
-				},
-				{
-					"label": "Down 7",
-					"value": "0xF"
+					"label": "256 lines, palette test",
+					"value": "0x7"
 				}
 			],
-			"default": "0x8"
+			"default": "0x1"
 		}
 	]
 }

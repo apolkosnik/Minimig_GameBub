@@ -1,0 +1,224 @@
+diff --git a/rtl/minimig/cpu_cache_new.sv b/rtl/minimig/cpu_cache_new.sv
+index 76c789d..e50b373 100644
+--- a/rtl/minimig/cpu_cache_new.sv
++++ b/rtl/minimig/cpu_cache_new.sv
+@@ -239,7 +239,13 @@ localparam [3:0]
+ 	CPU_SM_FILL3 = 4'd8,
+ 	CPU_SM_FILL4 = 4'd9,
+ 	CPU_SM_FILLW = 4'd10,
+-	CPU_SM_INVAL = 4'd11;
++	CPU_SM_INVAL = 4'd11,
++	CPU_SM_DRAIN = 4'd12;   // Game Bub port: the rest of an uncached burst
++
++// Game Bub port: an uncached read takes the first word of the SDRAM's four
++// word burst; the other three still arrive (sdr_read_ack) and must not be
++// taken as the answer to the next read
++reg   [1:0] drain_cnt;
+ 
+ assign cpu_idle = (cpu_sm_state == CPU_SM_IDLE);
+ 
+@@ -456,7 +462,8 @@ always @ (posedge clk) begin
+           cpu_ack <= 1'b1;
+           if (cache_inhibit || (!cpu_ir && !cc_den)) begin
+             fill_active  <= 1'b0;
+-            cpu_sm_state <= CPU_SM_FILLW;
++            drain_cnt    <= 2'd3;
++            cpu_sm_state <= CPU_SM_DRAIN;
+           end else begin
+             // update tag ram
+             if (cpu_ir) begin
+@@ -541,6 +548,12 @@ always @ (posedge clk) begin
+           end
+         end
+       end
++      CPU_SM_DRAIN : begin
++        if (sdr_read_ack) begin
++          drain_cnt <= drain_cnt - 2'd1;
++          if (drain_cnt == 2'd1) cpu_sm_state <= CPU_SM_FILLW;
++        end
++      end
+       CPU_SM_INVAL : begin
+         inv_sel      <= 1'b0;
+         fill_active  <= 1'b0;
+diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
+index c60357d..2fbf46c 100644
+--- a/rtl/minimig/cpu_wrapper.sv
++++ b/rtl/minimig/cpu_wrapper.sv
+@@ -92,7 +92,7 @@ module cpu_wrapper
+ 	output reg [31:0] nmi_addr,
+ 
+ 	output reg        z2ram_ena,
+-	output reg  [4:0] z3ram_base0,
++	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units
+ 	output reg        z3ram_ena0,
+ 	output reg  [3:0] z3ram_base1,
+ 	output reg        z3ram_ena1,
+@@ -775,7 +775,9 @@ always @(*) begin
+ 	else if(ac_memcard[2]) begin
+ 		case (chip_addr[6:1])
+ 			6'b000000: autocfg_data = 4'b1010;	// Zorro-III card, add mem, no ROM
+-			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0011 : 4'b0100; // 128MB or 256MB, extended
++			// Game Bub port: the 128 MB board is a 16 MB board (in the
++			// second SDRAM chip), extended size code 000
++			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0000 : 4'b0100; // 16MB or 256MB, extended
+ 			6'b000010: autocfg_data = 4'b1110;	// ProductID=0x10 (only setting upper nibble)
+ 			6'b000100: autocfg_data = 4'b0000;	// Memory card, not silenceable, Extended size, reserved.
+ 			6'b000101: autocfg_data = 4'b1111;	// 0000 - logical size matches physical size TODO change this to 0001, so it is autosized by the OS, WHEN it will be 24MB.
+@@ -860,7 +862,7 @@ always @(posedge clk) begin
+ 					ac_memcard <= {ac_memcard[0], ac_memcard[0], 1'b0};
+ 				end
+ 				else begin
+-					z3ram_base0 <= cpu_dout[15:11]; //128MB chunk
++					z3ram_base0 <= cpu_dout[15:8]; //16MB chunk (Game Bub port)
+ 					z3ram_ena0 <= 1;
+ 					ac_memcard <= 0;
+ 				end
+diff --git a/rtl/minimig/memory_router.sv b/rtl/minimig/memory_router.sv
+index c13dae5..0c71e78 100644
+--- a/rtl/minimig/memory_router.sv
++++ b/rtl/minimig/memory_router.sv
+@@ -13,7 +13,7 @@ module memory_router
+ 	input         ar_on,
+ 
+ 	input         z2ram_ena,
+-	input   [4:0] z3ram_base0,
++	input   [7:0] z3ram_base0,   // Game Bub port: a 16 MB board
+ 	input         z3ram_ena0,
+ 	input   [3:0] z3ram_base1,
+ 	input         z3ram_ena1,
+@@ -33,7 +33,7 @@ module memory_router
+ 	output [28:1] ramaddr
+ );
+ 
+-assign sel_z3ram0   = (cpu_addr[31:27] == z3ram_base0) && z3ram_ena0;
++assign sel_z3ram0   = (cpu_addr[31:24] == z3ram_base0) && z3ram_ena0;
+ assign sel_z3ram1   = (cpu_addr[31:28] == z3ram_base1) && z3ram_ena1;
+ assign sel_z2ram    = !cpu_addr[31:24] && (cpu_addr[23] ^ |cpu_addr[22:21]) && z2ram_ena; // addr[23:21] = 1..4
+ assign sel_zram     = sel_z3ram0 | sel_z3ram1 | sel_z2ram;
+diff --git a/rtl/minimig/sdram_ctrl.sv b/rtl/minimig/sdram_ctrl.sv
+index f0300d8..b42c228 100644
+--- a/rtl/minimig/sdram_ctrl.sv
++++ b/rtl/minimig/sdram_ctrl.sv
+@@ -33,6 +33,9 @@
+ //   image server, ROM staging) word access to the SDRAM. It is served in
+ //   slots the chipset and CPU writes leave free and wins over CPU cache
+ //   fills after it has waited HOST_STARVE slots.
++// - Two SDRAM chips on the one bus, each with its own chip select: the CPU
++//   port's address bit 25 picks the chip (chip RAM and the host port use
++//   chip 0); initialisation and refresh go to both.
+ //
+ 
+ 
+@@ -49,7 +52,7 @@ module sdram_ctrl
+ 	// sdram
+ 	output reg [12:0] sd_addr,
+ 	output reg  [1:0] sd_ba,
+-	output            sd_cs,
++	output reg  [1:0] sd_cs,     // active low, one per chip
+ 	output reg        sd_we,
+ 	output reg        sd_ras,
+ 	output reg        sd_cas,
+@@ -58,7 +61,7 @@ module sdram_ctrl
+ 	output reg [15:0] sd_data_out,
+ 	output reg        sd_data_oe,
+ 	output reg        sd_clk,
+-	output            sd_cke,
++	output      [1:0] sd_cke,
+ 	// chip
+ 	input      [24:1] chipAddr,
+ 	input             chipL,
+@@ -72,7 +75,7 @@ module sdram_ctrl
+ 	input      [15:0] chipWR2,
+ 	output reg [15:0] chipRD2,
+ 	// cpu
+-	input      [24:1] cpuAddr,
++	input      [25:1] cpuAddr,   // bit 25: chip 1
+ 	input             cpuCS,
+ 	input       [1:0] cpustate,
+ 	input             cpuL,
+@@ -90,8 +93,7 @@ module sdram_ctrl
+ 	output reg        hostAck    // one clock; hostRD is valid with it on reads
+ );
+ 
+-assign sd_cs = 0;
+-assign sd_cke = 1;
++assign sd_cke = 2'b11;
+ 
+ //// parameters ////
+ localparam [2:0]
+@@ -186,7 +188,7 @@ reg        write_ena;
+ reg        write_req;
+ reg        write_ack;
+ reg  [1:0] write_dqm;
+-reg [24:1] writeAddr;
++reg [25:1] writeAddr;
+ reg [15:0] writeDat;
+ reg        fwd_en = 1'b0;
+ reg  [1:0] fwd_pos;
+@@ -329,6 +331,12 @@ assign      cpu_slot = p_act & ~chip_req;
+ assign      row_chip = act_chip ? chipAddr[24:10] : {p_ba, p_addr};
+ wire [14:0] row      = (cpu_slot & write_req) ? writeAddr[24:10] : (cpu_slot & host_go) ? hostAddr[24:10] : (cpu_slot & cache_req) ? cpuAddr[24:10] : row_chip;
+ wire        ras      = p_ras & ~act_chip & ~act_cpu;
++// the chip of the row (held from the ACTIVE to the READ / WRITE, as the row
++// address is), and commands for both chips (initialisation, refresh)
++reg         p_chip1 = 0;
++reg         p_all   = 1;
++wire        chip1    = (cpu_slot & write_req) ? writeAddr[25] : (cpu_slot & host_go) ? 1'b0 :
++                       (cpu_slot & cache_req) ? cpuAddr[25] : act_chip ? 1'b0 : p_chip1;
+ wire        cas      = p_cas | act_chip | act_cpu;
+ 
+ always @ (posedge sysclk) begin
+@@ -342,6 +350,7 @@ always @ (posedge sysclk) begin
+ 	sd_clk <= sdram_state[0];
+ 
+ 	{sd_ba, sd_addr} <= row;
++	sd_cs   <= (p_all & ~act_chip & ~act_cpu) ? 2'b00 : chip1 ? 2'b01 : 2'b10;
+ 	sd_ras  <= ras;
+ 	sd_cas  <= cas;
+ 	sd_we   <= p_we;
+@@ -403,7 +412,7 @@ always @ (posedge sysclk) begin
+ 					a_wr2        <= chip32 & !chipRW;
+ 					a_rd2        <= chip32 &  chipRW;
+ 					datawr2      <= chipWR2;
+-					if(chipRW & write_req & (writeAddr[24:3] == chipAddr[24:3])) begin
++					if(chipRW & write_req & ~writeAddr[25] & (writeAddr[24:3] == chipAddr[24:3])) begin
+ 						fwd_en  <= 1'b1;
+ 						fwd_pos <= writeAddr[2:1] - chipAddr[2:1];
+ 						fwd_dat <= writeDat;
+@@ -449,6 +458,10 @@ always @ (posedge sysclk) begin
+ 	rcnt <= rcnt_n;
+ 
+ 	{p_ba, p_addr} <= row;
++	p_chip1 <= chip1;
++	// an ACTIVE takes the slot of a refresh: its chip, not both, for the
++	// rest of the SDRAM clock
++	if(act_chip | act_cpu) p_all <= 0;
+ 	p_ras <= ras;
+ 	p_cas <= cas;
+ 	p_act <= 0;
+@@ -457,11 +470,13 @@ always @ (posedge sysclk) begin
+ 		p_cas <= 1;
+ 		p_we  <= 1;
+ 		p_oe  <= 0;
++		p_all <= 0;   // held for the SDRAM clock, as the command is
+ 	end
+ 
+ 	if(!next_init) begin
+ 		p_dqm <= 3;
+ 		p_ba  <= 0;
++		p_all <= 1;
+ 		if(next_state == 0) begin
+ 			case(next_initstate)
+ 				4 : begin // PRECHARGE
+@@ -491,9 +506,10 @@ always @ (posedge sysclk) begin
+ 				p_dqm           <= 3;
+ 				p_act           <= 1;
+ 				if(&rcnt_n) begin
+-					// REFRESH
++					// REFRESH (both chips)
+ 					p_ras        <= 0;
+ 					p_cas        <= 0;
++					p_all        <= 1;
+ 				end
+ 			end
+ 

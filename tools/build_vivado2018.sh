@@ -9,6 +9,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
+tools/patch_framework.sh
 ./mill -i root.buildCore --target gamebub_rev4 || true
 B=build/MinimigCore-gamebub_rev4
 sed -i '/\.CASCADE_HEIGHT(0),/d; /\.SIM_ASSERT_CHK(/d' "$B"/generated/XpmFifoAsync*.sv

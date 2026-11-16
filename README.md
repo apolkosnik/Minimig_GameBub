@@ -39,12 +39,30 @@ which suits Kickstart 1.3 and most games. For Kickstart 3.x choose AGA, 68EC020 
 | R | left mouse button (to drag while L is held) |
 | X, Y, Start, Select | keys chosen in the settings (default Space, Return, F1, Esc) |
 | second dock controller: D-pad, left stick, A, B | joystick in port 1 (two player games) |
-| USB or Bluetooth mouse | the mouse in port 1 (needs the firmware fork, see below) |
+| USB or Bluetooth mouse on the dock | the mouse in port 1 (needs the firmware forks, see below) |
+| USB keyboard on the dock | the Amiga's keyboard (needs the firmware forks, see below) |
 
 Port 1 holds the mouse or the second joystick: as on MiSTer, pressing the second
 controller's fire button switches it to the joystick, a left mouse click back to the
 mouse. Dock controllers need the dock beta firmware that goes with framework
 v1.1.0-beta4.
+
+### Keyboard and mouse on the dock
+
+The stock firmware passes only gamepads to a core. With the forks of the
+[handheld firmware](https://github.com/apolkosnik/gamebub/tree/3do-beta4) and the
+[dock firmware](https://github.com/apolkosnik/dock-firmware/tree/usb-mouse) a USB
+keyboard and a USB or Bluetooth mouse on the dock are the Amiga's:
+
+* the dock reads the keyboard (USB HID boot protocol) and reports the keys held; the
+  handheld firmware writes every key going down or up to the core (0x1038: USB HID
+  usage, bit 8 set when pressed), and the core translates it to the Amiga's raw key
+  code. The Windows keys are the Amiga keys, Insert and F12 are Help, Caps Lock toggles
+  as on an Amiga keyboard. Ctrl + Amiga + Amiga resets the Amiga as usual;
+* the mouse's movement and buttons are written to 0x1030 / 0x1034.
+
+Both work only while the core has the focus; keys let go while the menu is open are
+released when the game goes on.
 
 ### Settings
 
@@ -61,7 +79,7 @@ v1.1.0-beta4.
 | Audio filter | the Amiga 500's fixed 4.4 kHz output filter |
 | Stereo mix | how much of each channel goes into the other (None, 12 %, 25 %, Mono) |
 | X / Y / Start / Select key | Space, Return, Esc, F1, F2, Help, Del or P |
-| Picture position | moves the 240 lines shown up or down |
+| Picture | 256 or 240 PAL lines, and dithered or palette colours (see *Limitations*). 256 lines: all of them fitted to the screen, slightly uneven; 240: the top ones, each exactly two rows |
 
 Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
 **Reset (apply)**; the others apply at once.
@@ -92,9 +110,7 @@ Bub is switched off), with the Amiga's changes, like a real disk. Exit through t
 before switching off to be sure.
 
 The core is built with framework v1.1.0-beta4 and needs a firmware of that beta or
-later. The [firmware fork](https://github.com/apolkosnik/gamebub/tree/mouse-3do) used by
-the 3DO core adds the USB or Bluetooth mouse (the core takes its reports at
-0x1030/0x1034). A loaded disk image is always reported at its full size when it is saved
+later (the forks above are built on it). A loaded disk image is always reported at its full size when it is saved
 (firmware 1.1.0-beta3 rewrote a file with as many bytes as the core reported, so a 0
 would have emptied it). The release firmware may report an error on exit for Disks 2 to
 4 that were not selected; the selected disks are still saved, and the fork skips the
@@ -106,15 +122,43 @@ unselected ones quietly.
 * ADF images only (no extended ADF / MFM-level images), double density.
 * Up to four disk images per session; DF0 and DF1 can be switched between them while
   running.
-* The 68030, RTG, Zorro III RAM and the expansion cards of the MiSTer core (Toccata,
-  A2065, CDTV) are not built: on MiSTer they use its DDR3 memory or its ARM side. The
-  core uses one of the two SDRAM chips (32 MB), which holds everything it needs.
-* The picture is the framework's 320 x 240: the 320 low resolution pixels of the standard
-  display window (high resolution pixels are averaged in pairs) and 240 of its lines. In
-  PAL that is lines 8 to 247 of 256; **Picture position** chooses others.
+* The expansion cards of the MiSTer core (Toccata, A2065, CDTV) and its shared folder
+  (SHARE:) are not built: on MiSTer they use its DDR3 memory or its ARM side.
+* RTG (68020 or 68030, memory "2M + 16M Z3 fast"; MiSTer's P96 driver `MiSTer.card`
+  unchanged) is shown on HDMI only. The handheld's panel is scanned in columns of the
+  landscape picture, which a line buffer cannot feed; there the Amiga's own picture
+  stays. The RTG picture is fitted to 1280 x 720 (nearest pixel, its shape kept, at most
+  1024 pixels of a line). Lines come from the second SDRAM chip as they are shown:
+  640 x 480 at 32 bits, 800 x 600 at 16 bits and 1024 x 768 at 16 bits fit the
+  bandwidth; larger pictures at 32 bits show lines late.
+* The picture is 640 pixels wide, shown one to one across (640 of the handheld's 800 x
+  480 panel, or of HDMI): all 640 high resolution pixels of the standard display window,
+  so an 80 column Workbench or CLI is sharp; a low resolution pixel is two pixels wide.
+  The screen has 480 rows. **Picture** chooses between all 256 PAL lines
+  fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
+  is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
+  (the firmware takes 16 settings at most, so there is none for which 240). NTSC's 200 lines always fit, two rows each.
+  Interlaced screens show one field's lines.
+* Colour: two 640 x 256 frame buffers fit the FPGA's block RAM at 10 bits per pixel, not
+  at the 24 of an AGA colour. **Picture** chooses how a pixel uses them:
+  * *dithered*: the colour in 3 + 4 + 3 bits with a fine 2 x 2 dither. Any number of
+    colours, approximate (black, white and OCS / ECS greens exact);
+  * *palette*: the index of its colour in a palette of 768 entries of 24 bits that the
+    core fills with the colours that appear (`gb_palette`); the framework looks the
+    colour up when it shows the frame, so colours are exact. An entry is reused five
+    frames after its colour was last on screen. When more than 768 colours are in use
+    within that time (HAM pictures, colour ramps that change every frame) the newest are
+    shown in 256 fixed, dithered colours until entries free up.
+* The framework scales a core's picture by the same whole factor in both directions;
+  `patches/framework/` adds scaling each direction separately, fitting all lines to the
+  screen height, and the palette, which this picture needs, 720p HDMI, and a picture of
+  the core's own on HDMI for RTG (`0003`: the framework names each pixel, the core
+  answers with its colour 12 clocks later); `tools/patch_framework.sh` applies them to
+  the submodule.
 * PAL runs at 50 Hz on the 60 Hz panel.
-* **Not yet run on a Game Bub.** Everything is tested in simulation (see *Simulation*);
-  the bitstream builds and meets timing.
+* Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
+  (rev 4) with a floppy image; hard disks, the dock keyboard and mouse are tested in
+  simulation (see *Simulation*) and by the firmware's unit tests.
 
 ## How it works
 
@@ -142,7 +186,7 @@ unselected ones quietly.
 | Main_MiSTer minimig_fdd.cpp | `gb_floppy`: the same track encoding, sync word handling, header and data checks in hardware |
 | Main_MiSTer ide.cpp | `gb_ide`: the same commands, geometry rules and virtual RDB in hardware, on the management port of the unchanged `ide.sv`; sectors through the framework's on-demand file commands |
 | hps_io / hps_ext | `gb_io_master`: drives the same IO_UIO / IO_FPGA / IO_STROBE bus |
-| video_mixer, scaler | `gb_video`: 320 x 240 window into the framework's frame buffer |
+| video_mixer, scaler | `gb_video`: 640 x 256 window into the framework's frame buffer; `gb_palette`: 24 bit colours to 10 bit palette indices |
 | audio_out | `gb_audio`: A500 filter, stereo mix |
 | joysticks, PS/2 | `gb_input`: buttons, mouse emulation, keys |
 
@@ -162,6 +206,7 @@ Host (MCU) memory map:
 | 0x0000_0000 | ID "MMIG", version, debug counters (floppy sectors read/written, last floppy error, boot state; from 0x24 hard disk state, sectors read/written, geometry and size of both drives) |
 | 0x0000_1000, 1004 | statistics: clocks paused / run (the firmware's convention) |
 | 0x0000_1030, 1034 | mouse motion and buttons (firmware fork) |
+| 0x0000_1038 | keyboard event: USB HID usage, bit 8 set when pressed (firmware fork) |
 | 0x0000_1040 - 107C | settings |
 | 0x1000_0000 + n * 1 MB | disk image n (files 0 to 3) |
 | 0x2000_0000 | Kickstart (file 4) |
@@ -198,6 +243,10 @@ are inlined, and the patches in `patches/minimig/` are applied:
   written with nonblocking ones. Synthesis builds the same registers; in simulation the
   blocking writes were a race, and with Verilator 5 the copper never restarted at the
   start of a frame.
+* `0005`: the second SDRAM chip: the 16 MB Zorro III board, and uncached reads drain the
+  rest of the SDRAM's burst in `cpu_cache_new`.
+* `0006`: no `$DD4000-$DD5FFF` window. On MiSTer it is shared memory in DDR3 through
+  which Main_MiSTer serves the SHARE: device; nothing serves it here.
 
 `rtl/gamebub/compat/` holds portable replacements for the two Altera RAM primitives the
 MiSTer tree uses.
@@ -210,6 +259,7 @@ and Python 3.12 or 3.13.
 ```
 git clone --recurse-submodules https://github.com/apolkosnik/Minimig_GameBub
 cd Minimig_GameBub
+tools/patch_framework.sh
 ./mill root.buildCore --target gamebub_rev4
 ```
 
@@ -240,13 +290,34 @@ needed; `sim/build.sh` first):
 
 | Test | |
 |---|---|
-| video | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 320 x 240 frame is checked |
-| input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1 |
+| video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 640 x 240 frame is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
+| input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
+| colour | `coltest.s` gives every line its own background colour (256 colours a frame): a still picture is exact in every pixel; then the colours change every frame until the palette runs out, and no entry may change while a frame using it can still be shown |
 | ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |
+| z3_030, z3_020 | `z3test.s`: the 68030 (PMOVE) or the 68020 (F-line), autoconfig of the Zorro III and RTG boards, patterns over the 16 MB board and the RTG memory in the second SDRAM chip, byte and word lanes |
+| rtg | `rtgtest.s` on the 68030: the RTG board's ID at `$B80100` and in its autoconfigured window, the palette written as longs and read back, six modes (8 bit palette 640 x 480, R5G6B5PC 320 x 240 from an unaligned base, B8G8R8 333 x 111 with odd base and stride, R8G8B8A8 640 x 480, 15 bit 1024 x 768 scaled down, 1100 x 300 cut at 1024). For each the bench (which plays the framework's HDMI side in `tb_top`) checks every pixel of a whole 1280 x 720 frame against the board's memory in the SDRAM model, and that no line was shown before it was fetched |
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
+
+`sim/hdmi720/run_hdmi720.sh` (branch `hdmi-720p`: 1280x720 HDMI from the dock, framework
+patch `0002-hdmi-720p.patch`, after the 3DO core's 720p test) runs the generated
+HandheldTop with the whole core and the framework's hdmi module and decodes the TMDS
+output as a sink would: CEA-861 VIC 4 timing, the AVI InfoFrame, audio clock
+regeneration and samples, and every pixel of two frames against the frame buffer,
+palette and overlay it wrote (`+mode=0`: direct colours, 240 lines at 3x; `+mode=1`:
+palette, 256 lines fit). The picture is 2x across, all 1280 columns. `+mode=2` checks the
+core's own picture (patch `0003`): the core's colour output is forced to a pattern of the
+pixel the framework named 12 clocks before, and every pixel of the screen must be that
+pattern at its own place, the overlay on top.
+
+`sim/gls/run_palette_gls.sh` (Vivado 2018.3) synthesizes `gb_palette` for the board's
+FPGA and runs the netlist next to the RTL in xsim: a fade of 256 colours over 16 frames,
+then a still picture; every clock must match and the still frames must need no fixed
+colours. Run it after any change to `gb_palette`: v0.6 to v0.6.3 passed every Verilator
+test while Vivado had dropped the palette RAM's address choice, and on the FPGA no colour
+was found again (dithering and flicker in palette mode).
 
 Results of the last run (Kickstart 1.3 rev 34.5, 3.1 rev 40.68 A1200, WhichAmiga 1.4):
 all fifteen pass. Kickstart 1.3 shows its insert disk picture, boots WhichAmiga's OFS disk

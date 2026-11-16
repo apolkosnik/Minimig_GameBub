@@ -13,7 +13,7 @@
 //                              gb_ide (hard disk images on the Gayle IDE
 //                              port, on-demand file commands)
 //                              gb_host (Game Bub MCU: files, settings)
-//   video_mixer / scaler       gb_video (320 x 240 into the framework)
+//   video_mixer / scaler       gb_video (640 x 240 into the framework)
 //   audio filters              gb_audio
 //   joysticks, PS/2            gb_input (Game Bub controllers, InputExtendedV0)
 //
@@ -37,12 +37,23 @@ module minimig_gamebub
 	output logic        clocks_clockOutDisplay,
 	output logic        clocks_clockOutSpi,
 	output logic        clocks_locked,
-	output logic [4:0]  video_data_r,
-	output logic [5:0]  video_data_g,
-	output logic [4:0]  video_data_b,
+	output logic [2:0]  video_data_r,
+	output logic [3:0]  video_data_g,
+	output logic [2:0]  video_data_b,
 	output logic        video_dataEnable,
 	output logic        video_vblank,
 	output logic        video_hblank,
+	output logic        video_fit,
+	output logic        video_palette_enable,
+	output logic        video_palette_write,
+	output logic [9:0]  video_palette_index,
+	output logic [23:0] video_palette_color,
+	input  logic        video_external_clock,
+	input  logic        video_external_active,
+	input  logic [10:0] video_external_x,
+	input  logic [9:0]  video_external_y,
+	output logic [23:0] video_external_color,
+	output logic        video_external_enable,
 	output logic [15:0] audio_left,
 	output logic [15:0] audio_right,
 	input  logic        host_mem_enable,
@@ -108,8 +119,8 @@ module minimig_gamebub
 	input  logic [7:0]  input_slots_1_analog_leftTrigger,
 	input  logic [7:0]  input_slots_1_analog_rightTrigger,
 	output logic        sdram_clock,
-	output logic        sdram_cke,
-	output logic        sdram_cs,
+	output logic [1:0]  sdram_cke,
+	output logic [1:0]  sdram_cs,
 	output logic        sdram_ras,
 	output logic        sdram_cas,
 	output logic        sdram_we,
@@ -128,13 +139,14 @@ localparam [24:1] KICK_STAGE = 24'hB80000;
 // ===========================================================================
 // Clocks
 // ===========================================================================
-wire clk_114, clk_sys, locked;
+wire clk_114, clk_sys, clk_sdram, locked;
 
 gb_clocks #(.DISPLAY_DIVIDER(DISPLAY_DIVIDER)) clocks
 (
 	.clk_in_50mhz (clocks_clockIn50M),
 	.clk_114      (clk_114),
 	.clk_sys      (clk_sys),
+	.clk_sdram    (clk_sdram),
 	.clk_display  (clocks_clockOutDisplay),
 	.clk_spi      (clocks_clockOutSpi),
 	.locked       (locked)
@@ -171,12 +183,16 @@ wire [11:0] drv_slot;
 wire [31:0] drv_tracks;
 wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
-wire  [3:0] video_vpos;
+wire  [4:0] video_vpos;
+wire        video_fit_set, video_palette_set, video_palette_test;
+wire [19:0] video_fixed_pixels;
 wire  [7:0] fdd_error;
 wire [15:0] fdd_sectors_read, fdd_sectors_written;
 wire        hmouse_valid;
 wire [15:0] hmouse_dx, hmouse_dy;
 wire  [2:0] hmouse_btn;
+wire        hkey_valid, hkey_down;
+wire  [7:0] hkey_usage;
 wire        f_idle, f_committing;
 
 wire [31:0] hc_cmd, hc_p1, hc_p2, hc_p3, hc_p4, hc_p5, hc_res0, hc_res1, hc_res2;
@@ -244,10 +260,16 @@ gb_host #(
 	.key_start        (key_start),
 	.key_select       (key_select),
 	.video_vpos       (video_vpos),
+	.video_fit        (video_fit_set),
+	.video_palette    (video_palette_set),
+	.video_palette_test (video_palette_test),
 	.hmouse_valid     (hmouse_valid),
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
 	.hmouse_btn       (hmouse_btn),
+	.hkey_valid       (hkey_valid),
+	.hkey_usage       (hkey_usage),
+	.hkey_down        (hkey_down),
 	.stat_run         (~core_reset & focus),
 	.stat_stall       (~core_reset & ~focus),
 	.fdd_error        (fdd_error),
@@ -272,7 +294,8 @@ gb_host #(
 	.ide_chs0         (ide_chs0),
 	.ide_chs1         (ide_chs1),
 	.ide_total0       (ide_total0),
-	.ide_total1       (ide_total1)
+	.ide_total1       (ide_total1),
+	.video_fixed_pixels (video_fixed_pixels)
 );
 
 // ===========================================================================
@@ -478,10 +501,10 @@ wire  [2:0] cachecfg;
 wire  [6:0] memcfg;
 wire        bootrom;
 
-// Only 68000, 68010 and 68EC020 are offered: the 68030 needs the 32 bit
-// DDR3 fast RAM path, a full 68020 the Zorro III/RTG boards. Folding the
-// other encodings here lets synthesis drop the 68030 MMU.
-wire  [4:0] cpucfg_m = {2'b00, cpucfg[1], (cpucfg[1:0] == 2'b10) ? 2'b11 : cpucfg[1:0]};
+// 68000, 68010, 68EC020, 68020 and 68030 (with its MMU). The 68020 and
+// 68030 address 32 bits: Zorro III RAM and the RTG board's memory are in
+// the second SDRAM chip (see the SDRAM section).
+wire  [4:0] cpucfg_m = cpucfg;
 
 wire cpu_type = cpucfg_m[1];
 reg  cpu_ph1;
@@ -520,6 +543,11 @@ wire        ram_ready;
 wire        ar_fetch;
 wire        dcache_sw_en;
 wire        toccata_ena, a2065_ena;
+wire [15:0] fastchip_dout;
+wire        fastchip_sel, fastchip_lds, fastchip_uds, fastchip_rnw;
+wire        fastchip_selack, fastchip_ready;
+wire        rtg_reg_sel;
+wire [15:0] rtg_lines, rtg_late;
 wire  [7:0] toccata_base, a2065_base, cdtv_base;
 
 always @(posedge clk_114) begin
@@ -574,19 +602,19 @@ cpu_wrapper cpu_wrapper
 	.chip_din2    (chip_din2       ),
 	.chip_dout2   (chip_rd2        ),
 
-	.fastchip_dout   (16'h0000     ),
-	.fastchip_sel    (             ),
-	.fastchip_lds    (             ),
-	.fastchip_uds    (             ),
-	.fastchip_rnw    (             ),
-	.fastchip_selack (1'b0         ),
-	.fastchip_ready  (1'b0         ),
+	.fastchip_dout   (fastchip_dout ),
+	.fastchip_sel    (fastchip_sel  ),
+	.fastchip_lds    (fastchip_lds  ),
+	.fastchip_uds    (fastchip_uds  ),
+	.fastchip_rnw    (fastchip_rnw  ),
+	.fastchip_selack (fastchip_selack),
+	.fastchip_ready  (fastchip_ready),
 	.fastchip_lw     (             ),
 
 	.cpucfg       (cpucfg_m        ),
 	.ntsc         (ntsc            ),
 	.cachecfg     (cachecfg        ),
-	.fastramcfg   ({1'b0, memcfg[5:4]}),   // Zorro II RAM only
+	.fastramcfg   (memcfg[6:4]     ),   // 0-3 Zorro II RAM, 6: Zorro III 16 MB (8 MB Zorro II on a 24 bit CPU)
 	.bootrom      (bootrom         ),
 
 	.toccata_ena  (toccata_ena     ),
@@ -610,7 +638,6 @@ cpu_wrapper cpu_wrapper
 	.ramdout2     (ram_dout        ),   // fast RAM is in the same SDRAM
 	.ramdin       (ram_din         ),
 	.ramready     (ram_ready       ),
-	.ramshared    (                ),
 	.ramlong1     (                ),
 	.ramdin_lo    (                ),
 	.ramdout_hi   (16'h0000        ),
@@ -627,7 +654,7 @@ cpu_wrapper cpu_wrapper
 	.z3ram_ena1   (                ),
 	.rtg_ena      (                ),
 	.rtg_base     (                ),
-	.rtg_reg_sel  (                ),
+	.rtg_reg_sel  (rtg_reg_sel     ),
 	.dcache_sw_en (dcache_sw_en    )
 );
 
@@ -643,14 +670,21 @@ wire        _ram_ble;      // sram lower byte select
 wire        _ram_we;       // sram write enable
 wire        _ram_oe;       // sram output enable
 
-// CPU RAM: main memory as on MiSTer, Zorro II RAM ($200000-$9FFFFF,
-// ramaddr[28] set) in the next 8 MB
+// CPU RAM. Chip 0: main memory as on MiSTer, Zorro II RAM ($200000-$9FFFFF,
+// ramaddr[28] set) in the next 8 MB. Chip 1 (cpu_sdram_addr[25]): the RTG
+// board's 8 MB of video memory (ramaddr[28:23] = 001110) at 0, the 16 MB
+// Zorro III board (ramaddr[27] set) at 16 MB.
+wire        z3_sel   = ram_addr[27] & ~ram_addr[28];
+wire        rtg_sel  = (ram_addr[28:23] == 6'b001110);
 wire        zram_sel = |ram_addr[28:26];
-wire [24:1] cpu_sdram_addr = {1'b0, zram_sel, ram_addr[22:1]};
+wire [25:1] cpu_sdram_addr = z3_sel  ? {2'b11, ram_addr[23:1]} :
+                             rtg_sel ? {3'b100, ram_addr[22:1]} :
+                                       {2'b00, zram_sel, ram_addr[22:1]};
 
-sdram_ctrl ram1
+gb_sdram_ctrl ram1
 (
 	.sysclk       (clk_114         ),
+	.sdclk        (clk_sdram       ),
 	.reset_n      (~reset_114      ),
 	.c_7m         (c1              ),
 
@@ -699,7 +733,54 @@ sdram_ctrl ram1
 	.hostDQM      (hp_dqm          ),
 	.hostWR       (hp_wr           ),
 	.hostRD       (hp_rd           ),
-	.hostAck      (hp_ack          )
+	.hostAck      (hp_ack          ),
+
+	.burstAddr    (burst_addr      ),
+	.burstReq     (burst_req       ),
+	.burstUrgent  (burst_urgent    ),
+	.burstAck     (burst_ack       ),
+	.burstData    (burst_data      ),
+	.burstValid   (burst_valid     )
+);
+
+// ===========================================================================
+// RTG: the board's registers and palette (fastchip, as on MiSTer) and its
+// picture from the second SDRAM chip on HDMI (gb_rtg)
+// ===========================================================================
+wire [24:4] burst_addr;
+wire        burst_req, burst_urgent, burst_ack, burst_valid;
+wire [15:0] burst_data;
+
+gb_rtg rtg
+(
+	.clk_sys     (clk_sys              ),
+	.reset       (~cpu_rst | ~cpu_nrst_out),
+	.sel         (fastchip_sel         ),
+	.rtg_reg_sel (rtg_reg_sel          ),
+	.addr        (chip_addr            ),
+	.din         (chip_din             ),
+	.uds         (~fastchip_uds        ),
+	.lds         (~fastchip_lds        ),
+	.rnw         (fastchip_rnw         ),
+	.sel_ack     (fastchip_selack      ),
+	.ready       (fastchip_ready       ),
+	.dout        (fastchip_dout        ),
+	.enable      (video_external_enable),
+
+	.clk_114     (clk_114              ),
+	.burstAddr   (burst_addr           ),
+	.burstReq    (burst_req            ),
+	.burstUrgent (burst_urgent         ),
+	.burstAck    (burst_ack            ),
+	.burstData   (burst_data           ),
+	.burstValid  (burst_valid          ),
+
+	.clk_av      (video_external_clock ),
+	.av_x        (video_external_x     ),
+	.av_y        (video_external_y     ),
+	.av_color    (video_external_color ),
+	.dbg_lines   (rtg_lines            ),
+	.dbg_late    (rtg_late             )
 );
 
 // ===========================================================================
@@ -898,15 +979,22 @@ gb_video video
 	.reset   (reset_d),
 	.ntsc    (ntsc),
 	.vpos    (video_vpos),
+	.fit_height (video_fit_set),
+	.fit     (video_fit),
+	.palette_mode (video_palette_set),
+	.palette_test (video_palette_test),
+	.palette_on   (video_palette_enable),
 	.r_in    (red),
 	.g_in    (green),
 	.b_in    (blue),
 	.hsync_n (hs),
 	.vsync_n (vs),
-	.r       (video_data_r),
-	.g       (video_data_g),
-	.b       (video_data_b),
+	.index   ({video_data_r, video_data_g, video_data_b}),
 	.de      (video_dataEnable),
+	.pal_we    (video_palette_write),
+	.pal_index (video_palette_index),
+	.pal_color (video_palette_color),
+	.fixed_pixels (video_fixed_pixels),
 	.hblank  (video_hblank),
 	.vblank  (video_vblank)
 );
@@ -962,6 +1050,9 @@ gb_input input_map
 	.hmouse_dx  (hmouse_dx),
 	.hmouse_dy  (hmouse_dy),
 	.hmouse_btn (hmouse_btn),
+	.hkey_valid (hkey_valid),
+	.hkey_usage (hkey_usage),
+	.hkey_down  (hkey_down),
 	.joy_port1  (joy_port1),
 	.joy_port2  (joy_port2),
 	.mouse_btn  (mouse_btn),

@@ -1,0 +1,98 @@
+diff --git a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
+index e4a11e6..1ab01e2 100644
+--- a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
++++ b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
+@@ -37,6 +37,10 @@ class VideoV0(
+   /// (n + 1) / 3, (n + 1) / 3 and the remaining bits of red, green and blue
+   /// (10 bits: 3, 3, 2).
+   val paletteBits: Int = 0,
++  /// If true, the core can show a picture of its own on HDMI in place of
++  /// the frame buffers (a display of any size kept in the core's memory):
++  /// `external`.
++  val externalPicture: Boolean = false,
+ ) extends Bundle {
+   require(paletteBits == 0 || paletteBits == colorDepthR + colorDepthG + colorDepthB)
+   val data = Output(ColorRGB.apply(colorDepthR, colorDepthG, colorDepthB))
+@@ -56,4 +60,26 @@ class VideoV0(
+     val index = UInt(paletteBits.W)
+     val color = UInt(24.W)
+   })) else None
++  /// With `externalPicture`. All but `enable` are in the domain of `clock`,
++  /// the HDMI pixel clock. While `active` (HDMI is shown, 1280 x 720), `x`
++  /// and `y` name a pixel of the 1650 x 750 frame in every clock (x of
++  /// 1280 and above, y of 720 and above: blanking), and `color` must be
++  /// that pixel's colour (red 23:16, green 15:8, blue 7:0) exactly
++  /// `VideoV0.externalLatency` clocks later. While `enable` (the core's
++  /// clock domain) is high and HDMI is shown, `color` is shown on the
++  /// whole screen (the framework's menu overlay on top) and the frame
++  /// buffers are not.
++  val external = if (externalPicture) Some(new Bundle {
++    val clock = Input(Clock())
++    val active = Input(Bool())
++    val x = Input(UInt(11.W))
++    val y = Input(UInt(10.W))
++    val color = Output(UInt(24.W))
++    val enable = Output(Bool())
++  }) else None
++}
++
++object VideoV0 {
++  /// Clocks from `external.x` / `external.y` to that pixel's `external.color`.
++  val externalLatency = 12
+ }
+diff --git a/src/main/scala/platform/handheld/HandheldTop.scala b/src/main/scala/platform/handheld/HandheldTop.scala
+index b96a182..f5d1229 100644
+--- a/src/main/scala/platform/handheld/HandheldTop.scala
++++ b/src/main/scala/platform/handheld/HandheldTop.scala
+@@ -209,6 +209,11 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val paletteIndex = UInt(16.W)
+     val paletteColor = UInt(24.W)
+   })
++  // The core's own picture on HDMI (VideoV0.external)
++  val coreExternal = core.getInterface("video") match {
++    case Some(video: VideoV0) => video.external
++    case _ => None
++  }
+   val (
+     videoWidth: Int,
+     videoHeight: Int,
+@@ -727,8 +732,21 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val videoOutput = ColorRGB(8, 8, 8).make(r = 0, g = 0, b = 0)
+     val darkenVideo = XpmCdcSingle(clock, controlVideoFilter.darken)
+     val fitVideo = XpmCdcSingle(clock, coreVideo.fit)
+-    when (framebufferInBounds) {
+-      val color = framebufferColor.convertTo(videoOutput)
++    // The core's own picture (HDMI only): set in the HDMI branch below.
++    val externalShown = WireDefault(false.B)
++    val externalColor = Wire(ColorRGB(8))
++    externalColor := DontCare
++    coreExternal.foreach { ext =>
++      ext.clock := io.clock_av
++      ext.active := false.B
++      ext.x := 0.U
++      ext.y := 0.U
++      externalColor.r := ext.color(23, 16)
++      externalColor.g := ext.color(15, 8)
++      externalColor.b := ext.color(7, 0)
++    }
++    when (framebufferInBounds || externalShown) {
++      val color = Mux(externalShown, externalColor, framebufferColor).convertTo(videoOutput)
+       when (darkenVideo) {
+         videoOutput.r := color.r >> 1
+         videoOutput.g := color.g >> 1
+@@ -826,6 +844,15 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+         (0 until screenHeight).forall(y => ((BigInt(y) * m) >> k) == BigInt(y * fitNum / fitDen))
+       }.getOrElse(throw new CoreException("no exact fit multiplier"))
+       val fitMul = (BigInt(fitNum) << fitShift) / fitDen + 1
++      // The core's picture: x / y of the pixel shown externalLatency clocks
++      // later, through one register here (the colour is used as it comes,
++      // and is shown with the same one clock lead as the frame buffers').
++      coreExternal.foreach { ext =>
++        ext.active := true.B
++        ext.x := RegNext(videoX + VideoV0.externalLatency.U)
++        ext.y := RegNext(videoY)
++        externalShown := XpmCdcSingle(clock, ext.enable)
++      }
+       val framebufferX1 = RegNext(videoX - videoOffsetX.U + framebufferReadDelay.U)
+       val framebufferY1 = RegNext(videoY - videoOffsetY.U)
+       val framebufferFit1 = RegNext(videoY * fitMul.U)

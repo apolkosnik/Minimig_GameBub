@@ -53,11 +53,13 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -73,10 +75,41 @@ static uint64_t cyc28 = 0;          // clk_28 cycles since start
 static int failures = 0;
 
 #define FAIL(...) do { std::fprintf(stderr, "FAIL: " __VA_ARGS__); std::fprintf(stderr, "\n"); failures++; } while (0)
+static void rtg_sample();   // RTG picture check, at every rising clk_av edge
 
 // -------------------------------------------------------------- video
-static const int VW = 320, VH = 240;
-static std::vector<uint32_t> fb(VW * VH);
+static const int VW = 640, VH = 256;   // the frame buffer
+static std::vector<uint32_t> fb(VW * VH);        // the last whole frame, as colours
+static std::vector<uint16_t> fbi(VW * VH);       // the frame being written: palette indices
+static std::vector<uint32_t> fbt(VW * VH);       // the colours the chipset produced for them
+static uint64_t pixels_wrong = 0, pixels_fixed_far = 0, pixels_checked = 0;
+// The framework's palette (patches/framework): written by the core, looked
+// up when a frame buffer is shown. The two frame buffers the framework
+// keeps are checked against it: an entry must not change while a frame
+// that uses it can still be on screen.
+static uint32_t palette[1024];
+static std::vector<uint16_t> shown_i[2] = { std::vector<uint16_t>(VW * VH), std::vector<uint16_t>(VW * VH) };
+static bool shown_pal[2] = { false, false };   // the frame was palette indices
+// a frame buffer value as the framework shows it: a palette index, or with
+// the palette off a 3 + 4 + 3 bit colour, the bits repeated to 8
+static uint32_t direct_color(uint32_t v) {
+	uint32_t r = (v >> 7) & 7, g = (v >> 3) & 15, b = v & 7;
+	return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 4 | g) << 8) | (b << 5 | b << 2 | b >> 1);
+}
+static std::vector<uint32_t> shown_c[2] = { std::vector<uint32_t>(VW * VH), std::vector<uint32_t>(VW * VH) };
+static int shown_n = 0;
+static uint64_t palette_writes = 0, palette_stale = 0;
+// sim/asm/coltest.s: its F (chip RAM $100) and the pixels in fixed colours
+// of every frame
+static std::vector<std::pair<uint32_t, uint32_t>> frame_fixed;
+static uint32_t sdram_peek16_fwd(uint32_t waddr);
+static uint32_t palette_color(uint32_t index) {
+	if (index >= 768) {   // the fixed colours: 3 + 3 + 2 bits, each repeated to 8
+		uint32_t r = (index >> 5) & 7, g = (index >> 2) & 7, b = index & 3;
+		return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b * 0x55);
+	}
+	return palette[index];
+}
 static int fb_x = 0, fb_y = 0;
 static bool prev_hblank = true, prev_vblank = true;
 static int frames = 0;
@@ -90,9 +123,14 @@ static int frames_changed = 0;
 static void save_frame(const std::string &path) {
 	FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) return;
-	std::fprintf(f, "P6\n%d %d\n255\n", VW, VH);
-	for (int i = 0; i < VW * VH; i++) {
-		uint8_t px[3] = { uint8_t(fb[i] >> 16), uint8_t(fb[i] >> 8), uint8_t(fb[i]) };
+	// as the framework shows it on 480 rows (patches/framework): the first
+	// 240 lines twice each, or with fit all 256 lines, line = row * 8 / 15
+	const int rows = 480;
+	bool fit = top->video_fit;
+	std::fprintf(f, "P6\n%d %d\n255\n", VW, rows);
+	for (int y = 0; y < rows; y++) for (int x = 0; x < VW; x++) {
+		uint32_t p = fb[(fit ? y * VH / rows : y / 2) * VW + x];
+		uint8_t px[3] = { uint8_t(p >> 16), uint8_t(p >> 8), uint8_t(p) };
 		std::fwrite(px, 1, 3, f);
 	}
 	std::fclose(f);
@@ -104,15 +142,75 @@ static void video_sample() {
 	bool vb_edge = vb && !prev_vblank;
 	bool hb_edge = hb && !prev_hblank;
 
+	if (top->video_pal_we) {
+		palette[top->video_pal_index & 1023] = top->video_pal_color;
+		palette_writes++;
+		{
+			static std::map<uint32_t, int> written;
+			int &n = written[top->video_pal_color];
+			n++;
+			if (std::getenv("PALLOG")) std::fprintf(stderr, "palwrite frame %d line %d x %d: entry %u = %06X\n", frames, fb_y, fb_x, top->video_pal_index, top->video_pal_color);
+			if (n == 2 && std::getenv("PALDEBUG")) std::fprintf(stderr, "palette: colour %06X given a second entry (frame %d, line %d, x %d)\n", top->video_pal_color, frames, fb_y, fb_x);
+		}
+	}
 	if (de && fb_x < VW && fb_y < VH) {
+		// the pixel is a palette index: r, g, b are its top, middle and low bits
 		uint32_t r = top->video_r, g = top->video_g, b = top->video_b;
-		r = (r << 3) | (r >> 2);
-		g = (g << 2) | (g >> 4);
-		b = (b << 3) | (b >> 2);
-		fb[fb_y * VW + fb_x] = (r << 16) | (g << 8) | b;
+		fbi[fb_y * VW + fb_x] = uint16_t((r << 7) | (g << 3) | b);
+		fbt[fb_y * VW + fb_x] = top->dbg_pixel_color;
 	}
 	if (vb_edge) {
-		// a frame completed
+		// a frame completed: its colours as the framework would show it now
+		const bool pal_on = top->video_pal_on;
+		for (int i = 0; i < VW * VH; i++) fb[i] = pal_on ? palette_color(fbi[i]) : direct_color(fbi[i]);
+		// palette mode: every pixel shown must be the colour the chipset
+		// produced, from a palette entry exactly, or in the fixed colours
+		// the nearest of them (the dither moves a component one level)
+		if (pal_on && frames >= 2) {
+			const int lines = top->video_fit ? VH : 240;
+			for (int i = 0; i < VW * lines; i++) {
+				uint32_t t = fbt[i], p = fb[i];
+				pixels_checked++;
+				if (fbi[i] < 768) {
+					if (p != t && pixels_wrong++ < 5)
+						std::fprintf(stderr, "pixel (%d,%d) frame %d: index %u shows %06X, the chipset's colour %06X\n", i % VW, i / VW, frames, fbi[i], p, t);
+				} else {
+					int dr = std::abs(int(p >> 16) - int(t >> 16)), dg = std::abs(int((p >> 8) & 255) - int((t >> 8) & 255)), db = std::abs(int(p & 255) - int(t & 255));
+					if ((dr > 37 || dg > 37 || db > 85) && pixels_fixed_far++ < 5)
+						std::fprintf(stderr, "pixel (%d,%d) frame %d: fixed colour %06X for the chipset's %06X\n", i % VW, i / VW, frames, p, t);
+				}
+			}
+		}
+		{
+			uint32_t fixed = 0;
+			const int lines = top->video_fit ? VH : 240;
+			if (pal_on) for (int i = 0; i < VW * lines; i++) if (fbi[i] >= 768) fixed++;
+			frame_fixed.push_back({sdram_peek16_fwd(0x100 >> 1), fixed});
+		}
+		// the two frames before it may still be on screen: their indices
+		// must still give the colours they had
+		// (the lines the framework shows: all 256 with fit, else the first 240)
+		const int shown_lines = top->video_fit ? VH : 240;
+		for (int k = 0; k < 2 && k < shown_n; k++) if (shown_pal[k] && pal_on)
+			for (int i = 0; i < VW * shown_lines; i++)
+				if (palette_color(shown_i[k][i]) != shown_c[k][i]) palette_stale++;
+		shown_i[1].swap(shown_i[0]); shown_c[1].swap(shown_c[0]);
+		shown_pal[1] = shown_pal[0];
+		shown_i[0] = fbi; shown_c[0] = fb; shown_pal[0] = pal_on;
+		if (std::getenv("FBTDUMP")) {
+			std::map<uint32_t, int> n;
+			for (int i = 0; i < VW * VH; i++) n[fbt[i]]++;
+			std::fprintf(stderr, "frame %d: %zu chipset colours\n", frames, n.size());
+			if (n.size() > 256 && n.size() < 2000) {
+				// the pixels with colours seen fewer than 40 times, and their neighbours
+				int shown = 0;
+				for (int i = 1; i + 1 < VW * VH && shown < 8; i++) if (n[fbt[i]] < 40) {
+					std::fprintf(stderr, "  (%d,%d): %06X %06X [%06X] %06X %06X\n", i % VW, i / VW, fbt[i-2 < 0 ? 0 : i-2], fbt[i-1], fbt[i], fbt[i+1], fbt[i+2 < VW*VH ? i+2 : i]);
+					shown++;
+				}
+			}
+		}
+		if (shown_n < 2) shown_n++;
 		uint32_t h = 2166136261u;
 		bool blank = true;
 		for (auto p : fb) { h = (h ^ p) * 16777619u; if (p != fb[0]) blank = false; }
@@ -146,11 +244,12 @@ static bool h_busy = false;
 static std::FILE *cpu_trace = nullptr;
 static uint64_t trace_from = 0;   // clk_28 cycle
 
-// The SDRAM pins: sdram_ctrl drives them all from clk_114 registers (put in
-// the I/O blocks by rtl/gamebub/minimig.xdc) and makes the SDRAM clock from
-// one of them. Its commands, address, DQM and data must only change at the
-// clk_114 edges at which the SDRAM clock falls, so that the SDRAM sees them
-// stable a whole clk_114 period before and after its rising edge.
+// The SDRAM pins: gb_sdram_ctrl drives them all from clk_114 registers (put
+// in the I/O blocks by rtl/gamebub/minimig.xdc) and forwards clk_114,
+// inverted, as the SDRAM clock (an ODDR). Its commands, address, DQM and
+// data must only change at the clk_114 edges at which the SDRAM clock
+// falls, so that the SDRAM sees them stable half a clk_114 period before
+// and after its rising edge. Checked after both clk_114 edges.
 static uint64_t sd_edges = 0, sd_edge_errors = 0;
 static bool sd_prev_clk = false;
 static uint64_t sd_prev_bus = 0;
@@ -219,14 +318,26 @@ static void cycle28() {
 		prev_as = as;
 	}
 
+	// clk_av (HDMI pixel clock): two periods every three clk_114 periods,
+	// rising every third clk_114 half period
+	static uint32_t av_half = 0;
 	for (int p = 0; p < 4; p++) {
 		top->clk_114 = 1;
 		if (p == 0) top->clk_28 = 1;
 		if (p == 2) top->clk_28 = 0;
+		bool av_rise = (av_half % 3) == 0;
+		top->clk_av = (av_half % 3) != 2;
+		av_half++;
 		top->eval();
 		sdram_pin_check();
+		if (av_rise) rtg_sample();
 		top->clk_114 = 0;
+		av_rise = (av_half % 3) == 0;
+		top->clk_av = (av_half % 3) != 2;
+		av_half++;
 		top->eval();
+		sdram_pin_check();
+		if (av_rise) rtg_sample();
 	}
 	cyc28++;
 
@@ -520,6 +631,101 @@ static std::vector<uint8_t> drive_sector(const Geo &g, const std::vector<uint8_t
 
 static uint32_t chip16(uint32_t addr);
 
+// ---------------------------------------------------------------------------
+// RTG picture check (--rtg-check): the framework's HDMI side is in tb_top;
+// every pixel of the 1280 x 720 picture is compared with the colour this
+// model expects from the RTG registers, the palette the test ROM writes
+// (rtgtest.s) and the board's memory in the chip 1 SDRAM model.
+// ---------------------------------------------------------------------------
+static bool rtg_check = false;
+static int rtg_mode = 0;              // the mode being checked (ROM word $100)
+static int rtg_skip = 0;              // whole frames still to skip
+static bool rtg_in_frame = false;     // checking the current frame
+static bool rtg_frame_done = false;   // a whole frame was checked
+static uint64_t rtg_bad = 0, rtg_pixels = 0, rtg_bad_total = 0;
+static int rtg_modes_done = 0;
+static int rtg_last_acked = 0;        // modes are shown in increasing order
+static uint32_t rtg_late_start = 0;
+struct RtgFrame {
+	uint32_t hs, vs, fmt, base, stride, bpp;
+	bool ok, wide;
+	uint32_t step, offx, offy, endx, endy;
+	std::vector<uint8_t> mem;          // the board's memory from base
+} rtg_f;
+static uint32_t rtg_pal(uint32_t i) { return (i << 16) | (((i * 3) & 255) << 8) | (255 - i); }
+static uint8_t rtg_byte(uint32_t off) {   // a byte of the board's memory (chip 1)
+	uint32_t w = sdram_peek16(off >> 1);
+	return (off & 1) ? (w >> 8) : (w & 255);
+}
+static void rtg_take_frame() {
+	RtgFrame &f = rtg_f;
+	f.hs = std::min<uint32_t>(top->rtg_hsize, 1024); f.vs = std::min<uint32_t>(top->rtg_vsize, 2047);
+	f.fmt = top->rtg_format; f.base = top->rtg_base & 0x7FFFFF; f.stride = top->rtg_stride;
+	uint32_t b3 = f.fmt & 7;
+	f.bpp = b3 == 3 ? 1 : b3 == 4 ? 2 : b3 == 5 ? 3 : 4;
+	f.ok = f.hs && f.vs;
+	if (!f.ok) return;
+	// fitted to 1280 x 720, the same factor both ways, centred
+	f.wide = f.hs * 720 >= f.vs * 1280;
+	f.step = f.wide ? (f.hs << 16) / 1280 : (f.vs << 16) / 720;
+	uint32_t shown = f.wide ? f.vs * 1280 / f.hs : f.hs * 720 / f.vs;
+	f.offx = f.wide ? 0 : (1280 - shown) / 2; f.endx = f.wide ? 1280 : f.offx + shown;
+	f.offy = f.wide ? (720 - shown) / 2 : 0; f.endy = f.wide ? f.offy + shown : 720;
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+	size_t n = size_t(f.vs) * f.stride + 8;
+	f.mem.resize(n);
+	for (size_t i = 0; i < n; i++) f.mem[i] = rtg_byte((f.base + uint32_t(i)) & 0x7FFFFF);
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+}
+static uint32_t rtg_expect(uint32_t x, uint32_t y) {
+	const RtgFrame &f = rtg_f;
+	if (!f.ok || x < f.offx || x >= f.endx || y < f.offy || y >= f.endy) return 0;
+	uint32_t sx = std::min<uint32_t>(((x - f.offx) * f.step) >> 16, f.hs - 1);
+	uint32_t sy = std::min<uint32_t>(((y - f.offy) * f.step) >> 16, f.vs - 1);
+	const uint8_t *p = &f.mem[size_t(sy) * f.stride + size_t(sx) * f.bpp];
+	uint32_t r, g, b, b3 = f.fmt & 7;
+	if (b3 == 3) {
+		uint32_t c = rtg_pal(p[0]);
+		r = c >> 16; g = (c >> 8) & 255; b = c & 255;
+	} else if (b3 == 4) {
+		uint32_t u = p[0] | (p[1] << 8);
+		uint32_t r5 = u & 31;
+		r = (r5 << 3) | (r5 >> 2);
+		if (f.fmt & 8) {
+			uint32_t g5 = (u >> 5) & 31, b5 = (u >> 10) & 31;
+			g = (g5 << 3) | (g5 >> 2); b = (b5 << 3) | (b5 >> 2);
+		} else {
+			uint32_t g6 = (u >> 5) & 63, b5 = (u >> 11) & 31;
+			g = (g6 << 2) | (g6 >> 4); b = (b5 << 3) | (b5 >> 2);
+		}
+	} else {
+		r = p[0]; g = p[1]; b = p[2];
+	}
+	if (f.fmt & 16) std::swap(r, b);
+	return (r << 16) | (g << 8) | b;
+}
+// at every rising clk_av edge
+static void rtg_sample() {
+	if (!rtg_check || !rtg_mode) return;
+	uint32_t x = top->rtg_x, y = top->rtg_y;
+	if (x == 0 && y == 0) {
+		if (rtg_in_frame) { rtg_in_frame = false; rtg_frame_done = true; }
+		else if (rtg_skip > 0) rtg_skip--;
+		else if (!rtg_frame_done) {
+			if (!top->rtg_enable) { FAIL("RTG mode %d: the picture is not enabled", rtg_mode); rtg_frame_done = true; return; }
+			rtg_take_frame();
+			rtg_in_frame = true;
+			rtg_bad = rtg_pixels = 0;
+			rtg_late_start = top->rtg_late;
+		}
+	}
+	if (!rtg_in_frame || x >= 1280 || y >= 720) return;
+	uint32_t e = rtg_expect(x, y), c = top->rtg_color;
+	rtg_pixels++;
+	if (c != e && rtg_bad++ < 8)
+		FAIL("RTG mode %d: pixel (%u,%u) is %06X, expected %06X", rtg_mode, x, y, c, e);
+}
+
 // chip RAM at addr holds these bytes
 static int compare_chip(const char *what, uint32_t addr, const std::vector<uint8_t> &e) {
 	int bad = 0;
@@ -575,6 +781,7 @@ static std::vector<uint16_t> mfm_track(int track) {
 }
 
 static uint32_t chip16(uint32_t addr) { return sdram_peek16(addr >> 1); }
+static uint32_t sdram_peek16_fwd(uint32_t waddr) { return sdram_peek16(waddr); }
 
 // -------------------------------------------------------------- main
 int main(int argc, char **argv) {
@@ -586,6 +793,7 @@ int main(int argc, char **argv) {
 	std::string disk[4];
 	std::vector<std::pair<uint32_t, uint32_t>> extra_settings;
 	double run_ms = 3000;
+	int rtg_modes_expected = 0;
 	struct Press { double ms; uint32_t mask; double len; };
 	std::vector<Press> presses, presses2;   // slot 0, slot 1
 	struct Stick { double ms; int v[6]; double len; };
@@ -608,10 +816,14 @@ int main(int argc, char **argv) {
 	bool check_vidtest = false;
 	bool floppy_write_test = false;
 	bool ide_test = false;
+	bool expect_no_fixed = false;
+	double coltest_ms = -1;       // when to check the still picture of sim/asm/coltest.s
+	bool coltest_done = false, coltest_end = false;
 	long expect_hdd_read = -1;
 	std::string save_hdf;
 	double expect_lr = -1;   // expected mean |right| / mean |left|
 	std::vector<std::pair<uint32_t, uint32_t>> dumps;   // SDRAM word address, words
+	std::vector<std::pair<uint32_t, uint32_t>> dumps1;  // the same in chip 1
 
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -639,9 +851,13 @@ int main(int argc, char **argv) {
 		else if (a == "--fw-latency-us") fw_latency = uint64_t(std::atof(next().c_str()) * 28.375);
 		else if (a == "--fw-verbose") fw_verbose = true;
 		else if (a == "--ide-test") ide_test = true;
+		else if (a == "--expect-no-fixed") expect_no_fixed = true;
+		else if (a == "--check-coltest") { coltest_ms = std::atof(next().c_str()); coltest_end = true; }
 		else if (a == "--expect-hdd-read") expect_hdd_read = std::atol(next().c_str());
 		else if (a == "--save-hdf") save_hdf = next();
 		else if (a == "--exit") do_exit = true;
+		else if (a == "--rtg-check") rtg_check = true;
+		else if (a == "--rtg-modes") rtg_modes_expected = std::atoi(next().c_str());
 		else if (a == "--save-dir") save_dir = next();
 		else if (a == "--expect-sectors") expect_sectors = std::atol(next().c_str());
 		else if (a == "--expect-written") expect_written = std::atol(next().c_str());
@@ -649,6 +865,7 @@ int main(int argc, char **argv) {
 		else if (a == "--check-vidtest") check_vidtest = true;
 		else if (a == "--floppy-write-test") floppy_write_test = true;
 		else if (a == "--expect-audio-ratio") expect_lr = std::atof(next().c_str());
+		else if (a == "--dump1") { std::string v = next(); auto e = v.find(':'); dumps1.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--dump") { std::string v = next(); auto e = v.find(':'); dumps.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--trace-cpu") cpu_trace = std::fopen(next().c_str(), "w");
 		else if (a == "--trace-from") trace_from = uint64_t(std::atof(next().c_str()) * 28375.0);
@@ -699,7 +916,7 @@ int main(int argc, char **argv) {
 	std::vector<Setting> settings = {
 		{0x1044, 0}, {0x1048, 0}, {0x104C, 1}, {0x1050, 0}, {0x1054, 0}, {0x1058, 0},
 		{0x105C, 0}, {0x1060, 7}, {0x1064, 1}, {0x1068, 2},
-		{0x106C, 0x40}, {0x1070, 0x44}, {0x1074, 0x50}, {0x1078, 0x45}, {0x107C, 8},
+		{0x106C, 0x40}, {0x1070, 0x44}, {0x1074, 0x50}, {0x1078, 0x45}, {0x107C, 0}, {0x1080, 1},
 	};
 	for (auto &s : settings) hwrite(s.addr, s.value);
 	for (auto &s : extra_settings) hwrite(s.first, s.second);
@@ -785,6 +1002,29 @@ int main(int argc, char **argv) {
 			s.ms = -1;
 		}
 		for (auto &h : hwrites) if (!h.done && ms >= h.ms) { hwrite(h.addr, h.value); h.done = true; }
+		// RTG: the ROM shows mode n (word $100 = $0100 + n) and waits for $102 = n
+		if (rtg_check) {
+			uint32_t w = chip16(0x100);
+			int m = ((w & 0xFF00) == 0x0100) ? int(w & 0xFF) : 0;
+			if (m > rtg_last_acked && m != rtg_mode && !rtg_in_frame) {
+				rtg_mode = m; rtg_skip = 2; rtg_frame_done = false;
+				std::printf("%.1f ms: RTG mode %d set\n", ms, m);
+			}
+			if (rtg_mode && rtg_frame_done) {
+				uint32_t late = uint32_t(uint16_t(top->rtg_late - rtg_late_start));
+				std::printf("%.1f ms: RTG mode %d: %dx%d format %02X: %llu pixels checked, %llu wrong, %u lines late, %u lines fetched\n",
+				            ms, rtg_mode, rtg_f.hs, rtg_f.vs, rtg_f.fmt, (unsigned long long)rtg_pixels,
+				            (unsigned long long)rtg_bad, late, top->rtg_lines);
+				if (rtg_pixels != 1280ull * 720ull) FAIL("RTG mode %d: %llu pixels checked", rtg_mode, (unsigned long long)rtg_pixels);
+				if (late) FAIL("RTG mode %d: %u lines shown without their buffer", rtg_mode, late);
+				rtg_bad_total += rtg_bad;
+				rtg_modes_done++;
+				sdram_poke16(0x102 >> 1, rtg_mode);
+				rtg_last_acked = rtg_mode;
+				rtg_frame_done = false;
+				rtg_mode = 0;
+			}
+		}
 		// chip RAM word at a byte address: SDRAM word address / 2
 		for (auto &c : checks) if (!c.done && ms >= c.ms) {
 			c.done = true;
@@ -803,6 +1043,22 @@ int main(int argc, char **argv) {
 				c.stage = 2;
 			}
 		}
+		// sim/asm/coltest.s, the still picture: line L is one colour,
+		// (L * 17) & 0xFFF, each nibble twice
+		if (coltest_ms >= 0 && !coltest_done && ms >= coltest_ms) {
+			coltest_done = true;
+			int bad = 0;
+			for (int y = 0; y < VH; y++) {
+				uint32_t c = uint32_t(y * 17) & 0xFFF;
+				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
+				for (int x = 0; x < VW; x++)
+					if (fb[y * VW + x] != e && bad++ < 5) FAIL("coltest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
+			}
+			uint32_t fixed = hread(0x40);
+			if (fixed) FAIL("coltest: %u pixels of the still picture found no palette entry", fixed);
+			if (chip16(0x100) != 0) FAIL("coltest: the picture is already moving (F = %u)", chip16(0x100));
+			if (!bad) std::printf("%.0f ms: coltest still picture: 256 colours, all %d pixels exact\n", ms, VW * VH);
+		}
 		if (!boot_seen && top->dbg_boot_done) { boot_seen = true; boot_done_at = cyc28; }
 		core_service();
 		cycle28();
@@ -820,11 +1076,73 @@ int main(int argc, char **argv) {
 		}
 	}
 	if (!boot_seen) FAIL("the configuration sequence never finished");
+	if (rtg_check) {
+		std::printf("RTG: %d modes checked, %llu pixels wrong\n", rtg_modes_done, (unsigned long long)rtg_bad_total);
+		if (rtg_modes_done != rtg_modes_expected) FAIL("RTG: %d modes checked, expected %d", rtg_modes_done, rtg_modes_expected);
+		if (rtg_bad_total) FAIL("RTG: %llu pixels wrong", (unsigned long long)rtg_bad_total);
+	}
 	else std::printf("configuration and Kickstart upload done after %.1f ms\n", (boot_done_at - run_start) / 28375.0);
 
 	uint32_t sec_rd = hread(0x10), sec_wr = hread(0x14), ferr = hread(0x18);
 	std::printf("floppy: %u sectors read, %u written, last error %u\n", sec_rd, sec_wr, ferr);
 	std::printf("video: %d frames, %d not blank, %d changes\n", frames, nonblank_frames, frames_changed);
+	{
+		uint32_t fixed = hread(0x40);
+		std::printf("palette: %llu entries written, %u pixels of the last frame in fixed colours, %llu pixels of earlier frames changed colour\n",
+		            (unsigned long long)palette_writes, fixed, (unsigned long long)palette_stale);
+		std::printf("pixels: %llu checked in palette mode, %llu with a wrong palette colour, %llu with a fixed colour not the nearest\n",
+		            (unsigned long long)pixels_checked, (unsigned long long)pixels_wrong, (unsigned long long)pixels_fixed_far);
+		if (pixels_wrong) FAIL("%llu pixels shown in the wrong palette colour", (unsigned long long)pixels_wrong);
+		if (pixels_fixed_far) FAIL("%llu pixels shown in a fixed colour that is not the nearest", (unsigned long long)pixels_fixed_far);
+		if (palette_stale) FAIL("palette entries changed while frames that use them could be on screen (%llu pixels)", (unsigned long long)palette_stale);
+		if (expect_no_fixed && fixed) FAIL("%u pixels of the last frame found no palette entry", fixed);
+		if (coltest_end) {
+			// sim/asm/coltest.s at the end: 256 new colours a frame. Every
+			// pixel is its line's colour exactly or, where the palette had
+			// no entry free, the fixed colour nearest below or above it.
+			if (!coltest_done) FAIL("coltest: the still picture was not checked");
+			// the twelve steps of seven frames: the palette has room, so
+			// no pixel of those frames may be in a fixed colour
+			{
+				int frames_checked = 0, frames_bad = 0;
+				for (auto &ff : frame_fixed) if (ff.first >= 1 && ff.first <= 12) {
+					frames_checked++;
+					if (ff.second && frames_bad++ < 5) FAIL("coltest: %u pixels in fixed colours in a frame of step %u, with room in the palette", ff.second, ff.first);
+				}
+				std::printf("coltest steps: %d frames of 12 colour changes, %d with pixels in fixed colours\n", frames_checked, frames_bad);
+				if (frames_checked < 70) FAIL("coltest: only %d frames of the twelve steps seen", frames_checked);
+			}
+			uint32_t f = chip16(0x100);
+			if (f < 32) FAIL("coltest: only %u steps", f);
+			int bad = 0, exact = 0, fixedpx = 0, tried = 0;
+			// the frame captured is one of the last few: find its F
+			for (uint32_t ff = f; ff + 6 > f && !tried; ff--) {
+				int ok = 0;
+				for (int y = 0; y < VH; y += 37) {
+					uint32_t c = (uint32_t(y) * 17 + ff * 2731) & 0xFFF;
+					uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
+					uint32_t p = fb[y * VW + 320];
+					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
+					if (dr <= 37 && dg <= 37 && db <= 85) ok++;
+				}
+				if (ok == 7) { tried = 1; f = ff; }
+			}
+			if (!tried) FAIL("coltest: the last frame matches none of the last frames' colours");
+			else for (int y = 0; y < VH; y++) {
+				uint32_t c = (uint32_t(y) * 17 + f * 2731) & 0xFFF;
+				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
+				for (int x = 0; x < VW; x++) {
+					uint32_t p = fb[y * VW + x];
+					if (p == e) { exact++; continue; }
+					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
+					if (dr <= 37 && dg <= 37 && db <= 85) fixedpx++;
+					else if (bad++ < 5) FAIL("coltest moving pixel (%d,%d) is %06X, its colour %06X", x, y, p, e);
+				}
+			}
+			std::printf("coltest moving picture (F = %u): %d pixels exact, %d in fixed colours, %d wrong\n", f, exact, fixedpx, bad);
+			if (fixedpx == 0) FAIL("coltest: the palette never ran out, the fixed colours were not used");
+		}
+	}
 	std::printf("audio: mean |sample| %.1f (left %.1f, right %.1f)\n",
 	            audio_samples ? double(audio_abs_sum) / audio_samples / 2 : 0.0,
 	            audio_samples ? double(audio_abs_l) / audio_samples : 0.0,
@@ -983,18 +1301,27 @@ int main(int argc, char **argv) {
 	}
 
 	// sim/asm/vidtest.s: 320 x 256 picture in the standard PAL display
-	// window; the frame shows its lines 8..247 (gb_video V_START), all 320
-	// pixels (H_START). Colour 1 yellow, colour 0 blue.
+	// window; the frame holds all 256 of its lines (Picture height, 0x1080,
+	// 1: the core tells the framework to fit them) or 240 from the one the
+	// Picture position setting gives (0x107C, 0..16; gb_video V_START), all
+	// 640 pixels (H_START). Colour 1 yellow, colour 0 blue.
 	if (check_vidtest) {
 		const uint32_t Y = 0xFFFF00, B = 0x0000FF;
+		int vpos = 0, fit = 1;
+		for (auto &e : extra_settings) if (e.first == 0x107C) vpos = int(e.second);
+		for (auto &e : extra_settings) if (e.first == 0x1080) fit = int(e.second) & 1;
+		if (bool(top->video_fit) != bool(fit)) FAIL("the core's fit output is %d, the setting %d", int(top->video_fit), fit);
+		if (fit) vpos = 0;
+		const int lines = fit ? 256 : 240;
 		int bad = 0;
-		for (int y = 0; y < VH; y++) for (int x = 0; x < VW; x++) {
-			int line = y + 8;
-			bool one = (line % 16 == 0) || line == 255 || x < 16 || x >= 304 || ((x - 16) % 8) < 4;
+		for (int y = 0; y < lines; y++) for (int x = 0; x < VW; x++) {
+			int line = y + vpos;
+			int lx = x / 2;   // the low resolution pixel, shown twice
+			bool one = (line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4;
 			uint32_t e = one ? Y : B;
 			if (fb[y * VW + x] != e && bad++ < 5) FAIL("vidtest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
 		}
-		if (!bad) std::printf("vidtest picture: all %d pixels as expected\n", VW * VH);
+		if (!bad) std::printf("vidtest picture: all %d pixels as expected (lines %d to %d of the display window)\n", VW * lines, vpos, vpos + lines - 1);
 	}
 
 	if (do_exit) {
@@ -1039,6 +1366,15 @@ int main(int argc, char **argv) {
 	}
 
 	std::printf("Agnus: DMACON %04X, copper at %06X\n", top->dbg_dmacon, top->dbg_cop_addr << 1);
+	if (!dumps1.empty()) {
+		svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+		for (auto &d : dumps1) {
+			std::printf("SDRAM chip 1 words at %06X:", d.first);
+			for (uint32_t i = 0; i < d.second; i++) std::printf("%s%04X", (i % 16) ? " " : "\n  ", sdram_peek16(d.first + i));
+			std::printf("\n");
+		}
+		svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+	}
 	for (auto &d : dumps) {
 		std::printf("SDRAM words at %06X:", d.first);
 		for (uint32_t i = 0; i < d.second; i++) std::printf("%s%04X", (i % 16) ? " " : "\n  ", sdram_peek16(d.first + i));
@@ -1046,6 +1382,12 @@ int main(int argc, char **argv) {
 	}
 
 	int sd_err = sdram_errors();
+	// chip 1's model (the scope is chip 0's everywhere else)
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+	int sd_err1 = sdram_errors();
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+	if (sd_err1) std::printf("SDRAM chip 1 model: %d errors\n", sd_err1);
+	sd_err += sd_err1;
 	if (sd_err) FAIL("SDRAM protocol errors: %d", sd_err);
 	std::printf("SDRAM pins: %llu clock edges, %llu with outputs changing at the rising edge\n",
 	            (unsigned long long)sd_edges, (unsigned long long)sd_edge_errors);

@@ -4,6 +4,11 @@
 // every fourth clk_114 rising edge, exactly as the MMCM outputs are aligned.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// (TB_TOP: the bench module that has the clocks, tb_top unless defined.)
+`ifndef TB_TOP
+`define TB_TOP tb_top
+`endif
+
 module MMCME2_BASE #(
 	parameter BANDWIDTH = "OPTIMIZED",
 	parameter real CLKIN1_PERIOD = 20.0,
@@ -14,14 +19,17 @@ module MMCME2_BASE #(
 	parameter integer CLKOUT1_DIVIDE = 1,
 	parameter integer CLKOUT2_DIVIDE = 1,
 	parameter integer CLKOUT3_DIVIDE = 1,
+	parameter integer CLKOUT4_DIVIDE = 1,
 	parameter real CLKOUT0_PHASE = 0.0,
 	parameter real CLKOUT1_PHASE = 0.0,
 	parameter real CLKOUT2_PHASE = 0.0,
 	parameter real CLKOUT3_PHASE = 0.0,
+	parameter real CLKOUT4_PHASE = 0.0,
 	parameter real CLKOUT0_DUTY_CYCLE = 0.5,
 	parameter real CLKOUT1_DUTY_CYCLE = 0.5,
 	parameter real CLKOUT2_DUTY_CYCLE = 0.5,
 	parameter real CLKOUT3_DUTY_CYCLE = 0.5,
+	parameter real CLKOUT4_DUTY_CYCLE = 0.5,
 	parameter STARTUP_WAIT = "FALSE"
 ) (
 	output CLKOUT0, output CLKOUT0B, output CLKOUT1, output CLKOUT1B,
@@ -33,18 +41,31 @@ module MMCME2_BASE #(
 	// the bench checks the configuration it models
 	initial begin
 		if (DIVCLK_DIVIDE != 3 || CLKFBOUT_MULT_F != 54.5 || CLKOUT0_DIVIDE_F != 8.0 ||
-		    CLKOUT1_DIVIDE != 32 || CLKOUT2_DIVIDE != 5)
+		    CLKOUT1_DIVIDE != 32 || CLKOUT2_DIVIDE != 5 || CLKOUT4_DIVIDE != 8)
 			$fatal(1, "MMCME2_BASE model: unexpected configuration");
 	end
-	assign CLKOUT0 = tb_top.clk_114;
-	assign CLKOUT1 = tb_top.clk_28;
-	assign CLKOUT2 = tb_top.clk_114;
-	assign CLKOUT3 = tb_top.clk_28;
-	assign {CLKOUT0B, CLKOUT1B, CLKOUT2B, CLKOUT3B, CLKOUT4, CLKOUT5, CLKOUT6, CLKFBOUTB} = '0;
+	assign CLKOUT0 = `TB_TOP.clk_114;
+	assign CLKOUT1 = `TB_TOP.clk_28;
+	assign CLKOUT2 = `TB_TOP.clk_114;
+	assign CLKOUT3 = `TB_TOP.clk_28;
+	assign CLKOUT4 = `TB_TOP.clk_114;   // (its phase delay is timed by Vivado, not simulated)
+	assign {CLKOUT0B, CLKOUT1B, CLKOUT2B, CLKOUT3B, CLKOUT5, CLKOUT6, CLKFBOUTB} = '0;
 	assign CLKFBOUT = CLKIN1;
-	assign LOCKED = tb_top.mmcm_locked;
+	assign LOCKED = `TB_TOP.mmcm_locked;
 endmodule
 
 module BUFG (input I, output O);
 	assign O = I;
+endmodule
+
+// output DDR register: D1 after the rising edge of C, D2 after the falling
+// edge (gb_sdram_ctrl forwards the SDRAM clock with D1 = 0, D2 = 1)
+module ODDR #(
+	parameter DDR_CLK_EDGE = "OPPOSITE_EDGE",
+	parameter INIT = 1'b0,
+	parameter SRTYPE = "SYNC"
+) (
+	output Q, input C, input CE, input D1, input D2, input R, input S
+);
+	assign Q = C ? D1 : D2;
 endmodule

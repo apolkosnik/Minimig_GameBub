@@ -9,12 +9,6 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 
 ## Files
 
-- `rtl/MiSTerFloppyFifo.v` -> `MiSTerFloppyFifo.sv`
-- `rtl/MiSTerFloppyPLL.v` -> `MiSTerFloppyPLL.sv`
-- `rtl/MiSTerFloppyRAWIO.v` -> `MiSTerFloppyRAWIO.sv`
-- `rtl/MiSTerFloppySHUGART.v` -> `MiSTerFloppySHUGART.sv`
-- `rtl/MiSTerFloppyVirtualFluxDrive.v` -> `MiSTerFloppyVirtualFluxDrive.sv`
-- `rtl/MiSTerFloppyi2c.v` -> `MiSTerFloppyi2c.sv`
 - `rtl/agnus.v` -> `agnus.sv`
 - `rtl/agnus_audiodma.v` -> `agnus_audiodma.sv`
 - `rtl/agnus_beamcounter.v` -> `agnus_beamcounter.sv`
@@ -61,6 +55,12 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `rtl/minimig_m68k_bridge.v` -> `minimig_m68k_bridge.sv`
 - `rtl/minimig_sram_bridge.v` -> `minimig_sram_bridge.sv`
 - `rtl/minimig_syscontrol.v` -> `minimig_syscontrol.sv`
+- `rtl/MiSTerFloppyFifo.v` -> `MiSTerFloppyFifo.sv`
+- `rtl/MiSTerFloppyi2c.v` -> `MiSTerFloppyi2c.sv`
+- `rtl/MiSTerFloppyPLL.v` -> `MiSTerFloppyPLL.sv`
+- `rtl/MiSTerFloppyRAWIO.v` -> `MiSTerFloppyRAWIO.sv`
+- `rtl/MiSTerFloppySHUGART.v` -> `MiSTerFloppySHUGART.sv`
+- `rtl/MiSTerFloppyVirtualFluxDrive.v` -> `MiSTerFloppyVirtualFluxDrive.sv`
 - `rtl/paula.v` -> `paula.sv`
 - `rtl/paula_audio.v` -> `paula_audio.sv`
 - `rtl/paula_audio_channel.v` -> `paula_audio_channel.sv`
@@ -70,12 +70,13 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `rtl/paula_floppy_fifo.v` -> `paula_floppy_fifo.sv`
 - `rtl/paula_intcontroller.v` -> `paula_intcontroller.sv`
 - `rtl/paula_uart.v` -> `paula_uart.sv`
+- `rtl/rtg.v` -> `rtg.sv`
 - `rtl/sdram_ctrl.v` -> `sdram_ctrl.sv`
-- `rtl/userio.v` -> `userio.sv`
-- `rtl/tg68k/TG68K_Pack.vhd` -> `tg68k/TG68K_Pack.vhdl`
 - `rtl/tg68k/TG68K_ALU.vhd` -> `tg68k/TG68K_ALU.vhdl`
 - `rtl/tg68k/TG68K_MMU030.vhd` -> `tg68k/TG68K_MMU030.vhdl`
+- `rtl/tg68k/TG68K_Pack.vhd` -> `tg68k/TG68K_Pack.vhdl`
 - `rtl/tg68k/TG68KdotC_Kernel.vhd` -> `tg68k/TG68KdotC_Kernel.vhdl`
+- `rtl/userio.v` -> `userio.sv`
 
 ## Patches
 
@@ -83,3 +84,5 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `0002-minimig-remove-toccata-a2065-cdtv.patch`
 - `0003-cpu_wrapper-no-expansion-autoconfig.patch`
 - `0004-nonblocking-registers-written-in-clocked-blocks.patch`
+- `0005-second-sdram-chip-z3-16mb-cache-drain.patch`
+- `0006-no-share-window.patch`

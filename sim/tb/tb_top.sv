@@ -14,6 +14,7 @@ module tb_top
 (
 	input         clk_114,
 	input         clk_28,
+	input         clk_av,            // HDMI pixel clock (the framework's clock_av)
 	input         mmcm_locked,
 	input         reset,
 
@@ -42,12 +43,18 @@ module tb_top
 	input  [47:0] sticks,
 
 	// VideoV0 / AudioV0
-	output  [4:0] video_r,
-	output  [5:0] video_g,
-	output  [4:0] video_b,
+	output  [2:0] video_r,
+	output  [3:0] video_g,
+	output  [2:0] video_b,
 	output        video_de,
 	output        video_hblank,
 	output        video_vblank,
+	output        video_fit,
+	output        video_pal_on,
+	output [23:0] dbg_pixel_color,   // the colour of the pixel sent (gb_palette), with video_de
+	output        video_pal_we,
+	output  [9:0] video_pal_index,
+	output [23:0] video_pal_color,
 	output [15:0] audio_left,
 	output [15:0] audio_right,
 
@@ -75,14 +82,67 @@ module tb_top
 	output [12:0] dbg_dmacon,
 	output [20:1] dbg_cop_addr,      // copper's chip address pointer
 	output        dbg_sd_clk,
-	output [38:0] dbg_sd_bus
+	output [39:0] dbg_sd_bus,
+
+	// RTG picture: the pixel (x, y) whose colour comes out now
+	output        rtg_enable,
+	output [10:0] rtg_x,
+	output  [9:0] rtg_y,
+	output [23:0] rtg_color,
+	output [15:0] rtg_lines,
+	output [15:0] rtg_late,
+	output [11:0] rtg_hsize,
+	output [11:0] rtg_vsize,
+	output  [4:0] rtg_format,
+	output [31:0] rtg_base,
+	output [13:0] rtg_stride
 );
 
-wire        sd_clk, sd_cke, sd_cs, sd_ras, sd_cas, sd_we, sd_oe;
+// The framework's HDMI side (patches/framework 0003, HandheldTop): the
+// 1650 x 750 frame of 720p (cx, cy), videoX / videoY as the framework makes
+// them (from cx = 1280 on, the next line, x counting up to wrap at 2048),
+// and external.x / .y = RegNext(videoX + externalLatency), RegNext(videoY).
+// The colour of that pixel must come 12 clocks (externalLatency) later:
+// the coordinates are delayed by as much for the bench.
+localparam EXT_LATENCY = 12;
+reg  [10:0] cx = 11'd0;
+reg   [9:0] cy = 10'd0;
+wire [10:0] video_x = (cx >= 11'd1280) ? cx + 11'd398 : cx;
+wire  [9:0] video_y = (cx >= 11'd1280) ? ((cy == 10'd749) ? 10'd0 : cy + 1'd1) : cy;
+reg  [10:0] ext_x = 11'd0;
+reg   [9:0] ext_y = 10'd0;
+reg  [10:0] dly_x [0:EXT_LATENCY-1];
+reg   [9:0] dly_y [0:EXT_LATENCY-1];
+always @(posedge clk_av) begin
+	cx <= (cx == 11'd1649) ? 11'd0 : cx + 1'd1;
+	if (cx == 11'd1649) cy <= (cy == 10'd749) ? 10'd0 : cy + 1'd1;
+	ext_x <= video_x + EXT_LATENCY[10:0];
+	ext_y <= video_y;
+	dly_x[0] <= ext_x;
+	dly_y[0] <= ext_y;
+	for (int i = 1; i < EXT_LATENCY; i++) begin
+		dly_x[i] <= dly_x[i - 1];
+		dly_y[i] <= dly_y[i - 1];
+	end
+end
+assign rtg_x = dly_x[EXT_LATENCY - 1];
+assign rtg_y = dly_y[EXT_LATENCY - 1];
+assign rtg_lines  = dut.rtg_lines;
+assign rtg_late   = dut.rtg_late;
+assign rtg_hsize  = dut.rtg.r_hsize;
+assign rtg_vsize  = dut.rtg.r_vsize;
+assign rtg_format = dut.rtg.r_format;
+assign rtg_base   = dut.rtg.r_base;
+assign rtg_stride = dut.rtg.r_stride;
+
+wire        sd_clk, sd_ras, sd_cas, sd_we, sd_oe;
+wire  [1:0] sd_cke, sd_cs;      // one per chip
 wire  [1:0] sd_dqm, sd_ba;
 wire [12:0] sd_a;
 wire [15:0] sd_dout, sd_din, mdl_dout;
 wire        mdl_oe;
+wire [15:0] mdl1_dout;
+wire        mdl1_oe;
 
 minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 (
@@ -99,6 +159,17 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.video_dataEnable        (video_de),
 	.video_vblank            (video_vblank),
 	.video_hblank            (video_hblank),
+	.video_fit               (video_fit),
+	.video_palette_enable    (video_pal_on),
+	.video_palette_write     (video_pal_we),
+	.video_palette_index     (video_pal_index),
+	.video_palette_color     (video_pal_color),
+	.video_external_clock    (clk_av),
+	.video_external_active   (1'b1),
+	.video_external_x        (ext_x),
+	.video_external_y        (ext_y),
+	.video_external_color    (rtg_color),
+	.video_external_enable   (rtg_enable),
 	.audio_left              (audio_left),
 	.audio_right             (audio_right),
 	.host_mem_enable         (host_mem_enable),
@@ -177,11 +248,12 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.sdram_dataDir           (sd_oe)
 );
 
+// the two SDRAM chips on the one bus: chip 0 (sdram) and chip 1 (sdram1)
 sdram_sim sdram
 (
 	.clk       (sd_clk),
-	.cke       (sd_cke),
-	.cs_n      (sd_cs),
+	.cke       (sd_cke[0]),
+	.cs_n      (sd_cs[0]),
 	.ras_n     (sd_ras),
 	.cas_n     (sd_cas),
 	.we_n      (sd_we),
@@ -194,11 +266,59 @@ sdram_sim sdram
 	.dq_out_en (mdl_oe)
 );
 
+sdram_sim sdram1
+(
+	.clk       (sd_clk),
+	.cke       (sd_cke[1]),
+	.cs_n      (sd_cs[1]),
+	.ras_n     (sd_ras),
+	.cas_n     (sd_cas),
+	.we_n      (sd_we),
+	.ba        (sd_ba),
+	.a         (sd_a),
+	.dqm       (sd_dqm),
+	.dq_in     (sd_dout),
+	.dq_in_en  (sd_oe),
+	.dq_out    (mdl1_dout),
+	.dq_out_en (mdl1_oe)
+);
+
+// The data bus, edge by edge (counted as errors of chip 0): the beat of an
+// SDRAM clock edge comes from one device at most (the FPGA: sd_oe in the
+// clk_114 cycle around the edge; a chip: the beat it drives for the edge),
+// and between beats of different devices there is an edge with none (the
+// time a chip takes to stop driving after its last beat, tHZ, is most of
+// an 8.8 ns clock; the next device starts driving a clock before its beat).
+reg [2:0] bus_prev = 3'b000;
+always @(posedge sd_clk) begin
+	reg [2:0] drv;
+	drv = {sd_oe, sdram1.beat_v, sdram.beat_v};
+	if (drv != 3'b000 && drv != 3'b001 && drv != 3'b010 && drv != 3'b100) begin
+		sdram.errors = sdram.errors + 1;
+		if (sdram.errors <= 20) $display("[sdram] ERROR at %0t: data bus driven by %b (FPGA, chip 1, chip 0)", $time, drv);
+	end
+	else if (drv != 3'b000 && bus_prev != 3'b000 && drv != bus_prev) begin
+		sdram.errors = sdram.errors + 1;
+		if (sdram.errors <= 20) $display("[sdram] ERROR at %0t: data bus passes from %b to %b without an idle clock", $time, bus_prev, drv);
+	end
+	bus_prev <= drv;
+end
+
 // the bus as the pins see it: what the SDRAM drives, else what the FPGA
 // drives (the framework's top level makes the tri-state buffer)
-assign sd_din = mdl_oe ? mdl_dout : sd_oe ? sd_dout : 16'hFFFF;
+assign sd_din = mdl_oe ? mdl_dout : mdl1_oe ? mdl1_dout : sd_oe ? sd_dout : 16'hFFFF;
+
+`ifdef RAMTRACE
+// (debug) the CPU's RAM port accesses to the second SDRAM chip, at the end
+// of each (ramready while the port is selected)
+always @(posedge dut.clk_sys)
+	if (dut.ram_sel && dut.ram_ready && dut.cpu_sdram_addr[25])
+		$display("RAM %07X %s st%0d uds%b lds%b din %04X dout %04X", {dut.cpu_sdram_addr, 1'b0},
+		         (dut.cpu_state == 3) ? "W" : "R", dut.cpu_state, dut.ram_uds, dut.ram_lds, dut.ram_din, dut.ram_dout);
+`endif
 
 assign dbg_cpu_rst   = dut.cpu_rst;
+assign dbg_pixel_color = dut.video.palette.c2;
 assign dbg_chip_addr = dut.chip_addr;
 assign dbg_chip_as   = dut.chip_as;
 assign dbg_chip_rw   = dut.chip_rw;

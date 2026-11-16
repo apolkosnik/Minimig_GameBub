@@ -45,6 +45,14 @@
 				{
 					"label": "68EC020",
 					"value": "0x2"
+				},
+				{
+					"label": "68020",
+					"value": "0x3"
+				},
+				{
+					"label": "68030",
+					"value": "0x4"
 				}
 			],
 			"default": "0x0"
@@ -68,10 +76,6 @@
 					"value": "0x2"
 				},
 				{
-					"label": "1M + 512K slow",
-					"value": "0x3"
-				},
-				{
 					"label": "2M chip",
 					"value": "0x4"
 				},
@@ -86,6 +90,10 @@
 				{
 					"label": "2M + 8M fast",
 					"value": "0x7"
+				},
+				{
+					"label": "2M + 16M Z3 fast",
+					"value": "0x8"
 				}
 			],
 			"default": "0x1"
@@ -405,41 +413,29 @@
 			"default": "0x45"
 		},
 		{
-			"id": 16,
-			"label": "Picture position",
-			"address": "0x0000107C",
+			"id": 17,
+			"label": "Picture",
+			"address": "0x00001080",
 			"type": "list",
 			"items": [
 				{
-					"label": "Up 8",
+					"label": "256 lines, dithered",
+					"value": "0x1"
+				},
+				{
+					"label": "256 lines, palette",
+					"value": "0x3"
+				},
+				{
+					"label": "240 lines, dithered",
 					"value": "0x0"
 				},
 				{
-					"label": "Up 4",
-					"value": "0x4"
-				},
-				{
-					"label": "Up 2",
-					"value": "0x6"
-				},
-				{
-					"label": "Default",
-					"value": "0x8"
-				},
-				{
-					"label": "Down 2",
-					"value": "0xA"
-				},
-				{
-					"label": "Down 4",
-					"value": "0xC"
-				},
-				{
-					"label": "Down 7",
-					"value": "0xF"
+					"label": "240 lines, palette",
+					"value": "0x2"
 				}
 			],
-			"default": "0x8"
+			"default": "0x1"
 		}
 	]
 }

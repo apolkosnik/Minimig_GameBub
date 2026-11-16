@@ -70,7 +70,6 @@ module cpu_wrapper
 	input             ramready,
 	output            ramlds,
 	output            ramuds,
-	output            ramshared,
 
 	output            toccata_ena,
 	output reg  [7:0] toccata_base,
@@ -92,7 +91,7 @@ module cpu_wrapper
 	output reg [31:0] nmi_addr,
 
 	output reg        z2ram_ena,
-	output reg  [4:0] z3ram_base0,
+	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units
 	output reg        z3ram_ena0,
 	output reg  [3:0] z3ram_base1,
 	output reg        z3ram_ena1,
@@ -115,9 +114,8 @@ wire        ec030      = (cpucfg[1:0] == 2'b10) & cpucfg[2];
 wire        z3cpu      = cpucfg[1] & ~ec020;
 wire [31:0] cpu_addr_m = ec020 ? {8'd0, cpu_addr_p[23:0]} : cpu_addr_p;
 
-wire   ramsel_i     = cpu_req & ~sel_nmi_vector & (sel_zram | sel_chipram | sel_kickram | sel_dd | sel_rtg);
+wire   ramsel_i     = cpu_req & ~sel_nmi_vector & (sel_zram | sel_chipram | sel_kickram | sel_rtg);
 assign ramsel       = ramsel_i & ~req_gate;
-assign ramshared    = sel_dd;
 
 // NMI
 always @(posedge clk) nmi_addr <= vbr + 32'h7c;
@@ -127,7 +125,6 @@ always @(posedge clk) nmi_addr2 <= vbr + 32'h7e;
 wire sel_chipram;
 wire sel_kickram;
 wire sel_zram;
-wire sel_dd;
 wire sel_rtg;
 assign rtg_reg_sel = rtg_ena & (cpu_addr_m[31:24] == rtg_base) & cpu_addr_m[23] & ~|cpu_addr_m[22:16];
 
@@ -150,7 +147,6 @@ memory_router u_memory_router
 	.sel_chipram   (sel_chipram   ),
 	.sel_kickram   (sel_kickram   ),
 	.sel_zram      (sel_zram      ),
-	.sel_dd        (sel_dd        ),
 	.sel_rtg       (sel_rtg       ),
 	.ramaddr       (ramaddr       )
 );
@@ -426,7 +422,7 @@ assign clkena_p_rest = (~cpu_req | chipready | fastchip_ready) & clkena_p_thr;
 wire clkena_p_throttled = clkena_p_rest | (ramready & clkena_p_thr);
 
 assign s21_en    = cpu030;
-assign ramlong1  = long_cand & s21_en & sel_zram & ~sel_rtg & ~sel_dd & ~req_gate;
+assign ramlong1  = long_cand & s21_en & sel_zram & ~sel_rtg & ~req_gate;
 assign ramdin_lo = cpu_dout_lo_p;
 assign long_ack  = ramlong1 & ramready_l;
 
@@ -775,7 +771,9 @@ always @(*) begin
 	else if(ac_memcard[2]) begin
 		case (chip_addr[6:1])
 			6'b000000: autocfg_data = 4'b1010;	// Zorro-III card, add mem, no ROM
-			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0011 : 4'b0100; // 128MB or 256MB, extended
+			// Game Bub port: the 128 MB board is a 16 MB board (in the
+			// second SDRAM chip), extended size code 000
+			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0000 : 4'b0100; // 16MB or 256MB, extended
 			6'b000010: autocfg_data = 4'b1110;	// ProductID=0x10 (only setting upper nibble)
 			6'b000100: autocfg_data = 4'b0000;	// Memory card, not silenceable, Extended size, reserved.
 			6'b000101: autocfg_data = 4'b1111;	// 0000 - logical size matches physical size TODO change this to 0001, so it is autosized by the OS, WHEN it will be 24MB.
@@ -860,7 +858,7 @@ always @(posedge clk) begin
 					ac_memcard <= {ac_memcard[0], ac_memcard[0], 1'b0};
 				end
 				else begin
-					z3ram_base0 <= cpu_dout[15:11]; //128MB chunk
+					z3ram_base0 <= cpu_dout[15:8]; //16MB chunk (Game Bub port)
 					z3ram_ena0 <= 1;
 					ac_memcard <= 0;
 				end
