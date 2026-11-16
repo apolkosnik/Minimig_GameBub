@@ -19,14 +19,17 @@ module MMCME2_BASE #(
 	parameter integer CLKOUT1_DIVIDE = 1,
 	parameter integer CLKOUT2_DIVIDE = 1,
 	parameter integer CLKOUT3_DIVIDE = 1,
+	parameter integer CLKOUT4_DIVIDE = 1,
 	parameter real CLKOUT0_PHASE = 0.0,
 	parameter real CLKOUT1_PHASE = 0.0,
 	parameter real CLKOUT2_PHASE = 0.0,
 	parameter real CLKOUT3_PHASE = 0.0,
+	parameter real CLKOUT4_PHASE = 0.0,
 	parameter real CLKOUT0_DUTY_CYCLE = 0.5,
 	parameter real CLKOUT1_DUTY_CYCLE = 0.5,
 	parameter real CLKOUT2_DUTY_CYCLE = 0.5,
 	parameter real CLKOUT3_DUTY_CYCLE = 0.5,
+	parameter real CLKOUT4_DUTY_CYCLE = 0.5,
 	parameter STARTUP_WAIT = "FALSE"
 ) (
 	output CLKOUT0, output CLKOUT0B, output CLKOUT1, output CLKOUT1B,
@@ -38,14 +41,15 @@ module MMCME2_BASE #(
 	// the bench checks the configuration it models
 	initial begin
 		if (DIVCLK_DIVIDE != 3 || CLKFBOUT_MULT_F != 54.5 || CLKOUT0_DIVIDE_F != 8.0 ||
-		    CLKOUT1_DIVIDE != 32 || CLKOUT2_DIVIDE != 5)
+		    CLKOUT1_DIVIDE != 32 || CLKOUT2_DIVIDE != 5 || CLKOUT4_DIVIDE != 8)
 			$fatal(1, "MMCME2_BASE model: unexpected configuration");
 	end
 	assign CLKOUT0 = `TB_TOP.clk_114;
 	assign CLKOUT1 = `TB_TOP.clk_28;
 	assign CLKOUT2 = `TB_TOP.clk_114;
 	assign CLKOUT3 = `TB_TOP.clk_28;
-	assign {CLKOUT0B, CLKOUT1B, CLKOUT2B, CLKOUT3B, CLKOUT4, CLKOUT5, CLKOUT6, CLKFBOUTB} = '0;
+	assign CLKOUT4 = `TB_TOP.clk_114;   // (its phase delay is timed by Vivado, not simulated)
+	assign {CLKOUT0B, CLKOUT1B, CLKOUT2B, CLKOUT3B, CLKOUT5, CLKOUT6, CLKFBOUTB} = '0;
 	assign CLKFBOUT = CLKIN1;
 	assign LOCKED = `TB_TOP.mmcm_locked;
 endmodule

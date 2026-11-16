@@ -133,13 +133,14 @@ localparam [24:1] KICK_STAGE = 24'hB80000;
 // ===========================================================================
 // Clocks
 // ===========================================================================
-wire clk_114, clk_sys, locked;
+wire clk_114, clk_sys, clk_sdram, locked;
 
 gb_clocks #(.DISPLAY_DIVIDER(DISPLAY_DIVIDER)) clocks
 (
 	.clk_in_50mhz (clocks_clockIn50M),
 	.clk_114      (clk_114),
 	.clk_sys      (clk_sys),
+	.clk_sdram    (clk_sdram),
 	.clk_display  (clocks_clockOutDisplay),
 	.clk_spi      (clocks_clockOutSpi),
 	.locked       (locked)
@@ -673,7 +674,7 @@ wire [25:1] cpu_sdram_addr = z3_sel  ? {2'b11, ram_addr[23:1]} :
 gb_sdram_ctrl ram1
 (
 	.sysclk       (clk_114         ),
-	.sdclk        (clk_114         ),
+	.sdclk        (clk_sdram       ),
 	.reset_n      (~reset_114      ),
 	.c_7m         (c1              ),
 

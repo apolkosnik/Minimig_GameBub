@@ -3,9 +3,11 @@
 ########################################
 # SDRAM interface (rtl/gamebub/gb_sdram_ctrl.sv)
 #
-# The SDRAM clock is clk_114 inverted, forwarded by an ODDR
-# (ram1/sd_clk_oddr), so the SDRAM takes the commands half a clk_114 period
-# after the clk_114 edge that changes them. The command, chip select,
+# The SDRAM clock is clk_sdram (clk_114 delayed by 0.963 ns, MMCM CLKOUT4)
+# inverted, forwarded by an ODDR (ram1/sd_clk_oddr), so the SDRAM takes the
+# commands half a clk_114 period plus 0.963 ns after the clk_114 edge that
+# changes them. The delay centres both windows: without it the read data
+# hold check failed by 0.49 ns and the command setup check by 0.06 ns. The command, chip select,
 # address, DQM and write data registers are in the I/O blocks, so they reach
 # the pins with about the same delay as the clock. The DQ output enable is
 # one register for all 16 pins (the framework has a single direction bit),

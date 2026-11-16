@@ -20,10 +20,10 @@
 // ends state n. The two chips share every pin but the chip selects:
 //
 //            commands                         data on the bus
-//   chip 0   ACTIVE 1, READ 4                 read 7-10
-//            or WRITE 6 (and 7, chip32)       write 6 (7)
-//   chip 1   ACTIVE 5, READ 9 (and 13)        read 12-15 (16-19 = 0-3 of
-//            or WRITE 12                      the next window), write 12
+//   chip 0   ACTIVE 2, READ 5                 read 8-11
+//            or WRITE 7 (and 8, chip32)       write 7 (8)
+//   chip 1   ACTIVE 6, READ 10 (and 14)       read 13-15 (16-20 = 0-4 of
+//            or WRITE 13                      the next window), write 13
 //
 // so the command bus never has two commands in one cycle, and between data
 // driven by different devices (chip 0, chip 1, the FPGA) there is always at
@@ -33,8 +33,10 @@
 //
 // Chip 0 serves the chipset, the CPU's chip-0 RAM (cpuAddr[25] = 0) and the
 // host port, deciding at state 0 exactly as sdram_ctrl did, and hands the
-// chipset, host and cache their data at the same states as sdram_ctrl
-// (chipRD at 9, chip48 at 11/13/15, cache words at 9/11/13/15).
+// chipset and host their data at the same states as sdram_ctrl (chipRD at 9,
+// chip48 at 11/13/15), the cache its words at 10/12/14/0. The decisions are
+// registered and each ACTIVE goes out a clock later from those registers
+// (the arbitration does not reach the I/O block registers at the pins).
 // Chip 1 decides at state 4 (two clk_114 cycles after a clk_sys edge, as
 // state 0 is) and serves the CPU's chip-1 RAM (cpuAddr[25] = 1) and the
 // burst port: eight words (two READs of four, one row) per window, for the
@@ -318,6 +320,7 @@ wire [24:1] c1_addr  = (c1_next == CPU_WR) ? writeAddr[24:1] : (c1_next == BURST
 reg   [2:0] c0_type = IDLE, c1_type = IDLE, c1_prev = IDLE;
 reg   [9:0] c0_col, c1_col;
 reg   [1:0] c0_ba, c1_ba;
+reg  [12:0] c0_row, c1_row;
 reg   [1:0] c0_dqm, c1_dqm;
 reg  [15:0] c0_dat, c1_dat;
 
@@ -371,9 +374,9 @@ always @ (posedge sysclk) begin
 		owed1     <= 0;
 		ref_timer <= 0;
 		write_ack <= 0;
-		// initialisation, both chips: at state 1 of windows 4 (PRECHARGE
+		// initialisation, both chips: at state 2 of windows 4 (PRECHARGE
 		// all), 8 and 10 (AUTO REFRESH) and 13 (LOAD MODE)
-		if(reset && sdram_state == 0) begin
+		if(reset && sdram_state == 1) begin
 			sd_ba <= 2'b00;
 			case(initstate)
 				4: begin
@@ -398,7 +401,7 @@ always @ (posedge sysclk) begin
 		end
 
 		case(sdram_state)
-			// chip 0: decide, ACTIVE (or REFRESH) at state 1
+			// chip 0: decide
 			0: begin
 				c0_type <= c0_next;
 				fwd_en  <= 0;
@@ -406,6 +409,7 @@ always @ (posedge sysclk) begin
 				a_rd2   <= 0;
 				c0_col  <= {1'b0, c0_addr[9:1]};
 				c0_ba   <= c0_addr[24:23];
+				c0_row  <= c0_addr[22:10];
 				c0_dqm  <= 2'b00;
 				// counts every slot the pending host request does not get
 				if(hostReq & ~host_busy & ~&host_wait) host_wait <= host_wait + 1'd1;
@@ -439,24 +443,27 @@ always @ (posedge sysclk) begin
 					REFRESH: if(owed0 != 0) owed0 <= owed0 - 1'd1;
 				endcase
 
-				sd_ba   <= c0_addr[24:23];
-				sd_addr <= c0_addr[22:10];
-				if(c0_next == REFRESH)   cmd(2'b10, 0, 0, 1);
-				else if(c0_next != IDLE) cmd(2'b10, 0, 1, 1);
 			end
 
-			// chip 0 READ at state 4 (auto precharge)
-			3: if(c0_type == CPU_RD || c0_type == HOST && !hostWE_q || c0_type == CHIP && !c0_write) begin
-				cmd(2'b10, 1, 0, 1);
+			// chip 0 ACTIVE (or REFRESH) at state 2
+			1: begin
 				sd_ba   <= c0_ba;
-				sd_addr <= {2'b00, 1'b1, c0_col};
+				sd_addr <= c0_row;
+				if(c0_type == REFRESH)   cmd(2'b10, 0, 0, 1);
+				else if(c0_type != IDLE) cmd(2'b10, 0, 1, 1);
 			end
 
-			// chip 1: decide, ACTIVE (or REFRESH) at state 5
+			// chip 1: decide; chip 0 READ at state 5 (auto precharge)
 			4: begin
+				if(c0_type == CPU_RD || c0_type == HOST && !hostWE_q || c0_type == CHIP && !c0_write) begin
+					cmd(2'b10, 1, 0, 1);
+					sd_ba   <= c0_ba;
+					sd_addr <= {2'b00, 1'b1, c0_col};
+				end
 				c1_type <= c1_next;
 				c1_col  <= {1'b0, c1_addr[9:1]};
 				c1_ba   <= c1_addr[24:23];
+				c1_row  <= c1_addr[22:10];
 				c1_dqm  <= write_dqm;
 				c1_dat  <= writeDat;
 				case(c1_next)
@@ -464,15 +471,19 @@ always @ (posedge sysclk) begin
 					BURST:   burstAck  <= 1;
 					REFRESH: if(owed1 != 0) owed1 <= owed1 - 1'd1;
 				endcase
-				sd_ba   <= c1_addr[24:23];
-				sd_addr <= c1_addr[22:10];
-				if(c1_next == REFRESH)   cmd(2'b01, 0, 0, 1);
-				else if(c1_next != IDLE) cmd(2'b01, 0, 1, 1);
 			end
 
-			// chip 0 WRITE at state 6 (auto precharge unless a second word
-			// follows at 7)
-			5: if(c0_type == CPU_WR || c0_type == HOST && hostWE_q || c0_type == CHIP && c0_write) begin
+			// chip 1 ACTIVE (or REFRESH) at state 6
+			5: begin
+				sd_ba   <= c1_ba;
+				sd_addr <= c1_row;
+				if(c1_type == REFRESH)   cmd(2'b01, 0, 0, 1);
+				else if(c1_type != IDLE) cmd(2'b01, 0, 1, 1);
+			end
+
+			// chip 0 WRITE at state 7 (auto precharge unless a second word
+			// follows at 8)
+			6: if(c0_type == CPU_WR || c0_type == HOST && hostWE_q || c0_type == CHIP && c0_write) begin
 				cmd(2'b10, 1, 0, 0);
 				sd_ba       <= c0_ba;
 				sd_addr     <= {2'b00, ~a_wr2, c0_col};
@@ -480,7 +491,7 @@ always @ (posedge sysclk) begin
 				sd_data_out <= c0_dat;
 				sd_data_oe  <= 1;
 			end
-			6: if(a_wr2) begin
+			7: if(a_wr2) begin
 				cmd(2'b10, 1, 0, 0);
 				sd_ba       <= c0_ba;
 				sd_addr     <= {2'b00, 1'b1, c0_col[9:1], 1'b1};
@@ -489,16 +500,16 @@ always @ (posedge sysclk) begin
 				sd_data_oe  <= 1;
 			end
 
-			// chip 1 READ at state 9 (auto precharge unless the second READ
-			// of a burst follows at 13)
-			8: if(c1_type == CPU_RD || c1_type == BURST) begin
+			// chip 1 READ at state 10 (auto precharge unless the second READ
+			// of a burst follows at 14)
+			9: if(c1_type == CPU_RD || c1_type == BURST) begin
 				cmd(2'b01, 1, 0, 1);
 				sd_ba   <= c1_ba;
 				sd_addr <= {2'b00, c1_type != BURST, c1_col};   // a burst's column is a multiple of 8
 			end
 
-			// chip 1 WRITE at state 12
-			11: if(c1_type == CPU_WR) begin
+			// chip 1 WRITE at state 13
+			12: if(c1_type == CPU_WR) begin
 				cmd(2'b01, 1, 0, 0);
 				sd_ba       <= c1_ba;
 				sd_addr     <= {2'b00, 1'b1, c1_col};
@@ -506,7 +517,7 @@ always @ (posedge sysclk) begin
 				sd_data_out <= c1_dat;
 				sd_data_oe  <= 1;
 			end
-			12: if(c1_type == BURST) begin
+			13: if(c1_type == BURST) begin
 				cmd(2'b01, 1, 0, 1);
 				sd_ba   <= c1_ba;
 				sd_addr <= {2'b00, 1'b1, c1_col[9:3], 2'b10, 1'b0};
@@ -527,7 +538,7 @@ end
 reg [15:0] sd_in_q;   // I/O block registers: the word of the edge in this state
 always @(posedge sysclk) sd_in_q <= sd_data_in;
 
-reg [15:0] rd0, rd1, rd2, rd3;    // chip 0's burst
+reg [15:0] rd1, rd2, rd3;         // chip 0's burst
 reg [15:0] c1w1, c1w2, c1w3;      // chip 1's four words for the cache
 reg [15:0] chip48_1, chip48_2, chip48_3;
 assign chip48 = {chip48_1, chip48_2, chip48_3};
@@ -542,18 +553,17 @@ always @(posedge sysclk) begin
 	burstValid <= 0;
 	burstData  <= sd_in_q;
 
-	// chip 0: D0-D3 in sd_in_q during states 8-11
+	// chip 0: D0-D3 in sd_in_q during states 9-12
 	if(init_done) begin
 		case(sdram_state)
-			8:  rd0 <= (c0_type == CHIP && fwd_pos == 2'd0) ? fwd_m : sd_in_q;
-			9:  rd1 <= (c0_type == CHIP && fwd_pos == 2'd1) ? fwd_m : sd_in_q;
-			10: rd2 <= (c0_type == CHIP && fwd_pos == 2'd2) ? fwd_m : sd_in_q;
-			11: rd3 <= (c0_type == CHIP && fwd_pos == 2'd3) ? fwd_m : sd_in_q;
+			10: rd1 <= (c0_type == CHIP && fwd_pos == 2'd1) ? fwd_m : sd_in_q;
+			11: rd2 <= (c0_type == CHIP && fwd_pos == 2'd2) ? fwd_m : sd_in_q;
+			12: rd3 <= (c0_type == CHIP && fwd_pos == 2'd3) ? fwd_m : sd_in_q;
 		endcase
 
 		if(c0_type == CHIP) begin
 			case(sdram_state)
-				 9: chipRD   <= rd0;
+				 9: chipRD   <= (fwd_pos == 2'd0) ? fwd_m : sd_in_q;
 				11: begin
 						chip48_1 <= rd1;
 						if(a_rd2) chipRD2 <= rd1;
@@ -563,36 +573,36 @@ always @(posedge sysclk) begin
 			endcase
 		end
 		if(c0_type == HOST && sdram_state == 9) begin
-			hostRD  <= rd0;
+			hostRD  <= sd_in_q;
 			hostAck <= 1;
 		end
 		if(c0_type == CPU_RD) begin
 			case(sdram_state)
-				 8: begin cache_fill <= 1; cache_dat <= sd_in_q; end
-				10: begin cache_fill <= 1; cache_dat <= rd1; end
-				12: begin cache_fill <= 1; cache_dat <= rd2; end
-				14: begin cache_fill <= 1; cache_dat <= rd3; end
+				 9: begin cache_fill <= 1; cache_dat <= sd_in_q; end
+				11: begin cache_fill <= 1; cache_dat <= rd1; end
+				13: begin cache_fill <= 1; cache_dat <= rd2; end
+				15: begin cache_fill <= 1; cache_dat <= rd3; end
 			endcase
 		end
 
-		// chip 1: D0-D3 in sd_in_q during states 13-15 and 0, D4-D7 during
-		// 1-4 of the next window
+		// chip 1: D0-D1 in sd_in_q during states 14-15, D2-D7 during 0-5
+		// of the next window
 		if(c1_type == CPU_RD) begin
 			case(sdram_state)
-				13: begin cache_fill <= 1; cache_dat <= sd_in_q; end
-				14: c1w1 <= sd_in_q;
-				15: begin c1w2 <= sd_in_q; cache_fill <= 1; cache_dat <= c1w1; end
+				14: begin cache_fill <= 1; cache_dat <= sd_in_q; end
+				15: c1w1 <= sd_in_q;
 			endcase
 		end
 		if(c1_prev == CPU_RD) begin
 			case(sdram_state)
-				0: c1w3 <= sd_in_q;
-				1: begin cache_fill <= 1; cache_dat <= c1w2; end
-				3: begin cache_fill <= 1; cache_dat <= c1w3; end
+				0: begin c1w2 <= sd_in_q; cache_fill <= 1; cache_dat <= c1w1; end
+				1: c1w3 <= sd_in_q;
+				2: begin cache_fill <= 1; cache_dat <= c1w2; end
+				4: begin cache_fill <= 1; cache_dat <= c1w3; end
 			endcase
 		end
-		if(c1_type == BURST && (sdram_state == 13 || sdram_state == 14 || sdram_state == 15)) burstValid <= 1;
-		if(c1_prev == BURST && sdram_state <= 4) burstValid <= 1;
+		if(c1_type == BURST && (sdram_state == 14 || sdram_state == 15)) burstValid <= 1;
+		if(c1_prev == BURST && sdram_state <= 5) burstValid <= 1;
 	end
 end
 
