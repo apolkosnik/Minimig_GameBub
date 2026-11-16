@@ -122,9 +122,15 @@ unselected ones quietly.
 * ADF images only (no extended ADF / MFM-level images), double density.
 * Up to four disk images per session; DF0 and DF1 can be switched between them while
   running.
-* The 68030, RTG, Zorro III RAM and the expansion cards of the MiSTer core (Toccata,
-  A2065, CDTV) are not built: on MiSTer they use its DDR3 memory or its ARM side. The
-  core uses one of the two SDRAM chips (32 MB), which holds everything it needs.
+* The expansion cards of the MiSTer core (Toccata, A2065, CDTV) and its shared folder
+  (SHARE:) are not built: on MiSTer they use its DDR3 memory or its ARM side.
+* RTG (68020 or 68030, memory "2M + 16M Z3 fast"; MiSTer's P96 driver `MiSTer.card`
+  unchanged) is shown on HDMI only. The handheld's panel is scanned in columns of the
+  landscape picture, which a line buffer cannot feed; there the Amiga's own picture
+  stays. The RTG picture is fitted to 1280 x 720 (nearest pixel, its shape kept, at most
+  1024 pixels of a line). Lines come from the second SDRAM chip as they are shown:
+  640 x 480 at 32 bits, 800 x 600 at 16 bits and 1024 x 768 at 16 bits fit the
+  bandwidth; larger pictures at 32 bits show lines late.
 * The picture is 640 pixels wide, shown one to one across (640 of the handheld's 800 x
   480 panel, or of HDMI): all 640 high resolution pixels of the standard display window,
   so an 80 column Workbench or CLI is sharp; a low resolution pixel is two pixels wide.
@@ -145,8 +151,10 @@ unselected ones quietly.
     shown in 256 fixed, dithered colours until entries free up.
 * The framework scales a core's picture by the same whole factor in both directions;
   `patches/framework/` adds scaling each direction separately, fitting all lines to the
-  screen height, and the palette, which this picture needs (`tools/patch_framework.sh` applies it to
-  the submodule).
+  screen height, and the palette, which this picture needs, 720p HDMI, and a picture of
+  the core's own on HDMI for RTG (`0003`: the framework names each pixel, the core
+  answers with its colour 12 clocks later); `tools/patch_framework.sh` applies them to
+  the submodule.
 * PAL runs at 50 Hz on the 60 Hz panel.
 * Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
   (rev 4) with a floppy image; hard disks, the dock keyboard and mouse are tested in
@@ -235,6 +243,10 @@ are inlined, and the patches in `patches/minimig/` are applied:
   written with nonblocking ones. Synthesis builds the same registers; in simulation the
   blocking writes were a race, and with Verilator 5 the copper never restarted at the
   start of a frame.
+* `0005`: the second SDRAM chip: the 16 MB Zorro III board, and uncached reads drain the
+  rest of the SDRAM's burst in `cpu_cache_new`.
+* `0006`: no `$DD4000-$DD5FFF` window. On MiSTer it is shared memory in DDR3 through
+  which Main_MiSTer serves the SHARE: device; nothing serves it here.
 
 `rtl/gamebub/compat/` holds portable replacements for the two Altera RAM primitives the
 MiSTer tree uses.
@@ -284,6 +296,8 @@ needed; `sim/build.sh` first):
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
 | colour | `coltest.s` gives every line its own background colour (256 colours a frame): a still picture is exact in every pixel; then the colours change every frame until the palette runs out, and no entry may change while a frame using it can still be shown |
 | ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |
+| z3_030, z3_020 | `z3test.s`: the 68030 (PMOVE) or the 68020 (F-line), autoconfig of the Zorro III and RTG boards, patterns over the 16 MB board and the RTG memory in the second SDRAM chip, byte and word lanes |
+| rtg | `rtgtest.s` on the 68030: the RTG board's ID at `$B80100` and in its autoconfigured window, the palette written as longs and read back, six modes (8 bit palette 640 x 480, R5G6B5PC 320 x 240 from an unaligned base, B8G8R8 333 x 111 with odd base and stride, R8G8B8A8 640 x 480, 15 bit 1024 x 768 scaled down, 1100 x 300 cut at 1024). For each the bench (which plays the framework's HDMI side in `tb_top`) checks every pixel of a whole 1280 x 720 frame against the board's memory in the SDRAM model, and that no line was shown before it was fetched |
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
 
@@ -293,7 +307,10 @@ HandheldTop with the whole core and the framework's hdmi module and decodes the 
 output as a sink would: CEA-861 VIC 4 timing, the AVI InfoFrame, audio clock
 regeneration and samples, and every pixel of two frames against the frame buffer,
 palette and overlay it wrote (`+mode=0`: direct colours, 240 lines at 3x; `+mode=1`:
-palette, 256 lines fit). The picture is 2x across, all 1280 columns.
+palette, 256 lines fit). The picture is 2x across, all 1280 columns. `+mode=2` checks the
+core's own picture (patch `0003`): the core's colour output is forced to a pattern of the
+pixel the framework named 12 clocks before, and every pixel of the screen must be that
+pattern at its own place, the overlay on top.
 
 `sim/gls/run_palette_gls.sh` (Vivado 2018.3) synthesizes `gb_palette` for the board's
 FPGA and runs the netlist next to the RTL in xsim: a fade of 256 colours over 16 frames,

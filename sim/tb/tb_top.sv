@@ -14,6 +14,7 @@ module tb_top
 (
 	input         clk_114,
 	input         clk_28,
+	input         clk_av,            // HDMI pixel clock (the framework's clock_av)
 	input         mmcm_locked,
 	input         reset,
 
@@ -81,8 +82,58 @@ module tb_top
 	output [12:0] dbg_dmacon,
 	output [20:1] dbg_cop_addr,      // copper's chip address pointer
 	output        dbg_sd_clk,
-	output [39:0] dbg_sd_bus
+	output [39:0] dbg_sd_bus,
+
+	// RTG picture: the pixel (x, y) whose colour comes out now
+	output        rtg_enable,
+	output [10:0] rtg_x,
+	output  [9:0] rtg_y,
+	output [23:0] rtg_color,
+	output [15:0] rtg_lines,
+	output [15:0] rtg_late,
+	output [11:0] rtg_hsize,
+	output [11:0] rtg_vsize,
+	output  [4:0] rtg_format,
+	output [31:0] rtg_base,
+	output [13:0] rtg_stride
 );
+
+// The framework's HDMI side (patches/framework 0003, HandheldTop): the
+// 1650 x 750 frame of 720p (cx, cy), videoX / videoY as the framework makes
+// them (from cx = 1280 on, the next line, x counting up to wrap at 2048),
+// and external.x / .y = RegNext(videoX + externalLatency), RegNext(videoY).
+// The colour of that pixel must come 12 clocks (externalLatency) later:
+// the coordinates are delayed by as much for the bench.
+localparam EXT_LATENCY = 12;
+reg  [10:0] cx = 11'd0;
+reg   [9:0] cy = 10'd0;
+wire [10:0] video_x = (cx >= 11'd1280) ? cx + 11'd398 : cx;
+wire  [9:0] video_y = (cx >= 11'd1280) ? ((cy == 10'd749) ? 10'd0 : cy + 1'd1) : cy;
+reg  [10:0] ext_x = 11'd0;
+reg   [9:0] ext_y = 10'd0;
+reg  [10:0] dly_x [0:EXT_LATENCY-1];
+reg   [9:0] dly_y [0:EXT_LATENCY-1];
+always @(posedge clk_av) begin
+	cx <= (cx == 11'd1649) ? 11'd0 : cx + 1'd1;
+	if (cx == 11'd1649) cy <= (cy == 10'd749) ? 10'd0 : cy + 1'd1;
+	ext_x <= video_x + EXT_LATENCY[10:0];
+	ext_y <= video_y;
+	dly_x[0] <= ext_x;
+	dly_y[0] <= ext_y;
+	for (int i = 1; i < EXT_LATENCY; i++) begin
+		dly_x[i] <= dly_x[i - 1];
+		dly_y[i] <= dly_y[i - 1];
+	end
+end
+assign rtg_x = dly_x[EXT_LATENCY - 1];
+assign rtg_y = dly_y[EXT_LATENCY - 1];
+assign rtg_lines  = dut.rtg_lines;
+assign rtg_late   = dut.rtg_late;
+assign rtg_hsize  = dut.rtg.r_hsize;
+assign rtg_vsize  = dut.rtg.r_vsize;
+assign rtg_format = dut.rtg.r_format;
+assign rtg_base   = dut.rtg.r_base;
+assign rtg_stride = dut.rtg.r_stride;
 
 wire        sd_clk, sd_ras, sd_cas, sd_we, sd_oe;
 wire  [1:0] sd_cke, sd_cs;      // one per chip
@@ -113,6 +164,12 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.video_palette_write     (video_pal_we),
 	.video_palette_index     (video_pal_index),
 	.video_palette_color     (video_pal_color),
+	.video_external_clock    (clk_av),
+	.video_external_active   (1'b1),
+	.video_external_x        (ext_x),
+	.video_external_y        (ext_y),
+	.video_external_color    (rtg_color),
+	.video_external_enable   (rtg_enable),
 	.audio_left              (audio_left),
 	.audio_right             (audio_right),
 	.host_mem_enable         (host_mem_enable),

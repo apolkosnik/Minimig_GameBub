@@ -85,3 +85,4 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `0003-cpu_wrapper-no-expansion-autoconfig.patch`
 - `0004-nonblocking-registers-written-in-clocked-blocks.patch`
 - `0005-second-sdram-chip-z3-16mb-cache-drain.patch`
+- `0006-no-share-window.patch`

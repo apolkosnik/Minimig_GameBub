@@ -44,6 +44,9 @@ class MinimigCore extends Module with Core {
       framePeriod = framePeriod,
       independentScale = true,
       paletteBits = 10,
+      // RTG: the board's picture (second SDRAM chip) on HDMI
+      // (patches/framework 0003)
+      externalPicture = true,
     )
     val audio = new AudioV0()
     val host = new HostV0()

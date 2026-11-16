@@ -48,6 +48,12 @@ module minimig_gamebub
 	output logic        video_palette_write,
 	output logic [9:0]  video_palette_index,
 	output logic [23:0] video_palette_color,
+	input  logic        video_external_clock,
+	input  logic        video_external_active,
+	input  logic [10:0] video_external_x,
+	input  logic [9:0]  video_external_y,
+	output logic [23:0] video_external_color,
+	output logic        video_external_enable,
 	output logic [15:0] audio_left,
 	output logic [15:0] audio_right,
 	input  logic        host_mem_enable,
@@ -537,6 +543,11 @@ wire        ram_ready;
 wire        ar_fetch;
 wire        dcache_sw_en;
 wire        toccata_ena, a2065_ena;
+wire [15:0] fastchip_dout;
+wire        fastchip_sel, fastchip_lds, fastchip_uds, fastchip_rnw;
+wire        fastchip_selack, fastchip_ready;
+wire        rtg_reg_sel;
+wire [15:0] rtg_lines, rtg_late;
 wire  [7:0] toccata_base, a2065_base, cdtv_base;
 
 always @(posedge clk_114) begin
@@ -591,13 +602,13 @@ cpu_wrapper cpu_wrapper
 	.chip_din2    (chip_din2       ),
 	.chip_dout2   (chip_rd2        ),
 
-	.fastchip_dout   (16'h0000     ),
-	.fastchip_sel    (             ),
-	.fastchip_lds    (             ),
-	.fastchip_uds    (             ),
-	.fastchip_rnw    (             ),
-	.fastchip_selack (1'b0         ),
-	.fastchip_ready  (1'b0         ),
+	.fastchip_dout   (fastchip_dout ),
+	.fastchip_sel    (fastchip_sel  ),
+	.fastchip_lds    (fastchip_lds  ),
+	.fastchip_uds    (fastchip_uds  ),
+	.fastchip_rnw    (fastchip_rnw  ),
+	.fastchip_selack (fastchip_selack),
+	.fastchip_ready  (fastchip_ready),
 	.fastchip_lw     (             ),
 
 	.cpucfg       (cpucfg_m        ),
@@ -627,7 +638,6 @@ cpu_wrapper cpu_wrapper
 	.ramdout2     (ram_dout        ),   // fast RAM is in the same SDRAM
 	.ramdin       (ram_din         ),
 	.ramready     (ram_ready       ),
-	.ramshared    (                ),
 	.ramlong1     (                ),
 	.ramdin_lo    (                ),
 	.ramdout_hi   (16'h0000        ),
@@ -644,7 +654,7 @@ cpu_wrapper cpu_wrapper
 	.z3ram_ena1   (                ),
 	.rtg_ena      (                ),
 	.rtg_base     (                ),
-	.rtg_reg_sel  (                ),
+	.rtg_reg_sel  (rtg_reg_sel     ),
 	.dcache_sw_en (dcache_sw_en    )
 );
 
@@ -725,12 +735,52 @@ gb_sdram_ctrl ram1
 	.hostRD       (hp_rd           ),
 	.hostAck      (hp_ack          ),
 
-	.burstAddr    (21'd0           ),
-	.burstReq     (1'b0            ),
-	.burstUrgent  (1'b0            ),
-	.burstAck     (                ),
-	.burstData    (                ),
-	.burstValid   (                )
+	.burstAddr    (burst_addr      ),
+	.burstReq     (burst_req       ),
+	.burstUrgent  (burst_urgent    ),
+	.burstAck     (burst_ack       ),
+	.burstData    (burst_data      ),
+	.burstValid   (burst_valid     )
+);
+
+// ===========================================================================
+// RTG: the board's registers and palette (fastchip, as on MiSTer) and its
+// picture from the second SDRAM chip on HDMI (gb_rtg)
+// ===========================================================================
+wire [24:4] burst_addr;
+wire        burst_req, burst_urgent, burst_ack, burst_valid;
+wire [15:0] burst_data;
+
+gb_rtg rtg
+(
+	.clk_sys     (clk_sys              ),
+	.reset       (~cpu_rst | ~cpu_nrst_out),
+	.sel         (fastchip_sel         ),
+	.rtg_reg_sel (rtg_reg_sel          ),
+	.addr        (chip_addr            ),
+	.din         (chip_din             ),
+	.uds         (~fastchip_uds        ),
+	.lds         (~fastchip_lds        ),
+	.rnw         (fastchip_rnw         ),
+	.sel_ack     (fastchip_selack      ),
+	.ready       (fastchip_ready       ),
+	.dout        (fastchip_dout        ),
+	.enable      (video_external_enable),
+
+	.clk_114     (clk_114              ),
+	.burstAddr   (burst_addr           ),
+	.burstReq    (burst_req            ),
+	.burstUrgent (burst_urgent         ),
+	.burstAck    (burst_ack            ),
+	.burstData   (burst_data           ),
+	.burstValid  (burst_valid          ),
+
+	.clk_av      (video_external_clock ),
+	.av_x        (video_external_x     ),
+	.av_y        (video_external_y     ),
+	.av_color    (video_external_color ),
+	.dbg_lines   (rtg_lines            ),
+	.dbg_late    (rtg_late             )
 );
 
 // ===========================================================================

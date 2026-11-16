@@ -27,6 +27,8 @@
 #           and host keyboard events (USB HID usages): a key down and up,
 #           Caps Lock toggling, a burst of four events, an unknown usage
 #   audio   audtest.rom: Paula channel 0, the four stereo mix settings
+#   rtg     rtgtest.rom: the RTG board's registers, palette and picture
+#           (six modes, every pixel of an HDMI frame)
 #   floppy  wrtest.rom: a track written with disk DMA, decoded into the
 #           image, saved on exit (CoreHalt, FileReadStart/End)
 #   ide_*   idetest.rom: the Gayle IDE port with hard disk images served by
@@ -83,6 +85,13 @@ run aga256t --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=7 --expect-n
 Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:10A:F000:A000 --check-word 790:10C:F000:0000 --check-word 790:10E:F000:8000 --check-word 790:110:F000:0000"
 run z3_030 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0001
 run z3_020 --kick asm/z3test.rom --ms 800 --set 1048=3 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
+# rtgtest.rom: the RTG board (68030): registers at both addresses, the
+# palette, six modes (8 bit palette, 16 bit 565 and 1555, 24 bit, 32 bit;
+# unaligned bases and strides, scaled up and down, cut at 1024 pixels), each
+# shown on the framework's external picture (HDMI, tb_top) and every pixel
+# of a whole 1280 x 720 frame checked
+run rtg --kick asm/rtgtest.rom --ms 1800 --set 1048=4 --set 104C=8 --rtg-check --rtg-modes 6 \
+	--check-word 1790:100:FFFF:600D --check-word 1790:104:FFFF:0000
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \

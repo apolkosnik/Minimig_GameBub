@@ -53,6 +53,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -74,6 +75,7 @@ static uint64_t cyc28 = 0;          // clk_28 cycles since start
 static int failures = 0;
 
 #define FAIL(...) do { std::fprintf(stderr, "FAIL: " __VA_ARGS__); std::fprintf(stderr, "\n"); failures++; } while (0)
+static void rtg_sample();   // RTG picture check, at every rising clk_av edge
 
 // -------------------------------------------------------------- video
 static const int VW = 640, VH = 256;   // the frame buffer
@@ -316,15 +318,26 @@ static void cycle28() {
 		prev_as = as;
 	}
 
+	// clk_av (HDMI pixel clock): two periods every three clk_114 periods,
+	// rising every third clk_114 half period
+	static uint32_t av_half = 0;
 	for (int p = 0; p < 4; p++) {
 		top->clk_114 = 1;
 		if (p == 0) top->clk_28 = 1;
 		if (p == 2) top->clk_28 = 0;
+		bool av_rise = (av_half % 3) == 0;
+		top->clk_av = (av_half % 3) != 2;
+		av_half++;
 		top->eval();
 		sdram_pin_check();
+		if (av_rise) rtg_sample();
 		top->clk_114 = 0;
+		av_rise = (av_half % 3) == 0;
+		top->clk_av = (av_half % 3) != 2;
+		av_half++;
 		top->eval();
 		sdram_pin_check();
+		if (av_rise) rtg_sample();
 	}
 	cyc28++;
 
@@ -618,6 +631,101 @@ static std::vector<uint8_t> drive_sector(const Geo &g, const std::vector<uint8_t
 
 static uint32_t chip16(uint32_t addr);
 
+// ---------------------------------------------------------------------------
+// RTG picture check (--rtg-check): the framework's HDMI side is in tb_top;
+// every pixel of the 1280 x 720 picture is compared with the colour this
+// model expects from the RTG registers, the palette the test ROM writes
+// (rtgtest.s) and the board's memory in the chip 1 SDRAM model.
+// ---------------------------------------------------------------------------
+static bool rtg_check = false;
+static int rtg_mode = 0;              // the mode being checked (ROM word $100)
+static int rtg_skip = 0;              // whole frames still to skip
+static bool rtg_in_frame = false;     // checking the current frame
+static bool rtg_frame_done = false;   // a whole frame was checked
+static uint64_t rtg_bad = 0, rtg_pixels = 0, rtg_bad_total = 0;
+static int rtg_modes_done = 0;
+static int rtg_last_acked = 0;        // modes are shown in increasing order
+static uint32_t rtg_late_start = 0;
+struct RtgFrame {
+	uint32_t hs, vs, fmt, base, stride, bpp;
+	bool ok, wide;
+	uint32_t step, offx, offy, endx, endy;
+	std::vector<uint8_t> mem;          // the board's memory from base
+} rtg_f;
+static uint32_t rtg_pal(uint32_t i) { return (i << 16) | (((i * 3) & 255) << 8) | (255 - i); }
+static uint8_t rtg_byte(uint32_t off) {   // a byte of the board's memory (chip 1)
+	uint32_t w = sdram_peek16(off >> 1);
+	return (off & 1) ? (w >> 8) : (w & 255);
+}
+static void rtg_take_frame() {
+	RtgFrame &f = rtg_f;
+	f.hs = std::min<uint32_t>(top->rtg_hsize, 1024); f.vs = std::min<uint32_t>(top->rtg_vsize, 2047);
+	f.fmt = top->rtg_format; f.base = top->rtg_base & 0x7FFFFF; f.stride = top->rtg_stride;
+	uint32_t b3 = f.fmt & 7;
+	f.bpp = b3 == 3 ? 1 : b3 == 4 ? 2 : b3 == 5 ? 3 : 4;
+	f.ok = f.hs && f.vs;
+	if (!f.ok) return;
+	// fitted to 1280 x 720, the same factor both ways, centred
+	f.wide = f.hs * 720 >= f.vs * 1280;
+	f.step = f.wide ? (f.hs << 16) / 1280 : (f.vs << 16) / 720;
+	uint32_t shown = f.wide ? f.vs * 1280 / f.hs : f.hs * 720 / f.vs;
+	f.offx = f.wide ? 0 : (1280 - shown) / 2; f.endx = f.wide ? 1280 : f.offx + shown;
+	f.offy = f.wide ? (720 - shown) / 2 : 0; f.endy = f.wide ? f.offy + shown : 720;
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+	size_t n = size_t(f.vs) * f.stride + 8;
+	f.mem.resize(n);
+	for (size_t i = 0; i < n; i++) f.mem[i] = rtg_byte((f.base + uint32_t(i)) & 0x7FFFFF);
+	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+}
+static uint32_t rtg_expect(uint32_t x, uint32_t y) {
+	const RtgFrame &f = rtg_f;
+	if (!f.ok || x < f.offx || x >= f.endx || y < f.offy || y >= f.endy) return 0;
+	uint32_t sx = std::min<uint32_t>(((x - f.offx) * f.step) >> 16, f.hs - 1);
+	uint32_t sy = std::min<uint32_t>(((y - f.offy) * f.step) >> 16, f.vs - 1);
+	const uint8_t *p = &f.mem[size_t(sy) * f.stride + size_t(sx) * f.bpp];
+	uint32_t r, g, b, b3 = f.fmt & 7;
+	if (b3 == 3) {
+		uint32_t c = rtg_pal(p[0]);
+		r = c >> 16; g = (c >> 8) & 255; b = c & 255;
+	} else if (b3 == 4) {
+		uint32_t u = p[0] | (p[1] << 8);
+		uint32_t r5 = u & 31;
+		r = (r5 << 3) | (r5 >> 2);
+		if (f.fmt & 8) {
+			uint32_t g5 = (u >> 5) & 31, b5 = (u >> 10) & 31;
+			g = (g5 << 3) | (g5 >> 2); b = (b5 << 3) | (b5 >> 2);
+		} else {
+			uint32_t g6 = (u >> 5) & 63, b5 = (u >> 11) & 31;
+			g = (g6 << 2) | (g6 >> 4); b = (b5 << 3) | (b5 >> 2);
+		}
+	} else {
+		r = p[0]; g = p[1]; b = p[2];
+	}
+	if (f.fmt & 16) std::swap(r, b);
+	return (r << 16) | (g << 8) | b;
+}
+// at every rising clk_av edge
+static void rtg_sample() {
+	if (!rtg_check || !rtg_mode) return;
+	uint32_t x = top->rtg_x, y = top->rtg_y;
+	if (x == 0 && y == 0) {
+		if (rtg_in_frame) { rtg_in_frame = false; rtg_frame_done = true; }
+		else if (rtg_skip > 0) rtg_skip--;
+		else if (!rtg_frame_done) {
+			if (!top->rtg_enable) { FAIL("RTG mode %d: the picture is not enabled", rtg_mode); rtg_frame_done = true; return; }
+			rtg_take_frame();
+			rtg_in_frame = true;
+			rtg_bad = rtg_pixels = 0;
+			rtg_late_start = top->rtg_late;
+		}
+	}
+	if (!rtg_in_frame || x >= 1280 || y >= 720) return;
+	uint32_t e = rtg_expect(x, y), c = top->rtg_color;
+	rtg_pixels++;
+	if (c != e && rtg_bad++ < 8)
+		FAIL("RTG mode %d: pixel (%u,%u) is %06X, expected %06X", rtg_mode, x, y, c, e);
+}
+
 // chip RAM at addr holds these bytes
 static int compare_chip(const char *what, uint32_t addr, const std::vector<uint8_t> &e) {
 	int bad = 0;
@@ -685,6 +793,7 @@ int main(int argc, char **argv) {
 	std::string disk[4];
 	std::vector<std::pair<uint32_t, uint32_t>> extra_settings;
 	double run_ms = 3000;
+	int rtg_modes_expected = 0;
 	struct Press { double ms; uint32_t mask; double len; };
 	std::vector<Press> presses, presses2;   // slot 0, slot 1
 	struct Stick { double ms; int v[6]; double len; };
@@ -747,6 +856,8 @@ int main(int argc, char **argv) {
 		else if (a == "--expect-hdd-read") expect_hdd_read = std::atol(next().c_str());
 		else if (a == "--save-hdf") save_hdf = next();
 		else if (a == "--exit") do_exit = true;
+		else if (a == "--rtg-check") rtg_check = true;
+		else if (a == "--rtg-modes") rtg_modes_expected = std::atoi(next().c_str());
 		else if (a == "--save-dir") save_dir = next();
 		else if (a == "--expect-sectors") expect_sectors = std::atol(next().c_str());
 		else if (a == "--expect-written") expect_written = std::atol(next().c_str());
@@ -891,6 +1002,29 @@ int main(int argc, char **argv) {
 			s.ms = -1;
 		}
 		for (auto &h : hwrites) if (!h.done && ms >= h.ms) { hwrite(h.addr, h.value); h.done = true; }
+		// RTG: the ROM shows mode n (word $100 = $0100 + n) and waits for $102 = n
+		if (rtg_check) {
+			uint32_t w = chip16(0x100);
+			int m = ((w & 0xFF00) == 0x0100) ? int(w & 0xFF) : 0;
+			if (m > rtg_last_acked && m != rtg_mode && !rtg_in_frame) {
+				rtg_mode = m; rtg_skip = 2; rtg_frame_done = false;
+				std::printf("%.1f ms: RTG mode %d set\n", ms, m);
+			}
+			if (rtg_mode && rtg_frame_done) {
+				uint32_t late = uint32_t(uint16_t(top->rtg_late - rtg_late_start));
+				std::printf("%.1f ms: RTG mode %d: %dx%d format %02X: %llu pixels checked, %llu wrong, %u lines late, %u lines fetched\n",
+				            ms, rtg_mode, rtg_f.hs, rtg_f.vs, rtg_f.fmt, (unsigned long long)rtg_pixels,
+				            (unsigned long long)rtg_bad, late, top->rtg_lines);
+				if (rtg_pixels != 1280ull * 720ull) FAIL("RTG mode %d: %llu pixels checked", rtg_mode, (unsigned long long)rtg_pixels);
+				if (late) FAIL("RTG mode %d: %u lines shown without their buffer", rtg_mode, late);
+				rtg_bad_total += rtg_bad;
+				rtg_modes_done++;
+				sdram_poke16(0x102 >> 1, rtg_mode);
+				rtg_last_acked = rtg_mode;
+				rtg_frame_done = false;
+				rtg_mode = 0;
+			}
+		}
 		// chip RAM word at a byte address: SDRAM word address / 2
 		for (auto &c : checks) if (!c.done && ms >= c.ms) {
 			c.done = true;
@@ -942,6 +1076,11 @@ int main(int argc, char **argv) {
 		}
 	}
 	if (!boot_seen) FAIL("the configuration sequence never finished");
+	if (rtg_check) {
+		std::printf("RTG: %d modes checked, %llu pixels wrong\n", rtg_modes_done, (unsigned long long)rtg_bad_total);
+		if (rtg_modes_done != rtg_modes_expected) FAIL("RTG: %d modes checked, expected %d", rtg_modes_done, rtg_modes_expected);
+		if (rtg_bad_total) FAIL("RTG: %llu pixels wrong", (unsigned long long)rtg_bad_total);
+	}
 	else std::printf("configuration and Kickstart upload done after %.1f ms\n", (boot_done_at - run_start) / 28375.0);
 
 	uint32_t sec_rd = hread(0x10), sec_wr = hread(0x14), ferr = hread(0x18);

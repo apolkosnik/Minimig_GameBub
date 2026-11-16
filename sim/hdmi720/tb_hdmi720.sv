@@ -21,6 +21,11 @@
 //       1: palette colours (the palette RAM's 24 bit entries, and the fixed
 //          3 + 3 + 2 bit colours of the indices 768..1023), the 256 lines
 //          spread over the 720 (fit: line y * 256 / 720);
+//       2: the core's own picture (patches/framework 0003, the RTG
+//          display): the core's external colour is forced to a pattern of
+//          the x / y the framework presented VideoV0.externalLatency (12)
+//          clocks before, every pixel of the 1280 x 720 screen must be
+//          the pattern at its own position;
 //     and the 360x240 pause-menu overlay scaled 3x and centred
 //     (x 100..1179) over the picture;
 //   - the data island packets: the AVI InfoFrame's VIC (must be 4), the
@@ -40,7 +45,7 @@
 // The pixel clock is 74.21875 MHz, the frequency clk_wiz_hdmi.v makes
 // (50 MHz / 4 x 59.375 / 10).
 //
-// Plusargs: +frames=<n> frames to check (default 2), +mode=<0|1>.
+// Plusargs: +frames=<n> frames to check (default 2), +mode=<0|1|2>.
 //
 // Copyright (c) 2026 Adam Polkosnik
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -173,11 +178,17 @@ module tb_hdmi720;
 		if (x % 37 == 5 || y % 23 == 7) ov_pixel = 2'((x + y) % 3 + 1);
 		else ov_pixel = 2'd0;
 	endfunction
+	// mode 2: the core's picture, a colour for every pixel of the frame
+	function automatic [23:0] ext_pixel(input int x, input int y);
+		ext_pixel = {8'(x * 5 + y * 3), 8'(x ^ (y << 1)), 8'(y * 7 + (x >> 3))};
+	endfunction
 	function automatic [23:0] expected_rgb(input int x, input int y);
 		reg [1:0] o;
 		reg [7:0] lum;
 		expected_rgb = 24'h000000;
-		if (x >= 0 && x < FB_W * FB_SX)
+		if (mode == 2)
+			expected_rgb = ext_pixel(x, y);
+		else if (x >= 0 && x < FB_W * FB_SX)
 			expected_rgb = index_rgb(fb_pixel(x / FB_SX, fb_line(y)));
 		if (x >= OV_X0 && x < OV_X0 + OV_W * SCALE) begin
 			o = ov_pixel((x - OV_X0) / SCALE, y / SCALE);
@@ -190,7 +201,8 @@ module tb_hdmi720;
 
 	initial begin
 		if ($value$plusargs("mode=%d", mode)) ;
-		$display("mode %0d: %s", mode, mode == 0 ? "direct colours, 240 lines" : "palette, 256 lines fit");
+		$display("mode %0d: %s", mode, mode == 0 ? "direct colours, 240 lines" :
+			mode == 1 ? "palette, 256 lines fit" : "the core's external picture");
 		#1;
 		for (int i = 0; i < 1024; i++)
 			dut.videoPalette_sram_ext.Memory[i] = pal_entry(i);
@@ -209,7 +221,26 @@ module tb_hdmi720;
 		force dut._core_io_video_palette_write = 1'b0;
 		force dut._core_io_video_palette_enable = (mode == 1);
 		force dut._core_io_video_fit = (mode == 1);
+		force dut._core_io_video_external_enable = (mode == 2);
+		force dut._core_io_video_external_color = ext_color;
 	end
+
+	// mode 2: the colour of the pixel the framework named 12 clocks ago
+	localparam int EXT_LATENCY = 12;
+	reg  [10:0] ext_dx [0:EXT_LATENCY-1];
+	reg   [9:0] ext_dy [0:EXT_LATENCY-1];
+	always @(posedge clk_av) begin
+		ext_dx[0] <= dut.core_io_video_external_x_REG;
+		ext_dy[0] <= dut.core_io_video_external_y_REG;
+		for (int i = 1; i < EXT_LATENCY - 1; i++) begin
+			ext_dx[i] <= ext_dx[i - 1];
+			ext_dy[i] <= ext_dy[i - 1];
+		end
+	end
+	// the 12th register: the colour itself
+	reg  [23:0] ext_color = 24'd0;
+	always @(posedge clk_av)
+		ext_color <= ext_pixel(int'(ext_dx[EXT_LATENCY - 2]), int'(ext_dy[EXT_LATENCY - 2]));
 
 	// The MCU's dock register: docked, picture on the external screen
 	initial begin

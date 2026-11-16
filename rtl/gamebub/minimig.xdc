@@ -55,7 +55,10 @@ set_multicycle_path -setup 2 -from [get_clocks sdram_clk_out] \
 # (Agnus's bitplane pointer table is a LUT RAM that the synthesised netlist
 # names bpd1/bplpth_reg*, outside the minimig hierarchy.)
 set mm_ram1  [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */ram1/* || NAME =~ */extModule/ram_cs_reg)}]
-set mm_chip  [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */minimig/* || NAME =~ *bplpth_reg* || NAME =~ */amiga_clk/* || NAME =~ */cpu_wrapper/cpu_inst*)}]
+# cpu_wrapper's own registers (clk_sys, as the CPU's) include the boards'
+# base addresses and enables (z3ram_*, z2ram_ena, rtg_*) that memory_router
+# decodes into ram1's CPU address.
+set mm_chip  [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */minimig/* || NAME =~ *bplpth_reg* || NAME =~ */amiga_clk/* || NAME =~ */cpu_wrapper/*)}]
 set_multicycle_path -setup -end 2 -from $mm_chip -to $mm_ram1
 set_multicycle_path -hold  -end 1 -from $mm_chip -to $mm_ram1
 
@@ -63,7 +66,19 @@ set_multicycle_path -hold  -end 1 -from $mm_chip -to $mm_ram1
 # (Minimig.sdc)
 set_false_path -from [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */minimig/USERIO1/cpu_config_reg* || NAME =~ */minimig/USERIO1/ide_config_reg* || NAME =~ */minimig/USERIO1/bootrom_reg*)}]
 
-# The RTG card's base address: RTG is only offered with a Zorro III CPU,
-# which this core does not build (cpu_wrapper z3cpu is 0), so it never
-# changes after reset.
+# The RTG card's base address: written once, by the autoconfig of the
+# board (a 68020 / 68030), before anything uses the board's memory.
 set_false_path -from [get_cells -hier -filter {IS_SEQUENTIAL && NAME =~ */cpu_wrapper/rtg_base_reg*}]
+
+# RTG picture (gb_rtg). The registers (clk_sys) reach the HDMI pixel clock
+# through two registers each (s_*) and are taken once a frame; a fetch
+# request (q_*, clk_av) is held from a line's start until the next and
+# taken by clk_114 (m_*) after its toggle went through m_tgl. The line
+# buffers and the palette are block RAMs written in one domain and read in
+# another.
+set_false_path -to [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */rtg/s_*_reg*)}]
+set_false_path -to [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */rtg/m_tgl_reg[0]*)}]
+# (Vivado moves m_* into the fetch address multiplier's DSP, so the request
+# is constrained by the clock it goes to; q_line is also read in clk_av.)
+set_false_path -from [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */rtg/q_line_reg* || NAME =~ */rtg/q_buf_reg* || NAME =~ */rtg/q_base_reg* || NAME =~ */rtg/q_stride_reg* || NAME =~ */rtg/q_hs_reg* || NAME =~ */rtg/q_bpp_reg*)}] \
+    -to [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clocks/mmcm/CLKOUT0}]]
