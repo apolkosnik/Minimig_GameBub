@@ -35,6 +35,10 @@
 #           and host keyboard events (USB HID usages): a key down and up,
 #           Caps Lock toggling, a burst of four events, an unknown usage
 #   audio   audtest.rom: Paula channel 0, the four stereo mix settings
+#   mmu     mmutest.rom: the 68030's MMU translating with 1 KB pages (as
+#           AmigaOS 3.2): scattered reads and writes over 120 pages, base
+#           registers in other pages than the address, U / M bits, write
+#           protection, remapping with PFLUSHA, code in translated pages
 #   rtg     rtgtest.rom: the RTG board's registers, palette and picture
 #           (six modes, every pixel of an HDMI frame)
 #   floppy  wrtest.rom: a track written with disk DMA, decoded into the
@@ -97,6 +101,9 @@ run aga256t --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=7 --expect-n
 Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:10A:F000:A000 --check-word 790:10C:F000:0000 --check-word 790:10E:F000:8000 --check-word 790:110:F000:0000"
 run z3_030 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0001
 run z3_020 --kick asm/z3test.rom --ms 800 --set 1048=3 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
+# mmutest.rom: the 68030's MMU with 1 KB pages (micro-TLB, table walk, U / M,
+# write protection, PFLUSHA, code in translated pages); $10A..$10E timings
+run mmu --kick asm/mmutest.rom --ms 1600 --set 1048=4 --set 104C=8 --check-word 1590:100:FFFF:600D --check-word 1590:102:FFFF:0000
 # rtgtest.rom: the RTG board (68030): registers at both addresses, the
 # palette, nine modes (8 bit palette, 16 bit 565 and 1555, 24 bit, 32 bit;
 # unaligned bases and strides, scaled up and down, 1280 x 720 one to one,
