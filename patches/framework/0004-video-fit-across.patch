@@ -1,0 +1,77 @@
+diff --git a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
+index 1ab01e2..5f553cf 100644
+--- a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
++++ b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
+@@ -19,7 +19,8 @@ class VideoV0(
+   val framePeriod: Double,
+   /// If true, the video is scaled onto the screen in each direction
+   /// separately (pixels that are not square): across by the largest whole
+-  /// factor that fits, down by the whole factor nearest to screen height /
++  /// factor that fits (on HDMI, a width its 1280 is not a multiple of is
++  /// fitted across the whole width, columns repeated unevenly), down by the whole factor nearest to screen height /
+   /// video height, showing as many of the video's lines from its first as
+   /// the screen has room for (640 x 256 on a 480 line screen: 640 x 480,
+   /// the first 240 lines twice each), or, while `fit` is high, all of its
+@@ -34,8 +35,8 @@ class VideoV0(
+   /// a frame that uses it may be on screen (a few frames after its last
+   /// use). The top quarter of the indices is a fixed set that is not in the
+   /// palette: with the top two index bits set, the rest is a colour of
+-  /// (n + 1) / 3, (n + 1) / 3 and the remaining bits of red, green and blue
+-  /// (10 bits: 3, 3, 2).
++  /// (n + 1) / 3, (n + 2) / 3 and the remaining bits of red, green and blue
++  /// (n = paletteBits - 2; 10 bits: 3, 3, 2; 9 bits: 2, 3, 2).
+   val paletteBits: Int = 0,
+   /// If true, the core can show a picture of its own on HDMI in place of
+   /// the frame buffers (a display of any size kept in the core's memory):
+diff --git a/src/main/scala/platform/handheld/HandheldTop.scala b/src/main/scala/platform/handheld/HandheldTop.scala
+index f5d1229..0755338 100644
+--- a/src/main/scala/platform/handheld/HandheldTop.scala
++++ b/src/main/scala/platform/handheld/HandheldTop.scala
+@@ -684,7 +684,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+         val index = RegNext(RegNext(framebufferRaw))
+         val fixedBits = videoPaletteBits - 2
+         val fixedR = (fixedBits + 1) / 3
+-        val fixedG = (fixedBits + 1) / 3
++        val fixedG = (fixedBits + 2) / 3
+         val fixedB = fixedBits - fixedR - fixedG
+         val paletteOn = XpmCdcSingle(clock, coreVideo.paletteEnable)
+         val direct = index.asTypeOf(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
+@@ -822,7 +822,17 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       // Lines shown at that factor, and all of them over the whole height.
+       val videoLines = videoHeight.min(screenHeight / videoScaleY)
+       val fitDivisor = BigInt(videoHeight).gcd(BigInt(screenHeight)).toInt
+-      val videoOffsetX = (screenWidth - (videoWidth * videoScaleX)) / 2
++      // A width the screen's is not a multiple of (independentScale): fitted
++      // across the whole width, column x * videoWidth / screenWidth (as
++      // x * fitMulX >> fitShiftX, exact for every column).
++      val fitAcross = videoIndependentScale && screenWidth % videoWidth != 0
++      val fitShiftX = (1 to 30).find { k =>
++        val m = (BigInt(videoWidth) << k) / screenWidth + 1
++        (0 until screenWidth).forall(x => ((BigInt(x) * m) >> k) == BigInt(x * videoWidth / screenWidth))
++      }.getOrElse(throw new CoreException("no exact fit multiplier across"))
++      val fitMulX = (BigInt(videoWidth) << fitShiftX) / screenWidth + 1
++      val videoShownWidth = if (fitAcross) screenWidth else videoWidth * videoScaleX
++      val videoOffsetX = (screenWidth - videoShownWidth) / 2
+       val videoOffsetY = (screenHeight - (videoLines * videoScaleY)) / 2
+       // The hdmi module registers rgb into its video data one clock before its
+       // video period starts (video_data <= rgb, mode two clocks after cx): the
+@@ -856,7 +866,9 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       val framebufferX1 = RegNext(videoX - videoOffsetX.U + framebufferReadDelay.U)
+       val framebufferY1 = RegNext(videoY - videoOffsetY.U)
+       val framebufferFit1 = RegNext(videoY * fitMul.U)
+-      val framebufferX2 = RegNext(framebufferX1 / videoScaleX.U)
++      val framebufferX2 = if (fitAcross) {
++        RegNext((framebufferX1 * fitMulX.U) >> fitShiftX)
++      } else RegNext(framebufferX1 / videoScaleX.U)
+       val framebufferY2 = RegNext(Mux(fitVideo,
+         (framebufferFit1 >> fitShift).pad(10)(9, 0),
+         (framebufferY1 / videoScaleY.U).pad(10)(9, 0)))
+@@ -866,7 +878,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       // at cx = screenWidth, where a picture as wide as the screen still has
+       // its last column).
+       framebufferInBounds := io.hdmiCx >= (videoOffsetX + hdmiRgbLead).U &&
+-        io.hdmiCx < (videoOffsetX + (videoWidth * videoScaleX) + hdmiRgbLead).U &&
++        io.hdmiCx < (videoOffsetX + videoShownWidth + hdmiRgbLead).U &&
+         (fitVideo || (io.hdmiCy >= videoOffsetY.U &&
+         io.hdmiCy < (videoOffsetY + (videoLines * videoScaleY)).U))
+ 

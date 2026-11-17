@@ -1,9 +1,9 @@
-// Game Bub Minimig: 24 bit colours -> 10 bit palette indices.
+// Game Bub Minimig: 24 bit colours -> 9 bit palette indices.
 //
-// Two 640 x 256 frame buffers fit the FPGA's block RAM at 10 bits per
+// Two 720 x 256 frame buffers fit the FPGA's block RAM at 9 bits per
 // pixel, not at the 12 bits of an OCS / ECS colour or the 24 of an AGA one.
 // An Amiga picture has few colours at a time, though: this module gives
-// every colour that appears a place in a palette of 768 entries of 24 bits
+// every colour that appears a place in a palette of 384 entries of 24 bits
 // and puts out the entry's index; the framework (patches/framework) keeps
 // the indices in its frame buffers and looks the colour up as it shows
 // them. The colours on screen are then exact.
@@ -14,9 +14,9 @@
 // given to a new colour only at age 5 or more, when no pixel has used it
 // for four whole frames, so that no frame buffer still on screen holds its
 // index. When a new colour finds no such
-// entry (more than 768 colours in five frames: HAM pictures, colour ramps
-// that change every frame) it is shown as the nearest of 256 fixed colours
-// instead (3 bits red, 3 green, 2 blue, dithered; the indices 768..1023,
+// entry (more than 384 colours in five frames: HAM pictures, colour ramps
+// that change every frame) it is shown as the nearest of 128 fixed colours
+// instead (2 bits red, 3 green, 2 blue, dithered; the indices 384..511,
 // which the framework decodes itself).
 //
 // Finding a colour's entry: two hash tables give two candidates, and the
@@ -28,6 +28,18 @@
 // new entries; putting a colour found through one table back into the
 // other did the same through chains of three colours. Either way still
 // pictures of a few hundred colours ran out of entries.)
+// The tables have 4096 places. The first is indexed by the top four bits
+// of red, green and blue: the whole of an OCS / ECS colour (its bytes are
+// a nibble twice), so such a colour's place there is its own and it is
+// never lost. The second by the top 12 bits of the colour times $09A1C7
+// (the low 24 bits of the product): every bit of the colour moves them, so
+// colours the first table puts together (AGA colours that differ in their
+// low bits: ramps of one component, greys, gradients) are spread there.
+// (Hashes that folded the low half of the colour onto the high half
+// cancelled an OCS colour's doubled nibbles: a quarter of a still picture
+// of 256 OCS colours shared both their places with others; nibble-wise
+// mixes keep a grey's repeated nibbles and put a grey ramp's 256 colours
+// in 16 places.)
 // A pixel takes two clocks: the tables and the palette are read in the
 // first, compared and updated in the second; pixels come at least two
 // clocks apart, so each sees the tables as the one before left them.
@@ -48,17 +60,17 @@ module gb_palette
 	input             no_reuse,    // test: an entry once given to a colour is never given to another
 
 	output reg        out_de,      // three clocks after in_de
-	output reg  [9:0] out_index,
+	output reg  [8:0] out_index,
 
 	// palette writes for the framework
 	output reg        pal_we,
-	output reg  [9:0] pal_index,
+	output reg  [8:0] pal_index,
 	output reg [23:0] pal_color,
 
 	output reg [19:0] fixed_pixels // pixels of the last whole frame shown in a fixed colour
 );
 
-localparam [9:0] ENTRIES = 10'd768;
+localparam [8:0] ENTRIES = 9'd384;
 
 // the palette as the framework has it, twice: one copy for each candidate,
 // each a block RAM with one write port (new entries) and one read port.
@@ -68,20 +80,20 @@ localparam [9:0] ENTRIES = 10'd768;
 // FPGA no colour was found again and the entries ran out at once; every
 // simulation of the RTL was right. sim/gls/run_palette_gls.sh compares the
 // netlist with the RTL.)
-reg [23:0] pal1 [0:1023];
-reg [23:0] pal2 [0:1023];
+reg [23:0] pal1 [0:511];
+reg [23:0] pal2 [0:511];
 reg [23:0] a_q, b_q;
 
 // colour -> entry, two ways
-reg  [9:0] ht1 [0:2047];
-reg  [9:0] ht2 [0:2047];
+reg  [8:0] ht1 [0:4095];
+reg  [8:0] ht2 [0:4095];
 // frames since an entry was last used (7: that many or more)
-reg  [2:0] age [0:1023];
+reg  [2:0] age [0:511];
 
 integer i;
 initial begin
-	for (i = 0; i < 1024; i = i + 1) begin pal1[i] = 24'd0; pal2[i] = 24'd0; age[i] = 3'd7; end
-	for (i = 0; i < 2048; i = i + 1) begin ht1[i] = 10'd0; ht2[i] = 10'd0; end
+	for (i = 0; i < 512; i = i + 1) begin pal1[i] = 24'd0; pal2[i] = 24'd0; age[i] = 3'd7; end
+	for (i = 0; i < 4096; i = i + 1) begin ht1[i] = 9'd0; ht2[i] = 9'd0; end
 end
 
 // stage 1: the pixel's colour, its two candidates. The tables are block
@@ -90,27 +102,28 @@ reg        v1, v2;
 reg [23:0] c1, c2;
 reg  [1:0] bayer1, bayer2;
 wire [23:0] cin = {in_r, in_g, in_b};
-wire [10:0] h1_in = cin[10:0] ^ cin[21:11] ^ {9'd0, cin[23:22]};
-wire [10:0] h2_in = {cin[4:0], cin[23:18]} ^ {cin[12:5], cin[15:13]} ^ {cin[17:16], 9'd0};
-reg  [10:0] h1, h2;
-reg   [9:0] ht1_q, ht2_q;      // the tables' read registers
+wire [11:0] h1_in = {cin[23:20], cin[15:12], cin[7:4]};
+wire [23:0] h2_prod = cin * 24'h09A1C7;
+wire [11:0] h2_in = h2_prod[23:12];
+reg  [11:0] h1, h2;
+reg   [8:0] ht1_q, ht2_q;      // the tables' read registers
 reg         fwd1, fwd2;        // ... or the entry given away as they were read
-reg   [9:0] fwd_idx;
-wire  [9:0] cand1 = fwd1 ? fwd_idx : ht1_q;
-wire  [9:0] cand2 = fwd2 ? fwd_idx : ht2_q;
-reg  [10:0] h1_2, h2_2;
-reg   [9:0] cand1_2, cand2_2;
+reg   [8:0] fwd_idx;
+wire  [8:0] cand1 = fwd1 ? fwd_idx : ht1_q;
+wire  [8:0] cand2 = fwd2 ? fwd_idx : ht2_q;
+reg  [11:0] h1_2, h2_2;
+reg   [8:0] cand1_2, cand2_2;
 
 // an entry free to be given away, and the pass over all ages
-reg  [9:0] scan;
-reg  [9:0] free_idx;
+reg  [8:0] scan;
+reg  [8:0] free_idx;
 reg        free_valid;
 reg        sweep;            // every entry's age goes up by one
-reg  [9:0] sweep_idx;
+reg  [8:0] sweep_idx;
 reg [19:0] fixed_count;
 // the ages have one write port (a pixel's entry, else the pass) and one
 // read port (the pass, else the search for a free entry)
-wire [9:0] age_raddr = sweep ? sweep_idx : scan;
+wire [8:0] age_raddr = sweep ? sweep_idx : scan;
 wire [2:0] age_q     = age[age_raddr];
 wire       scan_old  = (age_q >= 3'd5);
 
@@ -118,17 +131,17 @@ wire       scan_old  = (age_q >= 3'd5);
 wire hit1 = (a_q == c2) && (cand1_2 < ENTRIES);
 wire hit2 = (b_q == c2) && (cand2_2 < ENTRIES);
 wire hit  = hit1 | hit2;
-wire [9:0] hit_idx = hit1 ? cand1_2 : cand2_2;
+wire [8:0] hit_idx = hit1 ? cand1_2 : cand2_2;
 wire alloc = v2 & ~hit & free_valid;
 
-// the fixed colours: 3 + 3 + 2 bits with an ordered dither, the same
+// the fixed colours: 2 + 3 + 2 bits with an ordered dither, the same
 // threshold for the three components, so that a colour is shown a little
 // lighter or darker, never in another hue
 wire  [7:0] thr = {bayer2, 6'd24};                 // 24, 88, 152, 216
-wire [10:0] qr = c2[23:16] * 3'd7 + {3'd0, thr};
+wire  [9:0] qr = c2[23:16] * 2'd3 + {2'd0, thr};
 wire [10:0] qg = c2[15:8]  * 3'd7 + {3'd0, thr};
 wire  [9:0] qb = c2[7:0]   * 2'd3 + {2'd0, thr};
-wire  [9:0] fixed_idx = {2'b11, qr[10:8], qg[10:8], qb[9:8]};
+wire  [8:0] fixed_idx = {2'b11, qr[9:8], qg[10:8], qb[9:8]};
 
 always @(posedge clk) begin
 	if (alloc) pal1[free_idx] <= c2;
@@ -178,15 +191,15 @@ always @(posedge clk) begin
 			free_idx   <= scan;
 			free_valid <= 1'b1;
 		end
-		scan <= (scan == ENTRIES - 10'd1) ? 10'd0 : scan + 10'd1;
+		scan <= (scan == ENTRIES - 9'd1) ? 9'd0 : scan + 9'd1;
 	end
 
 	// the pass: a clock an entry, in the clocks no pixel writes an age
 	if (sweep && !v2) begin
 		// (no_reuse: entries in use stay young; only the never used are free)
 		if (age_q != 3'd7 && !no_reuse) age[sweep_idx] <= age_q + 3'd1;
-		if (sweep_idx == ENTRIES - 10'd1) sweep <= 1'b0;
-		sweep_idx <= sweep_idx + 10'd1;
+		if (sweep_idx == ENTRIES - 9'd1) sweep <= 1'b0;
+		sweep_idx <= sweep_idx + 9'd1;
 	end
 
 	if (v2) begin
@@ -217,19 +230,19 @@ always @(posedge clk) begin
 		fixed_pixels <= fixed_count;
 		fixed_count  <= 20'd0;
 		sweep        <= 1'b1;
-		sweep_idx    <= 10'd0;
+		sweep_idx    <= 9'd0;
 	end
 
 	if (reset) begin
 		v1           <= 1'b0;
 		v2           <= 1'b0;
 		sweep        <= 1'b0;
-		sweep_idx    <= 10'd0;
-		scan         <= 10'd0;
+		sweep_idx    <= 9'd0;
+		scan         <= 9'd0;
 		free_valid   <= 1'b0;
 		fixed_count  <= 20'd0;
 		fixed_pixels <= 20'd0;
-		out_index    <= 10'd0;
+		out_index    <= 9'd0;
 	end
 end
 

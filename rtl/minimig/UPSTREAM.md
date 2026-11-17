@@ -86,3 +86,4 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `0004-nonblocking-registers-written-in-clocked-blocks.patch`
 - `0005-second-sdram-chip-z3-16mb-cache-drain.patch`
 - `0006-no-share-window.patch`
+- `0007-denise-display-window-out.patch`

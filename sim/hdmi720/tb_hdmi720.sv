@@ -13,13 +13,14 @@
 //     a 5-line front porch, back porch 20, both sync pulses active high),
 //     with the hdmi module's one-pixel skew of the video period (DE_SKEW);
 //   - every active pixel of two whole frames against the framebuffer,
-//     palette and overlay contents the test wrote: the 640x256 frame buffer
-//     of 10 bit indices scaled 2x across (all 1280 columns: column 0 of the
-//     picture in the first symbol of the video period, column 639 in the
-//     last) and, by +mode:
-//       0: direct colours (no palette: 3 + 4 + 3 bits), 240 lines at 3x;
+//     palette and overlay contents the test wrote: the 720x256 frame buffer
+//     of 9 bit indices fitted across (patches/framework 0004: all 1280
+//     columns, output column x showing column x * 720 / 1280; column 0 of
+//     the picture in the first symbol of the video period, column 719 in
+//     the last) and, by +mode:
+//       0: direct colours (no palette: 3 + 3 + 3 bits), 240 lines at 3x;
 //       1: palette colours (the palette RAM's 24 bit entries, and the fixed
-//          3 + 3 + 2 bit colours of the indices 768..1023), the 256 lines
+//          2 + 3 + 2 bit colours of the indices 384..511), the 256 lines
 //          spread over the 720 (fit: line y * 256 / 720);
 //       2: the core's own picture (patches/framework 0003, the RTG
 //          display): the core's external colour is forced to a pattern of
@@ -145,16 +146,15 @@ module tb_hdmi720;
 	// ------------------------------------------------------------------
 	// Test pattern
 	// ------------------------------------------------------------------
-	localparam int FB_W = 640, FB_H = 256, OV_W = 360, OV_H = 240;
+	localparam int FB_W = 720, FB_H = 256, OV_W = 360, OV_H = 240;
 	localparam int SCALE = 3;                           // the overlay's
-	localparam int FB_SX = 2;                           // 1280 / 640
 	localparam int OV_X0 = (1280 - OV_W * SCALE) / 2;  // 100
 	integer mode = 0;
 
-	// 10 bit indices, every one different from its neighbours (steps of 7
-	// across, 13 down), a quarter of them in the fixed colours (768..1023)
-	function automatic [9:0] fb_pixel(input int x, input int y);
-		fb_pixel = 10'(x * 7 + y * 13 + (x >> 5) * 3);
+	// 9 bit indices, every one different from its neighbours (steps of 7
+	// across, 13 down), a quarter of them in the fixed colours (384..511)
+	function automatic [8:0] fb_pixel(input int x, input int y);
+		fb_pixel = 9'(x * 7 + y * 13 + (x >> 5) * 3);
 	endfunction
 	// the palette's entries
 	function automatic [23:0] pal_entry(input int i);
@@ -162,11 +162,10 @@ module tb_hdmi720;
 	endfunction
 	// the framework's colour widening (Color.convertRGB: the bits repeated)
 	function automatic [7:0] w3(input [2:0] c); w3 = {c, c, c[2:1]}; endfunction
-	function automatic [7:0] w4(input [3:0] c); w4 = {c, c}; endfunction
 	function automatic [7:0] w2(input [1:0] c); w2 = {c, c, c, c}; endfunction
-	function automatic [23:0] index_rgb(input [9:0] i);
-		if (mode == 0) index_rgb = {w3(i[9:7]), w4(i[6:3]), w3(i[2:0])};
-		else if (i[9:8] == 2'b11) index_rgb = {w3(i[7:5]), w3(i[4:2]), w2(i[1:0])};
+	function automatic [23:0] index_rgb(input [8:0] i);
+		if (mode == 0) index_rgb = {w3(i[8:6]), w3(i[5:3]), w3(i[2:0])};
+		else if (i[8:7] == 2'b11) index_rgb = {w2(i[6:5]), w3(i[4:2]), w2(i[1:0])};
 		else index_rgb = pal_entry(i);
 	endfunction
 	// the frame buffer line shown on output line y
@@ -188,8 +187,8 @@ module tb_hdmi720;
 		expected_rgb = 24'h000000;
 		if (mode == 2)
 			expected_rgb = ext_pixel(x, y);
-		else if (x >= 0 && x < FB_W * FB_SX)
-			expected_rgb = index_rgb(fb_pixel(x / FB_SX, fb_line(y)));
+		else if (x >= 0 && x < 1280)
+			expected_rgb = index_rgb(fb_pixel(x * FB_W / 1280, fb_line(y)));
 		if (x >= OV_X0 && x < OV_X0 + OV_W * SCALE) begin
 			o = ov_pixel((x - OV_X0) / SCALE, y / SCALE);
 			if (o != 0) begin
@@ -204,7 +203,7 @@ module tb_hdmi720;
 		$display("mode %0d: %s", mode, mode == 0 ? "direct colours, 240 lines" :
 			mode == 1 ? "palette, 256 lines fit" : "the core's external picture");
 		#1;
-		for (int i = 0; i < 1024; i++)
+		for (int i = 0; i < 512; i++)
 			dut.videoPalette_sram_ext.Memory[i] = pal_entry(i);
 		for (int y = 0; y < FB_H; y++)
 			for (int x = 0; x < FB_W; x++) begin

@@ -10,6 +10,14 @@
 #           the 68EC020 (240, bottom, palette colours): AGA's picture
 #           comes a clock later, and blended every pixel with its neighbour
 #           before H_START took that in
+#   diw_*   vidtest_l.rom: the display window and the fetch 32 high
+#           resolution pixels left of the standard ones; vidtest_r.rom: the
+#           window alone 4 pixels right (the line's end allows no more).
+#           gb_video centres its 720 pixels on the window: every pixel must
+#           be where it belongs (OCS, ECS, and AGA with palette colours)
+#   lace    lacetest.rom: the vidtest picture in interlace, the border blue
+#           in long fields and red in short ones: every frame the core
+#           completes must be a long field, one every two fields
 #   colour  coltest.rom: a different background colour on every line (256
 #           colours a frame): a still picture must be exact in every pixel;
 #           then the colours change every frame, the palette (gb_palette)
@@ -76,6 +84,10 @@ run() {
 run video  --kick asm/vidtest.rom --ms 560 --check-vidtest
 run video_ecs --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=1 --set 1080=0 --set 107C=8
 run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
+run diw_l    --kick asm/vidtest_l.rom --ms 560 --check-vidtest
+run diw_r    --kick asm/vidtest_r.rom --ms 560 --check-vidtest --vidtest-data-x 36 --set 1044=1 --set 1080=0 --set 107C=8
+run diw_aga  --kick asm/vidtest_l.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
+run lace     --kick asm/lacetest.rom --ms 1000 --check-vidtest --check-lace
 run colour --kick asm/coltest.rom --check-coltest 1100 --ms 4000 --set 1080=3
 run ham    --kick asm/hamtest.rom --ms 900 --set 1080=3
 run aga256 --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=3 --expect-no-fixed
@@ -86,12 +98,13 @@ Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-wor
 run z3_030 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0001
 run z3_020 --kick asm/z3test.rom --ms 800 --set 1048=3 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
 # rtgtest.rom: the RTG board (68030): registers at both addresses, the
-# palette, six modes (8 bit palette, 16 bit 565 and 1555, 24 bit, 32 bit;
-# unaligned bases and strides, scaled up and down, cut at 1024 pixels), each
+# palette, nine modes (8 bit palette, 16 bit 565 and 1555, 24 bit, 32 bit;
+# unaligned bases and strides, scaled up and down, 1280 x 720 one to one,
+# 1920 x 1080, cut at 2048 pixels), each
 # shown on the framework's external picture (HDMI, tb_top) and every pixel
 # of a whole 1280 x 720 frame checked
-run rtg --kick asm/rtgtest.rom --ms 1800 --set 1048=4 --set 104C=8 --rtg-check --rtg-modes 6 \
-	--check-word 1790:100:FFFF:600D --check-word 1790:104:FFFF:0000
+run rtg --kick asm/rtgtest.rom --ms 2500 --set 1048=4 --set 104C=8 --rtg-check --rtg-modes 9 \
+	--check-word 2400:100:FFFF:600D --check-word 2400:104:FFFF:0000
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \

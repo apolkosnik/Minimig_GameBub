@@ -31,19 +31,21 @@ class MinimigCore extends Module with Core {
       clockSpiHz = (mmcmVcoHz / 5).toInt,
     )
     val video = new VideoV0(
-      // 640 high resolution pixels, shown one to one across; down, the
-      // first 240 lines doubled or all 256 fitted to the screen's 480
-      // (patches/framework: independentScale, fit). Two frame buffers of
-      // 640 x 256 fit the block RAM at 10 bits per pixel: a pixel is the
-      // index of its colour in a palette the core fills (paletteBits).
-      videoWidth = 640,
+      // 720 high resolution pixels (the standard window and 40 either side:
+      // overscan), shown one to one across the panel and fitted across
+      // HDMI's 1280; down, the first 240 lines doubled or all 256 fitted to
+      // the screen's 480 (patches/framework: independentScale, fit). Two
+      // frame buffers of 720 x 256 fit the block RAM at 9 bits per pixel: a
+      // pixel is the index of its colour in a palette the core fills
+      // (paletteBits).
+      videoWidth = 720,
       videoHeight = 256,
       colorDepthR = 3,
-      colorDepthG = 4,
+      colorDepthG = 3,
       colorDepthB = 3,
       framePeriod = framePeriod,
       independentScale = true,
-      paletteBits = 10,
+      paletteBits = 9,
       // RTG: the board's picture (second SDRAM chip) on HDMI
       // (patches/framework 0003)
       externalPicture = true,

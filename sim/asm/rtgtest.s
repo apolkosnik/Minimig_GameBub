@@ -9,7 +9,7 @@
 ;      $5080010E (the board's register window)
 ;   3  the palette: entry i = 00 / i / 3i / 255-i, written as longs at
 ;      $B80400 + 4i (as the driver's SetColorArray), three read back
-;   4  six modes, each: a region of the board's memory filled with
+;   4  nine modes, each: a region of the board's memory filled with
 ;      pseudo-random longs, the registers set (base $27000000 + offset, as
 ;      the driver's SetPanning), enabled, word $100 = $0100 + mode; the
 ;      bench checks a whole HDMI frame and writes the mode to word $102
@@ -135,7 +135,7 @@ start:
 	lea	REG+$8,a1
 	moveq	#0,d0
 	move.w	(a1),d0
-	move.l	#1100,d1
+	move.l	#2100,d1		; the last mode's hsize
 	bsr	checkv
 	move.w	#0,REG+$6
 	lea	REG+$6,a1
@@ -201,5 +201,11 @@ modes:
 	dc.l	$500000
 	dc.w	$0C,1024,768,2048	; 15 bit 1555 (4+8), scaled down
 	dc.l	$6A0000
-	dc.w	$03,1100,300,1100	; CLUT, wider than 1024 (cut)
+	dc.w	$03,1100,300,1100	; CLUT, wider than 1024
+	dc.l	$100000
+	dc.w	$23,1280,720,1280	; CLUT, the HDMI picture's size: one to one
+	dc.l	$400000
+	dc.w	$23,1920,1080,1920	; CLUT, scaled down to the whole screen
+	dc.l	$700002
+	dc.w	$23,2100,150,2100	; CLUT, wider than 2048 (cut)
 	dc.l	-1

@@ -128,33 +128,43 @@ unselected ones quietly.
   unchanged) is shown on HDMI only. The handheld's panel is scanned in columns of the
   landscape picture, which a line buffer cannot feed; there the Amiga's own picture
   stays. The RTG picture is fitted to 1280 x 720 (nearest pixel, its shape kept, at most
-  1024 pixels of a line). Lines come from the second SDRAM chip as they are shown:
-  640 x 480 at 32 bits, 800 x 600 at 16 bits and 1024 x 768 at 16 bits fit the
-  bandwidth; larger pictures at 32 bits show lines late.
-* The picture is 640 pixels wide, shown one to one across (640 of the handheld's 800 x
-  480 panel, or of HDMI): all 640 high resolution pixels of the standard display window,
-  so an 80 column Workbench or CLI is sharp; a low resolution pixel is two pixels wide.
+  2048 pixels of a line; 1280 x 720 is shown one to one). Lines come from the second
+  SDRAM chip as they are shown: 640 x 480 at 32 bits, 800 x 600 and 1024 x 768 at 16
+  bits, and 1280 x 720, 1920 x 1080 and 1600 x 1200 at 8 bits fit the bandwidth; wider
+  lines at 16 or 32 bits (1280 x 720 at 16 bits and up) do not, and show late.
+* The picture is 720 pixels wide, centred on the screen's display window: the 640 high
+  resolution pixels of the standard window and 40 either side, and an overscan screen
+  wherever Overscan prefs put it, so a 720 pixel overscan Workbench is shown whole (a
+  wider one loses its edges evenly). Each frame the core measures where Denise's display
+  window opens and closes and centres the next frame on it.
+  On the handheld's 800 x 480 panel it is one to one across, so an 80 column Workbench or
+  CLI is sharp (a low resolution pixel is two pixels wide); on HDMI it is fitted across
+  all 1280 columns (column x shows pixel x * 9 / 16).
   The screen has 480 rows. **Picture** chooses between all 256 PAL lines
   fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
   is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
   (the firmware takes 16 settings at most, so there is none for which 240). NTSC's 200 lines always fit, two rows each.
-  Interlaced screens show one field's lines.
-* Colour: two 640 x 256 frame buffers fit the FPGA's block RAM at 10 bits per pixel, not
+  Interlaced screens show their long fields only: there is block RAM for 256 lines,
+  not for both fields' 512, and the two fields in the same lines would flicker. The
+  picture has the lines of one field (every other line of the screen) and changes at
+  25 Hz.
+* Colour: two 720 x 256 frame buffers fit the FPGA's block RAM at 9 bits per pixel, not
   at the 24 of an AGA colour. **Picture** chooses how a pixel uses them:
-  * *dithered*: the colour in 3 + 4 + 3 bits with a fine 2 x 2 dither. Any number of
-    colours, approximate (black, white and OCS / ECS greens exact);
-  * *palette*: the index of its colour in a palette of 768 entries of 24 bits that the
+  * *dithered*: the colour in 3 + 3 + 3 bits with a fine 2 x 2 dither. Any number of
+    colours, approximate (black and white exact);
+  * *palette*: the index of its colour in a palette of 384 entries of 24 bits that the
     core fills with the colours that appear (`gb_palette`); the framework looks the
     colour up when it shows the frame, so colours are exact. An entry is reused five
-    frames after its colour was last on screen. When more than 768 colours are in use
+    frames after its colour was last on screen. When more than 384 colours are in use
     within that time (HAM pictures, colour ramps that change every frame) the newest are
-    shown in 256 fixed, dithered colours until entries free up.
+    shown in 128 fixed, dithered colours (2 + 3 + 2 bits) until entries free up.
 * The framework scales a core's picture by the same whole factor in both directions;
   `patches/framework/` adds scaling each direction separately, fitting all lines to the
   screen height, and the palette, which this picture needs, 720p HDMI, and a picture of
   the core's own on HDMI for RTG (`0003`: the framework names each pixel, the core
-  answers with its colour 12 clocks later); `tools/patch_framework.sh` applies them to
-  the submodule.
+  answers with its colour 12 clocks later), and on HDMI a picture whose width 1280 is not
+  a multiple of fitted across (`0004`); `tools/patch_framework.sh` applies them to the
+  submodule.
 * PAL runs at 50 Hz on the 60 Hz panel.
 * Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
   (rev 4) with a floppy image; hard disks, the dock keyboard and mouse are tested in
@@ -186,7 +196,7 @@ unselected ones quietly.
 | Main_MiSTer minimig_fdd.cpp | `gb_floppy`: the same track encoding, sync word handling, header and data checks in hardware |
 | Main_MiSTer ide.cpp | `gb_ide`: the same commands, geometry rules and virtual RDB in hardware, on the management port of the unchanged `ide.sv`; sectors through the framework's on-demand file commands |
 | hps_io / hps_ext | `gb_io_master`: drives the same IO_UIO / IO_FPGA / IO_STROBE bus |
-| video_mixer, scaler | `gb_video`: 640 x 256 window into the framework's frame buffer; `gb_palette`: 24 bit colours to 10 bit palette indices |
+| video_mixer, scaler | `gb_video`: 720 x 256 window into the framework's frame buffer; `gb_palette`: 24 bit colours to 9 bit palette indices |
 | audio_out | `gb_audio`: A500 filter, stereo mix |
 | joysticks, PS/2 | `gb_input`: buttons, mouse emulation, keys |
 
@@ -290,14 +300,16 @@ needed; `sim/build.sh` first):
 
 | Test | |
 |---|---|
-| video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 640 x 240 frame is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
+| video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 720 x 240 frame (the picture and the border either side) is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
+| diw_l, diw_r, diw_aga | `vidtest.s` with the display window 32 pixels left (with the fetch) and 4 pixels right (without it): the 720 pixels centred on the window, every pixel checked with OCS, ECS and AGA |
+| lace | `lacetest.s`: the vidtest picture in interlace, COLOR00 blue in long fields and red in short ones: every frame the core completes is a long field, one every two fields, and the picture exact |
 | input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion and buttons, the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
-| colour | `coltest.s` gives every line its own background colour (256 colours a frame): a still picture is exact in every pixel; then the colours change every frame until the palette runs out, and no entry may change while a frame using it can still be shown |
+| colour | `coltest.s` gives every line its own background colour (256 colours a frame): a still picture is exact in every pixel; twelve steps of 64 new colours, seven frames apart, are exact from their first frame (the palette has room); then 256 new colours every frame until the palette runs out, and no entry may change while a frame using it can still be shown |
 | ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |
 | z3_030, z3_020 | `z3test.s`: the 68030 (PMOVE) or the 68020 (F-line), autoconfig of the Zorro III and RTG boards, patterns over the 16 MB board and the RTG memory in the second SDRAM chip, byte and word lanes |
-| rtg | `rtgtest.s` on the 68030: the RTG board's ID at `$B80100` and in its autoconfigured window, the palette written as longs and read back, six modes (8 bit palette 640 x 480, R5G6B5PC 320 x 240 from an unaligned base, B8G8R8 333 x 111 with odd base and stride, R8G8B8A8 640 x 480, 15 bit 1024 x 768 scaled down, 1100 x 300 cut at 1024). For each the bench (which plays the framework's HDMI side in `tb_top`) checks every pixel of a whole 1280 x 720 frame against the board's memory in the SDRAM model, and that no line was shown before it was fetched |
+| rtg | `rtgtest.s` on the 68030: the RTG board's ID at `$B80100` and in its autoconfigured window, the palette written as longs and read back, nine modes (8 bit palette 640 x 480, R5G6B5PC 320 x 240 from an unaligned base, B8G8R8 333 x 111 with odd base and stride, R8G8B8A8 640 x 480, 15 bit 1024 x 768 scaled down, 1100 x 300, 1280 x 720 one to one, 1920 x 1080 scaled down, 2100 x 150 cut at 2048). For each the bench (which plays the framework's HDMI side in `tb_top`) checks every pixel of a whole 1280 x 720 frame against the board's memory in the SDRAM model, and that no line was shown before it was fetched |
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
 
@@ -307,7 +319,8 @@ HandheldTop with the whole core and the framework's hdmi module and decodes the 
 output as a sink would: CEA-861 VIC 4 timing, the AVI InfoFrame, audio clock
 regeneration and samples, and every pixel of two frames against the frame buffer,
 palette and overlay it wrote (`+mode=0`: direct colours, 240 lines at 3x; `+mode=1`:
-palette, 256 lines fit). The picture is 2x across, all 1280 columns. `+mode=2` checks the
+palette, 256 lines fit). The 720 pixel picture is fitted across all 1280 columns (patch
+`0004`). `+mode=2` checks the
 core's own picture (patch `0003`): the core's colour output is forced to a pattern of the
 pixel the framework named 12 clocks before, and every pixel of the screen must be that
 pattern at its own place, the overlay on top.

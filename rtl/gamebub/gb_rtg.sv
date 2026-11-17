@@ -31,11 +31,11 @@
 // colour 12 clocks later (VideoV0.externalLatency). The RTG picture is
 // scaled to fit 1280 x 720 keeping its shape (nearest pixel, the same
 // factor across and down: step = source size << 16 / shown size of the
-// limiting direction), centred, black around it. At most 1024 pixels of a
+// limiting direction), centred, black around it. At most 2048 pixels of a
 // line are shown (wider pictures are cut on the right).
 //
 // Lines come from the SDRAM through the controller's burst port (clk_114,
-// eight words per window, ahead of the CPU) into two line buffers of 1024
+// eight words per window, ahead of the CPU) into two line buffers of 2048
 // pixels: as a line of the HDMI frame starts, the source line after the
 // one it shows (or the one the next HDMI line shows, if that is further
 // on) is fetched into the buffer it does not show. Settings are taken at
@@ -48,7 +48,7 @@ module gb_rtg
 	parameter        SCREEN_W = 1280,
 	parameter        SCREEN_H = 720,
 	parameter        FRAME_H  = 750,
-	parameter        MAX_W    = 1024
+	parameter        MAX_W    = 2048
 )
 (
 	// CPU (clk_sys): cpu_wrapper's fastchip port
@@ -152,7 +152,7 @@ always @(posedge clk_av) begin
 end
 
 // the frame's settings
-reg  [10:0] f_hs = 11'd0;        // pixels shown of a line (at most MAX_W)
+reg  [11:0] f_hs = 12'd0;        // pixels shown of a line (at most MAX_W)
 reg  [10:0] f_vs = 11'd0;        // lines
 reg   [4:0] f_format = 5'd0;
 reg  [22:0] f_base = 23'd0;
@@ -187,7 +187,7 @@ reg  [10:0] q_line;
 reg         q_buf;
 reg  [22:0] q_base;
 reg  [13:0] q_stride;
-reg  [10:0] q_hs;
+reg  [11:0] q_hs;
 reg   [2:0] q_bpp;
 reg         q_tgl = 1'b0;
 reg         q_go = 1'b0;
@@ -214,7 +214,7 @@ always @(posedge clk_av) begin
 
 	// ---- settings and scaling, at the first blank line
 	if (take_settings) begin
-		f_hs     <= (s_hsize[1] > MAX_W) ? MAX_W[10:0] : s_hsize[1][10:0];
+		f_hs     <= (s_hsize[1] > MAX_W) ? MAX_W[11:0] : s_hsize[1];
 		f_vs     <= (s_vsize[1] > 12'd2047) ? 11'd2047 : s_vsize[1][10:0];
 		f_format <= s_format[1];
 		f_base   <= s_base[1];
@@ -231,7 +231,7 @@ always @(posedge clk_av) begin
 			else begin
 				wide  <= (f_hs * SCREEN_H) >= (f_vs * SCREEN_W);
 				// step = size << 16 / shown size of the limiting direction
-				div_n <= ((f_hs * SCREEN_H) >= (f_vs * SCREEN_W)) ? {5'd0, f_hs, 16'd0} : {5'd0, f_vs, 16'd0};
+				div_n <= ((f_hs * SCREEN_H) >= (f_vs * SCREEN_W)) ? {4'd0, f_hs, 16'd0} : {5'd0, f_vs, 16'd0};
 				div_d <= ((f_hs * SCREEN_H) >= (f_vs * SCREEN_W)) ? SCREEN_W[11:0] : SCREEN_H[11:0];
 				div_r <= 13'd0;
 				div_i <= 6'd32;
@@ -256,7 +256,7 @@ always @(posedge clk_av) begin
 				step  <= div_q[17:0];
 				// the other direction: its size * limiting screen size / limiting size
 				div_n <= wide ? f_vs * SCREEN_W : f_hs * SCREEN_H;
-				div_d <= wide ? {1'b0, f_hs} : {1'b0, f_vs};
+				div_d <= wide ? f_hs : {1'b0, f_vs};
 				div_r <= 13'd0;
 				div_i <= 6'd32;
 				div_state <= 3'd4;
@@ -339,13 +339,13 @@ always @(posedge clk_av) begin
 end
 
 // ---- the pixels: 12 registers from av_x to av_color
-reg  [47:0] lbuf [0:1023];       // two lines of 512 pixel pairs
+reg  [47:0] lbuf [0:2047];       // two lines of 1024 pixel pairs
 reg  [10:0] p1_x;
 reg  [11:0] p2_dx;
 reg         p2_in;
 reg  [28:0] p3_m, p4_m;
 reg         p3_in, p4_in;
-reg   [9:0] p5_a;
+reg  [10:0] p5_a;
 reg   [3:0] p5_h;                // pixel of the pair, then delayed
 reg         p5_in, p6_in, p7_in, p8_in, p9_in, p10_in;
 reg  [47:0] p6_q, p7_q;
@@ -379,7 +379,7 @@ function automatic [23:0] direct(input [23:0] px, input [4:0] fmt);
 	end
 endfunction
 
-wire [10:0] src_x = (p4_m[26:16] >= f_hs) ? f_hs - 1'd1 : p4_m[26:16];
+wire [10:0] src_x = (p4_m[27:16] >= f_hs) ? 11'(f_hs - 1'd1) : p4_m[26:16];
 wire        clut  = (f_format[2:0] == 3'd3);
 
 always @(posedge clk_av) begin
@@ -390,7 +390,7 @@ always @(posedge clk_av) begin
 	p3_in  <= p2_in;
 	p4_m   <= p3_m;
 	p4_in  <= p3_in;
-	p5_a   <= {row_buf, src_x[9:1]};
+	p5_a   <= {row_buf, src_x[10:1]};
 	p5_h   <= {p5_h[2:0], src_x[0]};
 	p5_in  <= p4_in;
 	p6_q   <= lbuf[p5_a];
@@ -418,19 +418,19 @@ reg  [10:0] m_line;
 reg         m_buf;
 reg  [22:0] m_base;
 reg  [13:0] m_stride;
-reg  [10:0] m_hs;
+reg  [11:0] m_hs;
 reg   [2:0] m_bpp;
 
 reg   [1:0] g_state = 2'd0;      // 0 idle, 1 address, 2 sizes, 3 fetching
 reg  [24:0] g_prod;
 reg  [22:0] g_base;
 reg  [22:0] g_addr;
-reg  [12:0] g_bytes;             // bytes of the line
-reg   [8:0] g_bursts;            // bursts still to request
-reg  [12:0] g_words;             // words still to come
+reg  [13:0] g_bytes;             // bytes of the line
+reg   [9:0] g_bursts;            // bursts still to request
+reg  [13:0] g_words;             // words still to come
 reg   [3:0] g_skip;              // bytes to drop at the start
-reg  [10:0] g_left;              // pixels still to write
-reg   [8:0] g_pair;              // next pair in the buffer
+reg  [11:0] g_left;              // pixels still to write
+reg   [9:0] g_pair;              // next pair in the buffer
 reg         g_buf;
 reg   [2:0] g_bpp;
 
@@ -455,7 +455,7 @@ end
 // one pixel pair from the oldest bytes (the last pixel of an odd line alone)
 wire  [3:0] pair_bytes = {g_bpp, 1'b0};
 wire        emit = (g_state == 2'd3) && g_left != 0 &&
-                   (acc_n >= pair_bytes || (g_left == 11'd1 && acc_n >= {1'b0, g_bpp}));
+                   (acc_n >= pair_bytes || (g_left == 12'd1 && acc_n >= {1'b0, g_bpp}));
 wire [23:0] px0 = {acc[0], g_bpp > 3'd1 ? acc[1] : 8'd0, g_bpp > 3'd2 ? acc[2] : 8'd0};
 reg  [23:0] px1;
 always @(*) begin
@@ -470,7 +470,7 @@ end
 always @(posedge clk_114) begin
 	reg [7:0] nb [0:9];
 	reg [3:0] n;
-	reg [8:0] bursts;
+	reg [9:0] bursts;
 
 	m_tgl <= {m_tgl[1:0], q_tgl};
 	if (m_tgl[2] != m_tgl[1]) begin
@@ -492,7 +492,7 @@ always @(posedge clk_114) begin
 			g_buf   <= m_buf;
 			g_bpp   <= m_bpp;
 			g_left  <= m_hs;
-			g_pair  <= 9'd0;
+			g_pair  <= 10'd0;
 			g_state <= 2'd1;
 		end
 		2'd1: begin
@@ -501,10 +501,10 @@ always @(posedge clk_114) begin
 		end
 		2'd2: begin
 			// bursts of 16 bytes from the one holding the first byte
-			bursts    = (g_bytes + g_addr[3:0] + 13'd15) >> 4;
+			bursts    = (g_bytes + g_addr[3:0] + 14'd15) >> 4;
 			g_skip   <= g_addr[3:0];
 			g_bursts <= bursts;
-			g_words  <= {bursts, 3'b000};
+			g_words  <= {1'b0, bursts, 3'b000};
 			burstAddr <= {2'b00, g_addr[22:4]};
 			burstReq <= 1'b1;
 			acc_n    <= 4'd0;
@@ -518,7 +518,7 @@ always @(posedge clk_114) begin
 			if (burstAck) begin
 				burstAddr <= burstAddr + 1'd1;
 				g_bursts  <= g_bursts - 1'd1;
-				if (g_bursts == 9'd1) burstReq <= 1'b0;
+				if (g_bursts == 10'd1) burstReq <= 1'b0;
 			end
 
 			// the bytes: the oldest pair out, the word's bytes in
@@ -527,7 +527,7 @@ always @(posedge clk_114) begin
 			if (emit) begin
 				for (int i = 0; i < 10; i++) nb[i] = (i < 10 - pair_bytes) ? acc[(i + pair_bytes) % 10] : 8'd0;
 				n = (acc_n >= pair_bytes) ? acc_n - pair_bytes : 4'd0;
-				g_left <= (g_left == 11'd1) ? 11'd0 : g_left - 11'd2;
+				g_left <= (g_left == 12'd1) ? 12'd0 : g_left - 12'd2;
 				g_pair <= g_pair + 1'd1;
 			end
 			if (burstValid && g_words != 0) begin

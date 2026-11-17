@@ -5,5 +5,6 @@ on the microSD card (add a Kickstart ROM as `kick.rom`, see the top-level README
 with Vivado 2018.3 via `tools/build_vivado2018.sh` and framework v1.1.0-beta4 (needs a
 firmware of that beta or later); timing and utilisation: see the commit that built the bitstream.
 
-This is a hardware bring-up build: everything is tested in simulation
-(`sim/run_tests.sh`), but it has not yet run on a Game Bub.
+Everything is tested in simulation (`sim/run_tests.sh`). v0.7.0 runs on a Game Bub
+(rev 4) with RTG checked there at 1280 x 720; the picture centred on the display window
+and the interlace field drop are new in this build and so far tested in simulation only.

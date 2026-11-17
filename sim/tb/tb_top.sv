@@ -44,7 +44,7 @@ module tb_top
 
 	// VideoV0 / AudioV0
 	output  [2:0] video_r,
-	output  [3:0] video_g,
+	output  [2:0] video_g,
 	output  [2:0] video_b,
 	output        video_de,
 	output        video_hblank,
@@ -53,7 +53,7 @@ module tb_top
 	output        video_pal_on,
 	output [23:0] dbg_pixel_color,   // the colour of the pixel sent (gb_palette), with video_de
 	output        video_pal_we,
-	output  [9:0] video_pal_index,
+	output  [8:0] video_pal_index,
 	output [23:0] video_pal_color,
 	output [15:0] audio_left,
 	output [15:0] audio_right,

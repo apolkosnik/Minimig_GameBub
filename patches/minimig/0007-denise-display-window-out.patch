@@ -1,0 +1,44 @@
+diff --git a/rtl/minimig/denise.sv b/rtl/minimig/denise.sv
+index bd1348f..5cd2f99 100644
+--- a/rtl/minimig/denise.sv
++++ b/rtl/minimig/denise.sv
+@@ -52,7 +52,8 @@ module denise (
+   input  wire           ecs,            // enables ECS chipset features
+   input  wire           aga,            // enables AGA features
+   output wire           hires,          // hires
+-  output wire           shres           // shres
++  output wire           shres,          // shres
++  output wire           diw             // the horizontal display window, with red / green / blue
+ );
+ 
+ 
+@@ -477,6 +478,7 @@ end
+ 
+ reg window_del;
+ reg sprsel_del;
++assign diw = window_del;
+ 
+ always @(posedge clk) begin
+   window_del <= window_ena;
+diff --git a/rtl/minimig/minimig.sv b/rtl/minimig/minimig.sv
+index 15b4537..ee08053 100644
+--- a/rtl/minimig/minimig.sv
++++ b/rtl/minimig/minimig.sv
+@@ -228,6 +228,7 @@ module minimig
+ 	output 	     _vsync,      // vertical sync
+ 	output 	     _csync,      // composite sync
+ 	output 	     field1,
++	output        diw,        // Denise's horizontal display window, with red / green / blue
+ 	output        lace,
+ 	output 	     hblank,
+ 	output 	     vblank,
+@@ -728,7 +729,8 @@ denise DENISE1
+ 	.ecs(|chipset_config[4:3]),
+ 	.aga(chipset_config[4]),
+ 	.hires(hires),
+-	.shres(shres)
++	.shres(shres),
++	.diw(diw)
+ );
+ 
+ //instantiate cia A

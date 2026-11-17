@@ -228,6 +228,7 @@ module minimig
 	output 	     _vsync,      // vertical sync
 	output 	     _csync,      // composite sync
 	output 	     field1,
+	output        diw,        // Denise's horizontal display window, with red / green / blue
 	output        lace,
 	output 	     hblank,
 	output 	     vblank,
@@ -728,7 +729,8 @@ denise DENISE1
 	.ecs(|chipset_config[4:3]),
 	.aga(chipset_config[4]),
 	.hires(hires),
-	.shres(shres)
+	.shres(shres),
+	.diw(diw)
 );
 
 //instantiate cia A
