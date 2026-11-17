@@ -31,8 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEST = REPO_ROOT / "rtl" / "minimig"
 PATCH_DIR = REPO_ROOT / "patches" / "minimig"
 
-# Pinned upstream revision (MiSTer-devel/Minimig-AGA_MiSTer master, 2026-11-10).
-DEFAULT_COMMIT = "7d5d3c2f685af4ce3eb361c22893fccd153f2d87"
+# Pinned upstream revision (MiSTer-devel/Minimig-AGA_MiSTer MiSTer, 2026-11-16).
+DEFAULT_COMMIT = "e559717550f0236895245e048d4d944e28a771e7"
 
 # Upstream files used by the Game Bub core (paths relative to upstream root).
 # Expansion hardware that needs the MiSTer HPS or DDR3 (A2065, Toccata, CDTV,
