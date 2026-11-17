@@ -8,6 +8,17 @@
 ;     the left and right edges of the display window),
 ;   - lines 0, 16, 32, ... 240 and 255 are solid.
 ; Then it loops; COLOR00 never changes.
+; DIWH and DDF (assembler symbols, -D) move the display window and the
+; data fetch: DIWH low resolution pixels from $81 (0: the standard window),
+; DDF the DDFSTRT ($38 standard; a fetch starts DDF * 2 + $11, so DIWH / 2
+; from $38 keeps the picture in the same place in the window). The core
+; centres its 720 pixels on the window.
+	ifnd	DIWH
+DIWH	equ	0
+	endif
+	ifnd	DDF
+DDF	equ	$38
+	endif
 ; SPDX-License-Identifier: GPL-3.0-or-later
 
 	org	$FC0000
@@ -51,10 +62,10 @@ start:
 	move.l	#$01020000,(a0)+	; BPLCON1
 	move.l	#$01040000,(a0)+	; BPLCON2
 	move.l	#$01080000,(a0)+	; BPL1MOD
-	move.l	#$008E2C81,(a0)+	; DIWSTRT
-	move.l	#$00902CC1,(a0)+	; DIWSTOP
-	move.l	#$00920038,(a0)+	; DDFSTRT
-	move.l	#$009400D0,(a0)+	; DDFSTOP
+	move.l	#$008E2C81+DIWH,(a0)+	; DIWSTRT
+	move.l	#$00902CC1+DIWH,(a0)+	; DIWSTOP
+	move.l	#$00920000+DDF,(a0)+	; DDFSTRT
+	move.l	#$00940098+DDF,(a0)+	; DDFSTOP
 	move.l	#$0180000F,(a0)+	; COLOR00 blue
 	move.l	#$01820FF0,(a0)+	; COLOR01 yellow
 	move.l	#$FFFFFFFE,(a0)+	; end

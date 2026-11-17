@@ -52,7 +52,8 @@ module denise (
   input  wire           ecs,            // enables ECS chipset features
   input  wire           aga,            // enables AGA features
   output wire           hires,          // hires
-  output wire           shres           // shres
+  output wire           shres,          // shres
+  output wire           diw             // the horizontal display window, with red / green / blue
 );
 
 
@@ -477,6 +478,7 @@ end
 
 reg window_del;
 reg sprsel_del;
+assign diw = window_del;
 
 always @(posedge clk) begin
   window_del <= window_ena;

@@ -13,7 +13,7 @@
 //                              gb_ide (hard disk images on the Gayle IDE
 //                              port, on-demand file commands)
 //                              gb_host (Game Bub MCU: files, settings)
-//   video_mixer / scaler       gb_video (640 x 240 into the framework)
+//   video_mixer / scaler       gb_video (720 x 256 into the framework)
 //   audio filters              gb_audio
 //   joysticks, PS/2            gb_input (Game Bub controllers, InputExtendedV0)
 //
@@ -38,7 +38,7 @@ module minimig_gamebub
 	output logic        clocks_clockOutSpi,
 	output logic        clocks_locked,
 	output logic [2:0]  video_data_r,
-	output logic [3:0]  video_data_g,
+	output logic [2:0]  video_data_g,
 	output logic [2:0]  video_data_b,
 	output logic        video_dataEnable,
 	output logic        video_vblank,
@@ -46,7 +46,7 @@ module minimig_gamebub
 	output logic        video_fit,
 	output logic        video_palette_enable,
 	output logic        video_palette_write,
-	output logic [9:0]  video_palette_index,
+	output logic [8:0]  video_palette_index,
 	output logic [23:0] video_palette_color,
 	input  logic        video_external_clock,
 	input  logic        video_external_active,
@@ -792,7 +792,7 @@ wire  [7:0] kbd_mouse_data;
 wire  [1:0] kbd_mouse_type;
 wire        kbd_mouse_level;
 wire  [7:0] red, green, blue;
-wire        hs, vs, hblank, vbl, lace, field1;
+wire        hs, vs, hblank, vbl, lace, field1, diw;
 wire  [1:0] res;
 wire [14:0] ldata, rdata;
 
@@ -878,6 +878,7 @@ minimig minimig
 	._vsync       (vs               ),
 	._csync       (                 ),
 	.field1       (field1           ),
+	.diw          (diw              ),
 	.lace         (lace             ),
 	.red          (red              ),
 	.green        (green            ),
@@ -979,6 +980,8 @@ gb_video video
 	.reset   (reset_d),
 	.ntsc    (ntsc),
 	.vpos    (video_vpos),
+	.diw     (diw),
+	.drop_field (field1),
 	.fit_height (video_fit_set),
 	.fit     (video_fit),
 	.palette_mode (video_palette_set),

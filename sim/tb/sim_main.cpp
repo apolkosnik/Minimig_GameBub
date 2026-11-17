@@ -78,7 +78,7 @@ static int failures = 0;
 static void rtg_sample();   // RTG picture check, at every rising clk_av edge
 
 // -------------------------------------------------------------- video
-static const int VW = 640, VH = 256;   // the frame buffer
+static const int VW = 720, VH = 256;   // the frame buffer
 static std::vector<uint32_t> fb(VW * VH);        // the last whole frame, as colours
 static std::vector<uint16_t> fbi(VW * VH);       // the frame being written: palette indices
 static std::vector<uint32_t> fbt(VW * VH);       // the colours the chipset produced for them
@@ -87,14 +87,14 @@ static uint64_t pixels_wrong = 0, pixels_fixed_far = 0, pixels_checked = 0;
 // up when a frame buffer is shown. The two frame buffers the framework
 // keeps are checked against it: an entry must not change while a frame
 // that uses it can still be on screen.
-static uint32_t palette[1024];
+static uint32_t palette[512];
 static std::vector<uint16_t> shown_i[2] = { std::vector<uint16_t>(VW * VH), std::vector<uint16_t>(VW * VH) };
 static bool shown_pal[2] = { false, false };   // the frame was palette indices
 // a frame buffer value as the framework shows it: a palette index, or with
-// the palette off a 3 + 4 + 3 bit colour, the bits repeated to 8
+// the palette off a 3 + 3 + 3 bit colour, the bits repeated to 8
 static uint32_t direct_color(uint32_t v) {
-	uint32_t r = (v >> 7) & 7, g = (v >> 3) & 15, b = v & 7;
-	return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 4 | g) << 8) | (b << 5 | b << 2 | b >> 1);
+	uint32_t r = (v >> 6) & 7, g = (v >> 3) & 7, b = v & 7;
+	return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b << 5 | b << 2 | b >> 1);
 }
 static std::vector<uint32_t> shown_c[2] = { std::vector<uint32_t>(VW * VH), std::vector<uint32_t>(VW * VH) };
 static int shown_n = 0;
@@ -103,10 +103,12 @@ static uint64_t palette_writes = 0, palette_stale = 0;
 // of every frame
 static std::vector<std::pair<uint32_t, uint32_t>> frame_fixed;
 static uint32_t sdram_peek16_fwd(uint32_t waddr);
+// sim/asm/coltest.s: line L's colour is (L * 17 + O(F)) & 0xFFF
+static uint32_t coltest_offset(uint32_t f) { return f <= 12 ? f * 1088 : 12 * 1088 + (f - 12) * 2731; }
 static uint32_t palette_color(uint32_t index) {
-	if (index >= 768) {   // the fixed colours: 3 + 3 + 2 bits, each repeated to 8
-		uint32_t r = (index >> 5) & 7, g = (index >> 2) & 7, b = index & 3;
-		return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b * 0x55);
+	if (index >= 384) {   // the fixed colours: 2 + 3 + 2 bits, each repeated to 8
+		uint32_t r = (index >> 5) & 3, g = (index >> 2) & 7, b = index & 3;
+		return ((r * 0x55) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b * 0x55);
 	}
 	return palette[index];
 }
@@ -114,6 +116,12 @@ static int fb_x = 0, fb_y = 0;
 static bool prev_hblank = true, prev_vblank = true;
 static int frames = 0;
 static uint64_t hs_edges = 0, vs_edges = 0;   // falling edges of _hsync / _vsync
+static uint64_t vs_total = 0;                  // and of _vsync since the start
+// --check-lace (sim/asm/lacetest.s): every frame the core completes must be
+// a long field (COLOR00 blue), one every two fields
+static bool check_lace = false;
+static int lace_frames = 0, lace_short = 0, lace_on = 0;
+static uint64_t lace_vs_first = 0, lace_vs_last = 0;
 static int nonblank_frames = 0;
 static std::string frames_dir;
 static int shot_every = 1;
@@ -143,7 +151,7 @@ static void video_sample() {
 	bool hb_edge = hb && !prev_hblank;
 
 	if (top->video_pal_we) {
-		palette[top->video_pal_index & 1023] = top->video_pal_color;
+		palette[top->video_pal_index & 511] = top->video_pal_color;
 		palette_writes++;
 		{
 			static std::map<uint32_t, int> written;
@@ -156,7 +164,7 @@ static void video_sample() {
 	if (de && fb_x < VW && fb_y < VH) {
 		// the pixel is a palette index: r, g, b are its top, middle and low bits
 		uint32_t r = top->video_r, g = top->video_g, b = top->video_b;
-		fbi[fb_y * VW + fb_x] = uint16_t((r << 7) | (g << 3) | b);
+		fbi[fb_y * VW + fb_x] = uint16_t((r << 6) | (g << 3) | b);
 		fbt[fb_y * VW + fb_x] = top->dbg_pixel_color;
 	}
 	if (vb_edge) {
@@ -171,12 +179,12 @@ static void video_sample() {
 			for (int i = 0; i < VW * lines; i++) {
 				uint32_t t = fbt[i], p = fb[i];
 				pixels_checked++;
-				if (fbi[i] < 768) {
+				if (fbi[i] < 384) {
 					if (p != t && pixels_wrong++ < 5)
 						std::fprintf(stderr, "pixel (%d,%d) frame %d: index %u shows %06X, the chipset's colour %06X\n", i % VW, i / VW, frames, fbi[i], p, t);
 				} else {
 					int dr = std::abs(int(p >> 16) - int(t >> 16)), dg = std::abs(int((p >> 8) & 255) - int((t >> 8) & 255)), db = std::abs(int(p & 255) - int(t & 255));
-					if ((dr > 37 || dg > 37 || db > 85) && pixels_fixed_far++ < 5)
+					if ((dr > 85 || dg > 37 || db > 85) && pixels_fixed_far++ < 5)
 						std::fprintf(stderr, "pixel (%d,%d) frame %d: fixed colour %06X for the chipset's %06X\n", i % VW, i / VW, frames, p, t);
 				}
 			}
@@ -184,7 +192,7 @@ static void video_sample() {
 		{
 			uint32_t fixed = 0;
 			const int lines = top->video_fit ? VH : 240;
-			if (pal_on) for (int i = 0; i < VW * lines; i++) if (fbi[i] >= 768) fixed++;
+			if (pal_on) for (int i = 0; i < VW * lines; i++) if (fbi[i] >= 384) fixed++;
 			frame_fixed.push_back({sdram_peek16_fwd(0x100 >> 1), fixed});
 		}
 		// the two frames before it may still be on screen: their indices
@@ -211,6 +219,18 @@ static void video_sample() {
 			}
 		}
 		if (shown_n < 2) shown_n++;
+		// from the third frame completed with the chipset in interlace (the
+		// test program has set COLOR00 by the field by then)
+		if (check_lace && top->dbg_lace) lace_on++;
+		if (check_lace && lace_on > 2) {
+			// the border at the top left of the frame: blue in a long field,
+			// red in a short one
+			if (fb[0] != 0x0000FF && lace_short++ < 5)
+				FAIL("lacetest: frame %d has border colour %06X, expected 0000FF (a long field)", frames, fb[0]);
+			if (!lace_frames) lace_vs_first = vs_total;
+			lace_vs_last = vs_total;
+			lace_frames++;
+		}
 		uint32_t h = 2166136261u;
 		bool blank = true;
 		for (auto p : fb) { h = (h ^ p) * 16777619u; if (p != fb[0]) blank = false; }
@@ -297,7 +317,7 @@ static void cycle28() {
 		static bool phs = true, pvs = true;
 		bool hs = top->dbg_hs_n, vs = top->dbg_vs_n;
 		if (phs && !hs) hs_edges++;
-		if (pvs && !vs) vs_edges++;
+		if (pvs && !vs) { vs_edges++; vs_total++; }
 		phs = hs; pvs = vs;
 	}
 	audio_abs_sum += std::abs((int16_t)top->audio_left) + std::abs((int16_t)top->audio_right);
@@ -659,7 +679,7 @@ static uint8_t rtg_byte(uint32_t off) {   // a byte of the board's memory (chip 
 }
 static void rtg_take_frame() {
 	RtgFrame &f = rtg_f;
-	f.hs = std::min<uint32_t>(top->rtg_hsize, 1024); f.vs = std::min<uint32_t>(top->rtg_vsize, 2047);
+	f.hs = std::min<uint32_t>(top->rtg_hsize, 2048); f.vs = std::min<uint32_t>(top->rtg_vsize, 2047);
 	f.fmt = top->rtg_format; f.base = top->rtg_base & 0x7FFFFF; f.stride = top->rtg_stride;
 	uint32_t b3 = f.fmt & 7;
 	f.bpp = b3 == 3 ? 1 : b3 == 4 ? 2 : b3 == 5 ? 3 : 4;
@@ -814,6 +834,7 @@ int main(int argc, char **argv) {
 	long expect_sectors = -1, expect_written = -1;
 	bool expect_frame = false;
 	bool check_vidtest = false;
+	int vidtest_data_x = 40;
 	bool floppy_write_test = false;
 	bool ide_test = false;
 	bool expect_no_fixed = false;
@@ -863,6 +884,8 @@ int main(int argc, char **argv) {
 		else if (a == "--expect-written") expect_written = std::atol(next().c_str());
 		else if (a == "--expect-boot-frame") expect_frame = true;
 		else if (a == "--check-vidtest") check_vidtest = true;
+		else if (a == "--check-lace") check_lace = true;
+		else if (a == "--vidtest-data-x") vidtest_data_x = std::atoi(next().c_str());
 		else if (a == "--floppy-write-test") floppy_write_test = true;
 		else if (a == "--expect-audio-ratio") expect_lr = std::atof(next().c_str());
 		else if (a == "--dump1") { std::string v = next(); auto e = v.find(':'); dumps1.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
@@ -1119,23 +1142,23 @@ int main(int argc, char **argv) {
 			for (uint32_t ff = f; ff + 6 > f && !tried; ff--) {
 				int ok = 0;
 				for (int y = 0; y < VH; y += 37) {
-					uint32_t c = (uint32_t(y) * 17 + ff * 2731) & 0xFFF;
+					uint32_t c = (uint32_t(y) * 17 + coltest_offset(ff)) & 0xFFF;
 					uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
 					uint32_t p = fb[y * VW + 320];
 					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
-					if (dr <= 37 && dg <= 37 && db <= 85) ok++;
+					if (dr <= 85 && dg <= 37 && db <= 85) ok++;
 				}
 				if (ok == 7) { tried = 1; f = ff; }
 			}
 			if (!tried) FAIL("coltest: the last frame matches none of the last frames' colours");
 			else for (int y = 0; y < VH; y++) {
-				uint32_t c = (uint32_t(y) * 17 + f * 2731) & 0xFFF;
+				uint32_t c = (uint32_t(y) * 17 + coltest_offset(f)) & 0xFFF;
 				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
 				for (int x = 0; x < VW; x++) {
 					uint32_t p = fb[y * VW + x];
 					if (p == e) { exact++; continue; }
 					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
-					if (dr <= 37 && dg <= 37 && db <= 85) fixedpx++;
+					if (dr <= 85 && dg <= 37 && db <= 85) fixedpx++;
 					else if (bad++ < 5) FAIL("coltest moving pixel (%d,%d) is %06X, its colour %06X", x, y, p, e);
 				}
 			}
@@ -1303,25 +1326,39 @@ int main(int argc, char **argv) {
 	// sim/asm/vidtest.s: 320 x 256 picture in the standard PAL display
 	// window; the frame holds all 256 of its lines (Picture height, 0x1080,
 	// 1: the core tells the framework to fit them) or 240 from the one the
-	// Picture position setting gives (0x107C, 0..16; gb_video V_START), all
-	// 640 pixels (H_START). Colour 1 yellow, colour 0 blue.
+	// Picture position setting gives (0x107C, 0..16; gb_video V_START), its
+	// 640 pixels at 40..679 of the 720, the border (colour 0) 40 either
+	// side: gb_video centres its window on the display window, so also with
+	// the window moved (vidtest_l, vidtest_r). The bitplane's first pixel
+	// at --vidtest-data-x (40: where the window opens; vidtest_r moves the
+	// window and not the fetch). Colour 1 yellow, colour 0 blue.
 	if (check_vidtest) {
 		const uint32_t Y = 0xFFFF00, B = 0x0000FF;
 		int vpos = 0, fit = 1;
 		for (auto &e : extra_settings) if (e.first == 0x107C) vpos = int(e.second);
 		for (auto &e : extra_settings) if (e.first == 0x1080) fit = int(e.second) & 1;
+		const int left = vidtest_data_x;
 		if (bool(top->video_fit) != bool(fit)) FAIL("the core's fit output is %d, the setting %d", int(top->video_fit), fit);
 		if (fit) vpos = 0;
 		const int lines = fit ? 256 : 240;
 		int bad = 0;
 		for (int y = 0; y < lines; y++) for (int x = 0; x < VW; x++) {
 			int line = y + vpos;
-			int lx = x / 2;   // the low resolution pixel, shown twice
-			bool one = (line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4;
+			int lx = (x - left) / 2;   // the low resolution pixel, shown twice
+			bool one = x >= 40 && x < 680 && x >= left && x < left + 640 &&
+			           ((line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4);
 			uint32_t e = one ? Y : B;
 			if (fb[y * VW + x] != e && bad++ < 5) FAIL("vidtest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
 		}
 		if (!bad) std::printf("vidtest picture: all %d pixels as expected (lines %d to %d of the display window)\n", VW * lines, vpos, vpos + lines - 1);
+	}
+	if (check_lace) {
+		std::printf("lacetest: %d frames checked, %d of short fields, %llu fields\n", lace_frames, lace_short,
+		            (unsigned long long)(lace_vs_last - lace_vs_first));
+		if (lace_frames < 6) FAIL("lacetest: %d frames, expected at least 6", lace_frames);
+		if (lace_vs_last - lace_vs_first != 2ull * uint64_t(lace_frames - 1))
+			FAIL("lacetest: %llu fields between the first and the last frame, expected %d (one frame every two fields)",
+			     (unsigned long long)(lace_vs_last - lace_vs_first), 2 * (lace_frames - 1));
 	}
 
 	if (do_exit) {

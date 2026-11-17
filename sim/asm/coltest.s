@@ -2,16 +2,19 @@
 ;
 ; No bitplanes: every line of the PAL display window ($2C..$12B) gets its
 ; own background colour from the copper, 256 colours in a frame, more than
-; any colour table holds: line L has COLOR00 = (L * 17 + F * 2731) & $FFF.
+; any colour table holds: line L has COLOR00 = (L * 17 + O(F)) & $FFF, with
+; O(F) = F * 1088 for F up to 12 (1088 = 64 * 17: the colours of the lines
+; 64 further down), 12 * 1088 + (F - 12) * 2731 after.
 ;
 ;   - For the first 60 frames F is 0: the picture does not change, and the
 ;     bench (sim_main.cpp --check-coltest) expects every pixel's colour
 ;     exact (the palette of gb_palette has room for them).
-;   - Then F goes up by one every seven frames, twelve times: 256 new
-;     colours at a time, at every phase of anything that counts frames in
-;     eights. The palette has room: the bench expects no pixel of any of
-;     these frames in a fixed colour, the new colours exact from their
-;     first frame.
+;   - Then F goes up by one every seven frames, twelve times: 64 new
+;     colours at a time (192 stay), at every phase of anything that counts
+;     frames in eights. The palette (384 entries) has room for the 256 in
+;     use and the 64 it gives up while they age: the bench expects no
+;     pixel of any of these frames in a fixed colour, the new colours exact
+;     from their first frame.
 ;   - Then F goes up by one every frame: 256 colours a frame, most of them
 ;     new. The palette runs out of entries that no frame on screen uses,
 ;     and the bench checks that it never gives one away too early.
@@ -84,8 +87,14 @@ colours:
 	move.w	d7,$100
 	lea	COPPER+6,a0
 	move.w	d7,d1
-	mulu	#2731,d1		; F * 2731
-	moveq	#0,d0
+	cmp.w	#12,d1
+	bhi.s	.fast
+	mulu	#1088,d1		; O(F) = F * 1088
+	bra.s	.o
+.fast:	sub.w	#12,d1
+	mulu	#2731,d1
+	add.w	#12*1088,d1		; O(F) = 12 * 1088 + (F - 12) * 2731
+.o:	moveq	#0,d0
 .c:	cmp.w	#SPLIT,d0
 	bne.s	.n
 	addq.l	#4,a0

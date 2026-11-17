@@ -13,7 +13,7 @@ reg in_de = 0, frame = 0, no_reuse = 0;
 reg [7:0] r, g, b;
 reg [1:0] bayer;
 wire        de_a, de_b, we_a, we_b;
-wire  [9:0] ix_a, ix_b, pi_a, pi_b;
+wire  [8:0] ix_a, ix_b, pi_a, pi_b;
 wire [23:0] pc_a, pc_b;
 wire [19:0] fx_a, fx_b;
 gb_palette     rtl (.clk(clk), .reset(reset), .in_de(in_de), .in_r(r), .in_g(g), .in_b(b), .in_bayer(bayer), .frame(frame), .no_reuse(no_reuse),
@@ -68,6 +68,6 @@ always @(posedge clk) if (!reset) begin
     if (bad < 10) $display("MISMATCH cycle %0d: de %b/%b index %h/%h we %b/%b pal %h=%h / %h=%h", cyc, de_a, de_b, ix_a, ix_b, we_a, we_b, pi_a, pc_a, pi_b, pc_b);
     bad = bad + 1;
   end
-  if (de_a && ix_a[9:8] == 2'b11) fixedpix = fixedpix + 1;
+  if (de_a && ix_a[8:7] == 2'b11) fixedpix = fixedpix + 1;
 end
 endmodule
