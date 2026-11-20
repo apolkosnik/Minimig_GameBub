@@ -1,0 +1,4 @@
+# The CPUs of the standard build, not built in the AP68040 variant
+rtl/minimig/tg68k
+rtl/minimig/fx68k
+rtl/minimig/cpu_cycles.sv

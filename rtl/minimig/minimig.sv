@@ -167,6 +167,7 @@ module minimig
 	output 	     ovr,         // NMI address decoding override
 	input         cart_ar,     // the cartridge is the Action Replay (AR5, DeMoN v2), not HRTmon
 	input         ar_fetch,    // the CPU fetched an instruction outside $A80000-$AFFFFF
+	input         nmi_ack_toggle, // flips at every level-7 acknowledge of a CPU that makes no acknowledge cycle (else 0)
 
 	//sram pins
 	output [15:0] ram_data,    // sram data bus
@@ -786,7 +787,6 @@ ciab CIAB1
 );
 
 wire cpu_long_en;
-assign chip32_en = cpucfg[1] & (chipset_config[4] | (chipset_config[3] & ~cpucfg[0])) & ~ovr & ~cpuhlt;
 assign ram_long  = cpu_long_en & ~dbr & |bank[3:0];
 
 //instantiate cpu bridge
@@ -895,6 +895,7 @@ cart CART1
   .freeze(freeze),
   .ar_en(ar_on),
   .ar_fetch(ar_fetch),
+  .nmi_ack_toggle(nmi_ack_toggle),
   .cart_data_out(cart_data_out),
   .cart_data_mask(cart_data_mask),
   .ar_vsel(ar_vsel),
@@ -937,7 +938,10 @@ gary GARY1
 	.a2065_ena(a2065_ena),
 	.a2065_base(a2065_base),
 	.cdtv_mode(chipset_config[5]),
-	.ar_on(ar_on),
+	// Game Bub port: no Kickstart mirror at $A80000-$AFFFFF with either
+	// cartridge. HRTmon reads its copy of the custom registers at $A9F000,
+	// and the mirror (added for the CD32) ORed the ROM into every word of it.
+	.ar_on(memory_config[6]),
 	.ram_rd(ram_rd),
 	.ram_hwr(ram_hwr),
 	.ram_lwr(ram_lwr),
@@ -1005,6 +1009,16 @@ always @(posedge clk) begin
 	if(~_cpu_reset | ~_cpu_reset_in)       ovl <= 1;
 	else if(sel_cia_a & (cpu_lwr|cpu_hwr)) ovl <= 0;
 end
+
+// Game Bub port: no 32-bit chip bus access while the Kickstart overlays chip
+// RAM (ovl). The SDRAM reads the second word only from chip RAM (ram_long:
+// bank[3:0]), not from the ROM the overlay puts at 0, and cpu_wrapper took
+// what the last 32-bit read had left for it: the low word of every long
+// word read below $80000 after a reset. The TG68K reads its initial stack
+// pointer so (nobody uses it); the 68040 (the AP68040 variant) reads all its
+// long words so: the low half of its start address was that left over
+// word, 0 after the core's start and anything after a reset.
+assign chip32_en = cpucfg[1] & (chipset_config[4] | (chipset_config[3] & ~cpucfg[0])) & ~ovr & ~cpuhlt & ~ovl;
 
 //-------------------------------------------------------------------------------------
 

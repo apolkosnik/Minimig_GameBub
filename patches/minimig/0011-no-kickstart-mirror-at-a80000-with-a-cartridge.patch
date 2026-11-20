@@ -1,0 +1,14 @@
+--- a/rtl/minimig/minimig.sv
++++ b/rtl/minimig/minimig.sv
+@@ -938,7 +938,10 @@
+ 	.a2065_ena(a2065_ena),
+ 	.a2065_base(a2065_base),
+ 	.cdtv_mode(chipset_config[5]),
+-	.ar_on(ar_on),
++	// Game Bub port: no Kickstart mirror at $A80000-$AFFFFF with either
++	// cartridge. HRTmon reads its copy of the custom registers at $A9F000,
++	// and the mirror (added for the CD32) ORed the ROM into every word of it.
++	.ar_on(memory_config[6]),
+ 	.ram_rd(ram_rd),
+ 	.ram_hwr(ram_hwr),
+ 	.ram_lwr(ram_lwr),

@@ -7,9 +7,14 @@ set -e
 cd "$(dirname "$0")"
 R=${R:-$(cd ../.. && pwd)}
 OBJ=${OBJ:-obj_sdr}
+# a build variant's tree with the AP68040 (tools/stage_variant.sh): its
+# cpu_cache_new takes the controller's 16-byte lines (CPU_LINE16), and its
+# CPU writes queue (WQN)
+DEFS=
+[ -d "$R/rtl/ap68040" ] && DEFS="-DLINE16 -DWQN_N=8"   # as the variant's gb_sdram_ctrl
 verilator --binary --timing -j ${JOBS:-16} -Wno-fatal -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-PINMISSING \
 	-Wno-TIMESCALEMOD -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-BLKANDNBLK -Wno-LATCH -Wno-INITIALDLY \
-	-DTB_TOP=tb_sdr --top-module tb_sdr -Mdir $OBJ \
+	-DTB_TOP=tb_sdr $DEFS --top-module tb_sdr -Mdir $OBJ \
 	../rtl/xilinx_sim.sv ../rtl/sdram_sim.sv $R/rtl/gamebub/gb_sdram_ctrl.sv $R/rtl/minimig/cpu_cache_new.sv \
 	$R/rtl/gamebub/compat/dpram.sv \
 	tb_sdr.sv > $OBJ.log 2>&1 || { tail -30 $OBJ.log; exit 1; }

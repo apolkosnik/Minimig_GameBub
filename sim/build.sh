@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the full-system simulation (Verilator): minimig_gamebub with all of
-# its RTL as Vivado synthesises it, the TG68K converted from VHDL by GHDL,
+# its RTL as Vivado synthesises it, the TG68K converted from VHDL by GHDL
+# (or, in a build variant's tree, the variant's CPU: tools/stage_variant.sh),
 # the SDRAM model and the bench (sim/tb). OBJ=<dir> picks the object
 # directory (default sim/obj_dir).
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -9,6 +10,8 @@ cd "$(dirname "$0")"
 R=$(cd .. && pwd)
 mkdir -p gen
 T=$R/rtl/minimig/tg68k
+if [ -d "$T" ]; then
+CPUSRC="gen/tg68k.v $(ls $R/rtl/minimig/fx68k/*.sv)"
 if [ ! -f gen/tg68k.v ] || [ -n "$(find $T -name '*.vhdl' -newer gen/tg68k.v)" ]; then
 	# cpu_wrapper's generics; the module takes them as parameters again
 	ghdl --synth --std=08 -fsynopsys --latches --out=verilog \
@@ -32,13 +35,20 @@ open('gen/tg68k.v', 'w').write(s[:i] + m + s[j:])
 PY
 	rm gen/tg68k.tmp
 fi
-SRC="$R/rtl/minimig_gamebub.sv $(ls $R/rtl/gamebub/*.sv $R/rtl/gamebub/compat/*.sv $R/rtl/minimig/*.sv $R/rtl/minimig/fx68k/*.sv)"
+else
+# a build variant's tree (tools/stage_variant.sh): the AP68040 in rtl/ap68040
+A=$R/rtl/ap68040
+[ -d "$A" ] || { echo "no CPU: neither $T nor $A" >&2; exit 1; }
+CPUSRC="$(ls $A/*.sv $A/*.v)"   # the core in one file, its packages first
+CPUDEF=-DAP68040                 # tb_top: the bridge's line requests counted
+fi
+SRC="$R/rtl/minimig_gamebub.sv $(ls $R/rtl/gamebub/*.sv $R/rtl/gamebub/compat/*.sv $R/rtl/minimig/*.sv) $CPUSRC"
 verilator --cc --exe --build --no-timing --no-assert-case -j ${JOBS:-16} -O3 --x-assign fast --x-initial fast \
 	-Wno-fatal -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-PINMISSING -Wno-TIMESCALEMOD -Wno-MULTIDRIVEN \
 	-Wno-UNOPTFLAT -Wno-BLKANDNBLK -Wno-LATCH -Wno-COMBDLY -Wno-IMPLICIT -Wno-PINCONNECTEMPTY \
 	-Wno-PROCASSWIRE -Wno-UNUSED -Wno-UNDRIVEN -Wno-DECLFILENAME -Wno-SYNCASYNCNET \
-	--top-module tb_top -Mdir ${OBJ:-obj_dir} \
+	--top-module tb_top -Mdir ${OBJ:-obj_dir} ${CPUDEF:-} \
 	-CFLAGS "-O2 -march=native" \
 	-I$R/rtl/minimig -I$R/rtl/minimig/fx68k \
-	gen/tg68k.v rtl/xilinx_sim.sv rtl/sdram_sim.sv $SRC tb/tb_top.sv tb/sim_main.cpp "$@"
+	rtl/xilinx_sim.sv rtl/sdram_sim.sv $SRC tb/tb_top.sv tb/sim_main.cpp "$@"
 echo "built ${OBJ:-obj_dir}/Vtb_top"

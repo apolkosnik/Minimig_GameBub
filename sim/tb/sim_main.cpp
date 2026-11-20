@@ -28,6 +28,8 @@
 // Usage: Vtb_top [options]
 //   --kick FILE          Kickstart ROM (files.json id 4)
 //   --disk N FILE        disk image for slot N (ids 0..3)
+//   --cart FILE          cartridge image (files.json id 7): HRTmon or the
+//                        Action Replay (AR5, DeMoN v2)
 //   --set ADDR=VALUE     a setting write (hex), after the defaults
 //   --ms N               run N ms of Amiga time after CoreRun (default 3000)
 //   --frames-dir DIR     write every captured frame as DIR/frame_NNNN.ppm
@@ -37,6 +39,16 @@
 //   --swap MS:DF0SLOT    change the DF0 setting at MS
 //   --hdf N FILE         hard disk image for drive N (0 master, 1 slave;
 //                        files.json ids 5, 6, on demand)
+//   --focus MS:V         NotifyFocus(V) at MS: 0 as the menu opens (the CPU is
+//                        halted), 1 as it closes
+//   --hwrite MS:ADDR:VALUE  a host register write (hex) at MS, for example
+//                        1040:1, the menu's Reset action
+//   --check-halt MS:V    at MS the CPU must be halted (1) or not (0)
+//   --check-pc MS1:MS2:LO:HI:MIN:MAX  from MS1 to MS2 the CPU must be at
+//                        LO..HI-1 (hex) for MIN to MAX percent of the time
+//                        (a cartridge's monitor entered, and left again)
+//   --expect-resets N    fail unless the CPU was reset N times after its
+//                        first start
 //   --fw-latency-us N    time the firmware takes to notice a core request
 //   --ide-test           check what sim/asm/idetest.rom read and wrote
 //   --expect-hdd-read N  at least N hard disk sectors read
@@ -47,6 +59,16 @@
 //   --expect-sectors N   fail unless at least N floppy sectors were read
 //   --expect-written N   fail unless at least N floppy sectors were written
 //   --expect-boot-frame  fail unless a non-blank frame was seen
+//   --random-ram SEED    fill both SDRAM chips with noise first, as at power-on
+//   --pc-prof MS         sample the CPU's PC every clk_sys period: with every
+//                        status line the interrupt state and the 256-byte
+//                        blocks it was in most; at the end the addresses it
+//                        was at most from MS on
+//   --watch ADDR         a chip RAM word (hex address) shown with every status
+//                        line
+//   --save-ram MS:PREFIX at MS write both SDRAM chips to PREFIX_chip0.bin (chip
+//                        RAM from 0, the ROM, the Zorro II RAM) and
+//                        PREFIX_chip1.bin (the Zorro III board from 0)
 //   --trace-cpu FILE     log every CPU bus write
 //
 // The exit status is 0 when every check passed.
@@ -72,6 +94,13 @@
 
 static std::unique_ptr<Vtb_top> top;
 static uint64_t cyc28 = 0;          // clk_28 cycles since start
+// --pc-prof: the CPU's PC sampled every clk_sys period
+static bool pc_prof = false;
+struct PcCheck { double ms1, ms2; uint32_t lo, hi; int minp, maxp; uint64_t c1, c2, in, n; bool done; };
+static std::vector<PcCheck> pc_checks;   // --check-pc
+static uint64_t pc_from = ~0ull;                 // clk_28 cycle the full profile starts at
+static std::map<uint32_t, uint32_t> pc_iv;      // PC >> 8, since the last status line
+static std::map<uint32_t, uint64_t> pc_all;     // PC, from pc_from
 static int failures = 0;
 
 #define FAIL(...) do { std::fprintf(stderr, "FAIL: " __VA_ARGS__); std::fprintf(stderr, "\n"); failures++; } while (0)
@@ -286,6 +315,16 @@ static void sdram_pin_check() {
 	sd_prev_bus = bus;
 }
 static bool prev_as = true;
+static uint64_t chip_cycles = 0, chip_long_rd = 0, chip_long_wr = 0;
+static uint64_t ram_long = 0;                     // long words the CPU took in one RAM transfer
+static uint64_t line_reqs = 0;                    // AP68040: lines passed to the adapter as one request
+static uint64_t line_clks = 0;                    // and the clk_sys periods they were outstanding
+static uint64_t line_reqs_hi = 0, line_clks_hi = 0;   // those above the 24-bit space (Zorro III, RTG)
+// AP68040, requests above the 24-bit space: clk_sys periods from the request
+// to its acknowledge (of them waiting for the RAM port), and from an
+// acknowledge to the next request (the bridge and the CPU)
+static uint64_t hi_reqs = 0, hi_req_clks = 0, hi_wait_clks = 0, hi_gap_clks = 0, hi_gaps = 0;
+static uint64_t sd_rd[2] = {0, 0}, sd_wr[2] = {0, 0}, sd_wr2[2] = {0, 0};   // CPU slots per SDRAM chip
 
 // one clk_28 cycle: drive the inputs for the coming edge, then 4 clk_114 cycles
 static void cycle28() {
@@ -325,6 +364,18 @@ static void cycle28() {
 	audio_abs_r += std::abs((int16_t)top->audio_right);
 	audio_samples++;
 
+	{
+		// CPU cycles on the chip bus (cpu_wrapper's c_as falling) and the
+		// 32-bit ones among them (chip_long, chip32_en: AGA, or ECS without
+		// the 68020's 24-bit setting)
+		static bool cas = true;
+		bool as = top->dbg_chip_as;
+		if (cas && !as) {
+			chip_cycles++;
+			if (top->dbg_chip_long) (top->dbg_chip_rw ? chip_long_rd : chip_long_wr)++;
+		}
+		cas = as;
+	}
 	if (cpu_trace && cyc28 >= trace_from) {
 		// CPU writes on the chip bus to the custom chips and the CIAs
 		// logged at the end of the bus cycle, with the data the CPU drove
@@ -345,12 +396,20 @@ static void cycle28() {
 		top->clk_114 = 1;
 		if (p == 0) top->clk_28 = 1;
 		if (p == 2) top->clk_28 = 0;
+		top->clk_57 = (p == 0 || p == 2);   // high for clk_114 periods 0 and 2 (CLKOUT5, /16)
 		bool av_rise = (av_half % 3) == 0;
 		top->clk_av = (av_half % 3) != 2;
 		av_half++;
 		top->eval();
 		sdram_pin_check();
 		if (av_rise) rtg_sample();
+		if (top->dbg_sd_state == 8) {
+			// both chips' slots of the window decided (chip 0 at 0, chip 1 at 4)
+			if (top->dbg_sd_c0 == 2) sd_rd[0]++;
+			if (top->dbg_sd_c0 == 3) { sd_wr[0]++; if (top->dbg_sd_c0_l2) sd_wr2[0]++; }
+			if (top->dbg_sd_c1 == 2) sd_rd[1]++;
+			if (top->dbg_sd_c1 == 3) { sd_wr[1]++; if (top->dbg_sd_c1_l2) sd_wr2[1]++; }
+		}
 		top->clk_114 = 0;
 		av_rise = (av_half % 3) == 0;
 		top->clk_av = (av_half % 3) != 2;
@@ -360,6 +419,31 @@ static void cycle28() {
 		if (av_rise) rtg_sample();
 	}
 	cyc28++;
+	if (pc_prof) {   // where the CPU is, once per clk_sys period
+		pc_iv[top->dbg_pc >> 8]++;
+		if (cyc28 >= pc_from) pc_all[top->dbg_pc & ~1u]++;
+	}
+	for (auto &c : pc_checks) if (cyc28 >= c.c1 && cyc28 < c.c2) {
+		c.n++;
+		if (top->dbg_pc >= c.lo && top->dbg_pc < c.hi) c.in++;
+	}
+	if (top->dbg_ram_long) ram_long++;   // sampled once per clk_sys period
+	if (top->dbg_line) { line_reqs++; if (top->dbg_line_hi) line_reqs_hi++; }
+	{
+		static bool prev_hi = false, in_gap = false;
+		static uint64_t gap = 0;
+		bool hi = top->dbg_line_hi;   // the request's address (held from its start)
+		if (top->dbg_req && hi) {
+			hi_req_clks++;
+			if (top->dbg_ram_wait) hi_wait_clks++;
+			if (in_gap) { hi_gap_clks += gap; hi_gaps++; in_gap = false; }
+		}
+		if (top->dbg_ack && hi) { hi_reqs++; in_gap = true; gap = 0; }
+		else if (in_gap && !top->dbg_req) { if (++gap > 64) in_gap = false; }   // not a run of transfers
+		else if (in_gap && top->dbg_req && !hi) in_gap = false;
+		prev_hi = hi;
+	}
+	if (top->dbg_line_busy) { line_clks++; if (top->dbg_line_hi) line_clks_hi++; }
 
 	// register updates of the framework at that edge
 	if (en) {
@@ -810,6 +894,7 @@ int main(int argc, char **argv) {
 	top.reset(new Vtb_top);
 
 	std::string kick;
+	std::string cart;
 	std::string disk[4];
 	std::vector<std::pair<uint32_t, uint32_t>> extra_settings;
 	double run_ms = 3000;
@@ -828,6 +913,17 @@ int main(int argc, char **argv) {
 	std::vector<CheckMouse> mchecks;
 	struct HWrite { double ms; uint32_t addr, value; bool done; };
 	std::vector<HWrite> hwrites;
+	struct Focus { double ms; uint32_t value; bool done; };
+	std::vector<Focus> focuses;
+	struct CheckHalt { double ms; uint32_t value; bool done; };
+	std::vector<CheckHalt> hchecks;
+	long expect_resets = -1;      // CPU resets after the first start
+	double pc_prof_ms = -1;       // --pc-prof: the full profile from this time
+	std::vector<uint32_t> watches; // --watch: chip RAM words shown with every status line
+	struct SaveRam { double ms; std::string prefix; bool done; };
+	std::vector<SaveRam> saverams;
+	long cpu_resets = 0;
+	bool cpu_rst_q = false;
 	bool do_exit = false;
 	bool slot1 = false;   // a second controller present
 	std::string save_dir;
@@ -845,11 +941,13 @@ int main(int argc, char **argv) {
 	double expect_lr = -1;   // expected mean |right| / mean |left|
 	std::vector<std::pair<uint32_t, uint32_t>> dumps;   // SDRAM word address, words
 	std::vector<std::pair<uint32_t, uint32_t>> dumps1;  // the same in chip 1
+	uint32_t random_ram = 0;   // --random-ram SEED: both chips filled with noise first (as at power-on)
 
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
 		auto next = [&]() -> std::string { if (i + 1 >= argc) { std::fprintf(stderr, "missing value for %s\n", a.c_str()); std::fflush(stdout); std::_Exit(2); } return argv[++i]; };
 		if (a == "--kick") kick = next();
+		else if (a == "--cart") cart = next();
 		else if (a == "--disk") { int n = std::atoi(next().c_str()); disk[n & 3] = next(); }
 		else if (a == "--set") { std::string v = next(); auto e = v.find('='); extra_settings.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1), nullptr, 16))}); }
 		else if (a == "--ms") run_ms = std::atof(next().c_str());
@@ -864,6 +962,10 @@ int main(int argc, char **argv) {
 		else if (a == "--check-word") { CheckWord c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x:%x", &c.ms, &c.addr, &c.mask, &c.value); checks.push_back(c); }
 		else if (a == "--check-mouse") { CheckMouse c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy, &c.tol); mchecks.push_back(c); }
 		else if (a == "--hwrite") { HWrite h{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x", &h.ms, &h.addr, &h.value); hwrites.push_back(h); }
+		else if (a == "--focus") { Focus f{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &f.ms, &f.value); focuses.push_back(f); }
+		else if (a == "--check-pc") { PcCheck c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%x:%x:%d:%d", &c.ms1, &c.ms2, &c.lo, &c.hi, &c.minp, &c.maxp); c.c1 = c.c2 = ~0ull; pc_checks.push_back(c); }
+		else if (a == "--check-halt") { CheckHalt c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &c.ms, &c.value); hchecks.push_back(c); }
+		else if (a == "--expect-resets") expect_resets = std::atol(next().c_str());
 		else if (a == "--hdf") {
 			int n = std::atoi(next().c_str()) & 1;
 			hdf[n].selected = true; hdf[n].path = next();
@@ -888,8 +990,12 @@ int main(int argc, char **argv) {
 		else if (a == "--vidtest-data-x") vidtest_data_x = std::atoi(next().c_str());
 		else if (a == "--floppy-write-test") floppy_write_test = true;
 		else if (a == "--expect-audio-ratio") expect_lr = std::atof(next().c_str());
+		else if (a == "--random-ram") random_ram = std::stoul(next());
 		else if (a == "--dump1") { std::string v = next(); auto e = v.find(':'); dumps1.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--dump") { std::string v = next(); auto e = v.find(':'); dumps.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
+		else if (a == "--pc-prof") { pc_prof = true; pc_prof_ms = std::atof(next().c_str()); }
+		else if (a == "--watch") watches.push_back(uint32_t(std::stoul(next(), nullptr, 16)));
+		else if (a == "--save-ram") { std::string v = next(); auto e = v.find(':'); saverams.push_back({std::atof(v.substr(0, e).c_str()), v.substr(e + 1), false}); }
 		else if (a == "--trace-cpu") cpu_trace = std::fopen(next().c_str(), "w");
 		else if (a == "--trace-from") trace_from = uint64_t(std::atof(next().c_str()) * 28375.0);
 		else if (a[0] == '+') ;  // verilator arguments
@@ -898,11 +1004,22 @@ int main(int argc, char **argv) {
 	if (kick.empty()) { std::fprintf(stderr, "--kick is required\n"); return 2; }
 
 	// power on: MMCM not locked, framework reset
-	top->clk_114 = 0; top->clk_28 = 0; top->mmcm_locked = 0; top->reset = 1;
+	top->clk_114 = 0; top->clk_28 = 0; top->clk_57 = 0; top->mmcm_locked = 0; top->reset = 1;
 	top->host_mem_enable = 0; top->host_cmd_request = 0; top->buttons = 0;
 	top->buttons1 = 0; top->slot1_active = 0; top->sticks = 0;
 	top->host_core_busy = 0; top->host_core_done = 0; top->host_core_error = 0;
 	top->eval();
+	if (random_ram) {
+		// power-on SDRAM contents: noise in every word of both chips
+		uint32_t x = random_ram;
+		for (const char *chip : {"TOP.tb_top.sdram1", "TOP.tb_top.sdram"}) {
+			svSetScope(svGetScopeFromName(chip));
+			for (uint32_t w = 0; w < (1u << 24); w++) {
+				x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+				sdram_poke16(w, x & 0xFFFF);
+			}
+		}
+	}
 	svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
 	run_cycles(16);
 	top->mmcm_locked = 1;
@@ -919,11 +1036,13 @@ int main(int argc, char **argv) {
 		if (id != 0x4D4D4947) FAIL("ID register reads %08X", id);
 	}
 
-	// files in files.json order: Disk 1..4 (ids 0..3), Kickstart (id 4)
+	// files in files.json order: Disk 1..4 (ids 0..3), Kickstart (id 4), the
+	// cartridge (id 7; the hard disks, ids 5 and 6, are read on demand)
 	std::vector<FileSpec> files;
 	for (int n = 0; n < 4; n++)
 		if (!disk[n].empty()) files.push_back({n, 0x10000000u + (uint32_t(n) << 20), disk[n], false, read_file(disk[n])});
 	files.push_back({4, 0x20000000u, kick, true, read_file(kick)});
+	if (!cart.empty()) files.push_back({7, 0x20100000u, cart, true, read_file(cart)});
 
 	for (auto &f : files) {
 		uint64_t t0 = cyc28;
@@ -953,7 +1072,7 @@ int main(int argc, char **argv) {
 	// check the files arrived in SDRAM in Amiga byte order (word address
 	// {bank,row,col} = byte address / 2 for this controller)
 	for (auto &f : files) {
-		uint32_t base = (f.id == 4) ? 0xB80000u : 0x800000u + 0x80000u * f.id;
+		uint32_t base = (f.id == 4) ? 0xB80000u : (f.id == 7) ? 0xB00000u : 0x800000u + 0x80000u * f.id;
 		int bad = 0;
 		for (size_t i = 0; i + 1 < f.data.size(); i += 2) {
 			uint32_t w = sdram_peek16(base + uint32_t(i / 2));
@@ -998,7 +1117,9 @@ int main(int argc, char **argv) {
 
 	// run
 	uint64_t run_start = cyc28;
+	if (pc_prof && pc_prof_ms >= 0) pc_from = run_start + uint64_t(pc_prof_ms * 28375.0);
 	uint64_t run_end = run_start + uint64_t(run_ms * 28375.0);
+	for (auto &c : pc_checks) { c.c1 = run_start + uint64_t(c.ms1 * 28375.0); c.c2 = run_start + uint64_t(c.ms2 * 28375.0); }
 	bool boot_seen = false;
 	uint64_t boot_done_at = 0;
 	int last_ms_print = -1;
@@ -1024,7 +1145,41 @@ int main(int argc, char **argv) {
 			std::printf("%.0f ms: DF0 set to slot %u\n", ms, s.slot);
 			s.ms = -1;
 		}
+		for (auto &f : focuses) if (!f.done && ms >= f.ms) {
+			if (!command({0x0200, f.value})) FAIL("NotifyFocus");
+			std::printf("%.1f ms: NotifyFocus(%u)\n", ms, f.value);
+			f.done = true;
+		}
 		for (auto &h : hwrites) if (!h.done && ms >= h.ms) { hwrite(h.addr, h.value); h.done = true; }
+		for (auto &r : saverams) if (!r.done && ms >= r.ms) {
+			// both SDRAM chips whole, the bytes in the Amiga's order
+			r.done = true;
+			for (int chip = 0; chip < 2; chip++) {
+				if (chip) svSetScope(svGetScopeFromName("TOP.tb_top.sdram1"));
+				std::string name = r.prefix + (chip ? "_chip1.bin" : "_chip0.bin");
+				FILE *f = std::fopen(name.c_str(), "wb");
+				if (f) {
+					for (uint32_t w = 0; w < 0x1000000; w++) { uint32_t v = sdram_peek16(w); std::fputc(int(v >> 8), f); std::fputc(int(v & 0xFF), f); }
+					std::fclose(f);
+				}
+				if (chip) svSetScope(svGetScopeFromName("TOP.tb_top.sdram"));
+			}
+			std::printf("%.1f ms: SDRAM saved as %s_chip0.bin, _chip1.bin (pc %08X)\n", ms, r.prefix.c_str(), unsigned(top->dbg_pc));
+		}
+		for (auto &c : hchecks) if (!c.done && ms >= c.ms) {
+			c.done = true;
+			if (uint32_t(top->dbg_cpuhlt) != c.value) FAIL("%.1f ms: the CPU is %s, expected %s", ms, top->dbg_cpuhlt ? "halted" : "not halted", c.value ? "halted" : "not halted");
+			else std::printf("%.1f ms: the CPU is %s\n", ms, c.value ? "halted" : "not halted");
+		}
+		for (auto &c : pc_checks) if (!c.done && cyc28 >= c.c2) {
+			c.done = true;
+			double pct = c.n ? 100.0 * double(c.in) / double(c.n) : 0.0;
+			if (pct < c.minp || pct > c.maxp) FAIL("%.0f to %.0f ms: the CPU was at %06X..%06X for %.1f %% of the time, expected %d to %d %%", c.ms1, c.ms2, c.lo, c.hi - 1, pct, c.minp, c.maxp);
+			else std::printf("%.0f to %.0f ms: the CPU was at %06X..%06X for %.1f %% of the time (%d to %d %% expected)\n", c.ms1, c.ms2, c.lo, c.hi - 1, pct, c.minp, c.maxp);
+		}
+		// a CPU reset: _cpu_reset going low after the CPU had run
+		if (cpu_rst_q && !top->dbg_cpu_rst) { cpu_resets++; std::printf("%.1f ms: CPU reset\n", ms); }
+		cpu_rst_q = top->dbg_cpu_rst;
 		// RTG: the ROM shows mode n (word $100 = $0100 + n) and waits for $102 = n
 		if (rtg_check) {
 			uint32_t w = chip16(0x100);
@@ -1095,10 +1250,38 @@ int main(int argc, char **argv) {
 			            (unsigned long long)hs_edges, (unsigned long long)vs_edges,
 			            top->dbg_beamcon0, top->dbg_ersy, top->dbg_lace, top->dbg_video_vcnt, top->dbg_chip_addr << 1);
 			hs_edges = vs_edges = 0;
+			if (!watches.empty()) {
+				std::printf("        watch:");
+				for (auto w : watches) std::printf(" %06X = %04X", w, chip16(w));
+				std::printf("\n");
+			}
+			if (pc_prof) {
+				// the interrupt state and the three 256-byte blocks the PC was in most
+				std::vector<std::pair<uint32_t, uint32_t>> v(pc_iv.begin(), pc_iv.end());
+				std::sort(v.begin(), v.end(), [](auto &x, auto &y) { return x.second > y.second; });
+				uint64_t tot = 0;
+				for (auto &e : v) tot += e.second;
+				std::printf("        ipl %u intreq %04X intena %04X dmacon %04X, pc %08X; most:", unsigned(top->dbg_ipl), unsigned(top->dbg_intreq),
+				            unsigned(top->dbg_intena), unsigned(top->dbg_dmacon), unsigned(top->dbg_pc));
+				for (size_t k = 0; k < v.size() && k < 4; k++)
+					std::printf(" %06Xxx %.0f%%", v[k].first, 100.0 * v[k].second / double(tot ? tot : 1));
+				std::printf("\n");
+				pc_iv.clear();
+			}
 			std::fflush(stdout);
 		}
 	}
+	if (pc_prof && !pc_all.empty()) {
+		std::vector<std::pair<uint32_t, uint64_t>> v(pc_all.begin(), pc_all.end());
+		uint64_t tot = 0;
+		for (auto &e : v) tot += e.second;
+		std::sort(v.begin(), v.end(), [](auto &x, auto &y) { return x.second > y.second; });
+		std::printf("PC profile from %.0f ms (%llu samples, %zu addresses):\n", pc_prof_ms, (unsigned long long)tot, v.size());
+		for (size_t k = 0; k < v.size() && k < 80; k++)
+			std::printf("  %08X %6.2f%%\n", v[k].first, 100.0 * double(v[k].second) / double(tot));
+	}
 	if (!boot_seen) FAIL("the configuration sequence never finished");
+	if (expect_resets >= 0 && cpu_resets != expect_resets) FAIL("%ld CPU resets after the first start, expected %ld", cpu_resets, expect_resets);
 	if (rtg_check) {
 		std::printf("RTG: %d modes checked, %llu pixels wrong\n", rtg_modes_done, (unsigned long long)rtg_bad_total);
 		if (rtg_modes_done != rtg_modes_expected) FAIL("RTG: %d modes checked, expected %d", rtg_modes_done, rtg_modes_expected);
@@ -1302,6 +1485,23 @@ int main(int argc, char **argv) {
 
 	uint32_t stalls = hread(0x1000), runc = hread(0x1004);
 	std::printf("statistics: %u paused, %u run clocks\n", stalls, runc);
+	if (line_reqs) std::printf("lines: %llu requests, %.1f clk_sys each; above the 24-bit space %llu, %.1f clk_sys each\n",
+	                           (unsigned long long)line_reqs, double(line_clks) / double(line_reqs),
+	                           (unsigned long long)line_reqs_hi,
+	                           line_reqs_hi ? double(line_clks_hi) / double(line_reqs_hi) : 0.0);
+	if (hi_reqs) std::printf("requests above the 24-bit space: %llu, %.1f clk_sys each (%.1f waiting for the RAM port); "
+	                         "%.1f clk_sys from an acknowledge to the next request (%llu)\n",
+	                         (unsigned long long)hi_reqs, double(hi_req_clks) / double(hi_reqs),
+	                         double(hi_wait_clks) / double(hi_reqs),
+	                         hi_gaps ? double(hi_gap_clks) / double(hi_gaps) : 0.0, (unsigned long long)hi_gaps);
+	std::printf("CPU RAM: %llu long words in one transfer, %llu lines in one request; SDRAM CPU slots: "
+	            "chip 0 %llu reads, %llu writes (%llu long), chip 1 %llu reads, %llu writes (%llu long)\n",
+	            (unsigned long long)ram_long, (unsigned long long)line_reqs, (unsigned long long)sd_rd[0], (unsigned long long)sd_wr[0],
+	            (unsigned long long)sd_wr2[0], (unsigned long long)sd_rd[1], (unsigned long long)sd_wr[1],
+	            (unsigned long long)sd_wr2[1]);
+	std::printf("chip bus: %llu CPU cycles, 32-bit: %llu reads, %llu writes\n",
+	            (unsigned long long)chip_cycles, (unsigned long long)chip_long_rd,
+	            (unsigned long long)chip_long_wr);
 	if (runc == 0) FAIL("run statistics counter did not count");
 
 	if (expect_sectors >= 0 && long(sec_rd) < expect_sectors) FAIL("%u sectors read, expected at least %ld", sec_rd, expect_sectors);

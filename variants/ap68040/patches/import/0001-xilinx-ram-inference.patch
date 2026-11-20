@@ -1,0 +1,109 @@
+--- a/ap68040_ram.sv
++++ b/ap68040_ram.sv
+@@ -1,7 +1,7 @@
+ //--------------------------------------------------------------------------//
+ // AP68040 - pipelined MC68040                                            //
+ //                                                                          //
+-// ap68040_ram.sv - memory primitives written for Quartus inference          //
++// ap68040_ram.sv - memory primitives, for Vivado 2018.3 (Game Bub)       //
+ //                                                                          //
+ //   ap68040_sdp_be   simple dual port block RAM (M10K): one write port     //
+ //                    with byte enables, one read port with a registered    //
+@@ -13,7 +13,7 @@
+ 
+ module ap68040_sdp_be #(
+ 	parameter int AW = 6,
+-	parameter int NB = 16,           // bytes per word (1..4, or a multiple of 4)
++	parameter int NB = 16,           // bytes per word
+ 	parameter bit OREG = 1           // registered output (one more cycle)
+ )(
+ 	input  logic              clk,
+@@ -25,23 +25,32 @@
+ 	input  logic              oce,      // output register enable
+ 	output logic [NB*8-1:0]   q
+ );
+-	// Intel's byte-enabled simple dual port template (Quartus 17 infers
+-	// byte enables for at most four bytes per memory, so a wider word is
+-	// built from 32-bit slices).  The read data is registered: a read of
+-	// the word written in the same cycle returns the old data (the users
++	// Vivado's byte-write simple dual port template: one two-dimensional
++	// array, the byte enables in a loop of one process, the read registered
++	// in the same process (read first: a read of the word written in the
++	// same cycle returns the old data, as the Quartus version; the users
+ 	// track that case).
+-	localparam int SL = (NB > 4) ? 4 : NB;      // bytes per slice
+-	localparam int NS = (NB + SL - 1) / SL;     // slices
++	// 64 words or fewer (the data cache's lines, the instruction cache's
++	// tags): LUT RAM, its asynchronous read registered here (the same old
++	// data on a same-cycle write); a 128-bit line would take two block
++	// RAMs of 512 words each for 64 of them. Deeper: block RAM.
+ 	logic [NB*8-1:0] qr;
+-	genvar gs, gb;
+ 	generate
+-		for (gs = 0; gs < NS; gs++) begin : g_sl
+-			(* ramstyle = "M10K, no_rw_check" *) logic [SL-1:0][7:0] mem [0:(1<<AW)-1];
+-			for (gb = 0; gb < SL; gb++) begin : g_b
+-				always_ff @(posedge clk)
+-					if (we && wbe[gs*SL + gb]) mem[waddr][gb] <= wdata[(gs*SL + gb)*8 +: 8];
++		if (AW <= 6) begin : g_lut
++			(* ram_style = "distributed" *) logic [NB*8-1:0] mem [0:(1<<AW)-1];
++			always_ff @(posedge clk) begin
++				for (int i = 0; i < NB; i++)
++					if (we && wbe[i]) mem[waddr][i*8 +: 8] <= wdata[i*8 +: 8];
++				qr <= mem[raddr];
++			end
++		end
++		else begin : g_bram
++			(* ram_style = "block" *) logic [NB*8-1:0] mem [0:(1<<AW)-1];
++			always_ff @(posedge clk) begin
++				for (int i = 0; i < NB; i++)
++					if (we && wbe[i]) mem[waddr][i*8 +: 8] <= wdata[i*8 +: 8];
++				qr <= mem[raddr];
+ 			end
+-			always_ff @(posedge clk) qr[gs*SL*8 +: SL*8] <= mem[raddr];
+ 		end
+ 	endgenerate
+ 	generate
+@@ -63,29 +72,30 @@
+ 	input  logic          we_a,
+ 	input  logic [DW-1:0] wd_a,
+ 	output logic [DW-1:0] q_a,
+-	output logic [DW-1:0] qa_raw,    // ... the RAM's word, and the write laid
+-	output logic          qa_bv,     // over it (qa_bv: q_a is qa_bd), for a
+-	output logic [DW-1:0] qa_bd,     // caller comparing both in parallel
++	output logic [DW-1:0] qa_raw,
++	output logic          qa_bv,
++	output logic [DW-1:0] qa_bd,
+ 	input  logic [AW-1:0] addr_b,
+ 	input  logic          we_b,
+ 	input  logic [DW-1:0] wd_b,
+ 	output logic [DW-1:0] q_b
+ );
+-	// A read returns the word as written at the edge that registered its
+-	// address (a write to the same word at that edge included).  The RAM
+-	// itself reads the old word; the write is laid over it by a compare of
+-	// registered addresses and one multiplexer (Quartus's inferred bypass
+-	// put three logic levels in front of the users' compares; a compare of
+-	// the incoming address would put it behind the address's own logic).
+-	(* ramstyle = "M10K, no_rw_check" *) logic [DW-1:0] mem [0:(1<<AW)-1];
++	// Vivado's true dual port template: one process per port, each reading
++	// first (the old word); the write is laid over the read by the compare
++	// of registered addresses, as in the Quartus version.
++	logic [DW-1:0] mem [0:(1<<AW)-1];
+ 	logic [DW-1:0] qa_r, qb_r, wa_d, wb_d;
+ 	logic [AW-1:0] ra, rb, wa_q, wb_q;
+ 	logic          wa_v, wb_v;
+ 	always_ff @(posedge clk) begin
+-		if (we_a) mem[addr_a] <= wd_a;
+-		if (we_b) mem[addr_b] <= wd_b;
+ 		qa_r <= mem[addr_a];
++		if (we_a) mem[addr_a] <= wd_a;
++	end
++	always_ff @(posedge clk) begin
+ 		qb_r <= mem[addr_b];
++		if (we_b) mem[addr_b] <= wd_b;
++	end
++	always_ff @(posedge clk) begin
+ 		ra   <= addr_a;
+ 		rb   <= addr_b;
+ 		wa_v <= we_a; wa_q <= addr_a; wa_d <= wd_a;

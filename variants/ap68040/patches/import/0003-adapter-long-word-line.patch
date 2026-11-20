@@ -1,0 +1,303 @@
+--- a/ap040_bus16_adapter.v
++++ b/ap040_bus16_adapter.v
+@@ -9,7 +9,8 @@
+ //  - busstate: 00 fetch, 01 idle, 10 data read, 11 data write              //
+ //  - one stable bus request at a time; exactly one qualified completion    //
+ //    (clkena_in pulse) advances one 16-bit sub-cycle                       //
+-//  - split transfers insert a sampled IDLE cycle between sub-cycles.  The  //
++//  - split transfers insert a sampled IDLE cycle between sub-cycles (Game  //
++//    Bub port: not after one on the RAM port, see present).  The          //
+ //    Minimig RAM/cache controllers return a level acknowledge and do not   //
+ //    accept a new address until their chip-select drops.                   //
+ //  - nwr is 1 for read, 0 for write; nuds/nlds are active low              //
+@@ -19,6 +20,19 @@
+ //  - word: one cycle when even; byte + byte when odd                       //
+ //  - long: two word cycles when even; byte + word + byte when odd          //
+ //                                                                          //
++// Game Bub port: the long word in one transfer, as the TG68K's long_cand / //
++// long_ack: an aligned long offers long_cand (with data_write_lo, the low  //
++// word to write) on its first sub-cycle; completed with long_ack, both     //
++// words have moved (data_in_hi, data_in on a read) and the transfer ends;  //
++// completed without it, the first word has, and the second follows as     //
++// before.                                                                  //
++// Game Bub port: a line (mem_line, 16 bytes: mem_wline / mem_rline, long  //
++// word 0 in bits 127:96) is one request: its four long words run here     //
++// back to back from the one at mem_addr[3:2], wrapping in the line, each  //
++// as a long word above, and mem_ack comes with the last.  A line read     //
++// offers line_cand with its first sub-cycle: completed with line_ack,    //
++// the RAM port has answered the whole line (data_in_line) and it ends.   //
++//                                                                          //
+ // Core handshake: mem_req is held by the core until mem_ack. mem_ack is a  //
+ // single-cycle pulse asserted in the same cycle busstate returns to idle,  //
+ // with mem_rdata valid. The core must drop mem_req in the ack cycle.       //
+@@ -43,6 +57,9 @@ module ap040_bus16_adapter
+ 	input       [2:0] mem_fc,
+ 	output reg        mem_ack,
+ 	output reg [31:0] mem_rdata,    // right-aligned by size, valid at mem_ack
++	input             mem_line,     // a line: four long words (Game Bub port)
++	input     [127:0] mem_wline,    // held with mem_req
++	output reg [127:0] mem_rline,   // valid at mem_ack
+ 
+ 	// external bus side (TG68K-like)
+ 	input      [15:0] data_in,
+@@ -53,7 +70,15 @@ module ap040_bus16_adapter
+ 	output reg        nlds,
+ 	output reg  [1:0] busstate,
+ 	output reg        longword,
+-	output reg  [2:0] fc
++	output reg  [2:0] fc,
++	output reg        long_cand,
++	output reg [15:0] data_write_lo,
++	input             long_ack,
++	input      [15:0] data_in_hi,
++	input             ram_port,     // the sub-cycle is on the RAM port (no IDLE needed after it)
++	output reg        line_cand,    // a line read's first sub-cycle: the line may come whole
++	input             line_ack,     // with the completion: it did (data_in_line)
++	input     [127:0] data_in_line  // long word 0 in 127:96
+ );
+ 
+ reg        active;
+@@ -64,6 +89,14 @@ reg [31:0] cur_addr;
+ reg  [2:0] bytes_left;
+ reg [31:0] wshift;      // write data, left-aligned, consumed MSB first
+ reg [31:0] rshift;      // read data, assembled by shifting bytes in
++reg        line_r;      // the request is a line
++reg  [1:0] l_k;         // its long words done
++reg  [1:0] l_i;         // the long word in progress (A3:A2)
++reg        l_gap;       // the gap before a line's next long word
++
++function [31:0] lw(input [127:0] l, input [1:0] i);
++	lw = l[127 - 32 * i -: 32];
++endfunction
+ 
+ // number of operand bytes for a request
+ function [2:0] size_bytes;
+@@ -84,13 +117,60 @@ wire  [2:0] next_left = bytes_left - consumed;
+ wire [31:0] next_wsh  = (consumed == 3'd2) ? {wshift[15:0], 16'd0} : {wshift[23:0], 8'd0};
+ 
+ // first sub-cycle shape of a new request
+-wire  [2:0] f_bytes = size_bytes(mem_size);
+-wire [31:0] f_wsh   = (mem_size == `AP040_SZ_B) ? {mem_wdata[7:0], 24'd0} :
++wire  [2:0] f_bytes = mem_line ? 3'd4 : size_bytes(mem_size);
++wire [31:0] f_addr  = mem_line ? {mem_addr[31:2], 2'b00} : mem_addr;
++wire [31:0] f_wd    = mem_line ? lw(mem_wline, mem_addr[3:2]) : mem_wdata;
++wire [31:0] f_wsh   = mem_line ? f_wd :
++                      (mem_size == `AP040_SZ_B) ? {mem_wdata[7:0], 24'd0} :
+                       (mem_size == `AP040_SZ_W) ? {mem_wdata[15:0], 16'd0} :
+                                                   mem_wdata;
+-wire        f_odd  = mem_addr[0];
++wire        f_odd  = f_addr[0];
++// the long word of a line after l_i
++wire  [1:0] l_n    = l_i + 2'd1;
++wire [31:0] l_addr = {cur_addr[31:4], l_n, 2'b00};
++// the read data of the sub-cycle completing now (the last of its transfer)
++wire [31:0] rd_last = cur_addr[0]             ? {rshift[23:0], data_in[7:0]} :
++                      (bytes_left >= 3'd2)    ? {rshift[15:0], data_in[15:0]} :
++                                                {rshift[23:0], data_in[15:8]};
+ wire        f_word = !f_odd && (f_bytes >= 3'd2);
+ 
++// Game Bub port: after a sub-cycle on the RAM port (ram_port) the next one
++// (or a line's next long word) is presented on the edge that completes it,
++// as the TG68K presents its next bus cycle: the RAM port lowers its chip
++// select for a controller clock at that edge (minimig_gamebub.sv: ram_cs
++// with cyc), so cpu_cache_new and the write buffer see the transfer end
++// before the new address. Elsewhere (the chip bus: Kickstart 1.3 does not
++// boot without it) the sampled IDLE cycle stays (advance, below).
++task present(input [31:0] a, input [2:0] left, input [31:0] wsh, input lc);
++	begin
++		busstate   <= instr_r ? `AP040_BUS_FETCH :
++		              write_r ? `AP040_BUS_WRITE : `AP040_BUS_READ;
++		nwr        <= ~write_r;
++		nuds       <= a[0];
++		nlds       <= !a[0] && !(left >= 3'd2);
++		data_write <= (a[0] || left < 3'd2) ? {wsh[31:24], wsh[31:24]} : wsh[31:16];
++		long_cand  <= lc;
++		subcycle_gap <= 0;
++		l_gap      <= 0;
++	end
++endtask
++
++// the next sub-cycle: at once on the RAM port, else after a sampled IDLE
++task advance(input [31:0] a, input [2:0] left, input [31:0] wsh, input lc);
++	begin
++		if (ram_port) present(a, left, wsh, lc);
++		else begin
++			busstate   <= `AP040_BUS_IDLE;
++			nwr        <= 1;
++			nuds       <= 1;
++			nlds       <= 1;
++			long_cand  <= 0;
++			l_gap      <= lc;
++			subcycle_gap <= 1;
++		end
++	end
++endtask
++
+ always @(posedge clk) begin
+ 	if (!nreset) begin
+ 		active     <= 0;
+@@ -111,6 +191,14 @@ always @(posedge clk) begin
+ 		wshift     <= 0;
+ 		rshift     <= 0;
+ 		mem_rdata  <= 0;
++		long_cand  <= 0;
++		line_cand  <= 0;
++		data_write_lo <= 0;
++		line_r     <= 0;
++		l_k        <= 0;
++		l_i        <= 0;
++		l_gap      <= 0;
++		mem_rline  <= 0;
+ 	end
+ 	else if (clkena_in) begin
+ 		mem_ack <= 0;
+@@ -127,7 +215,10 @@ always @(posedge clk) begin
+ 			nuds     <= 1;
+ 			nlds     <= 1;
+ 			longword <= 0;
++			long_cand <= 0;
++			line_cand <= 0;
+ 			subcycle_gap <= 0;
++			line_r   <= 0;
+ 		end
+ 		else if (!active) begin
+ 			// idle: busstate is 01, so the wrapper keeps clkena high
+@@ -136,16 +227,22 @@ always @(posedge clk) begin
+ 				write_r    <= mem_write;
+ 				instr_r    <= mem_instr;
+ 				subcycle_gap <= 0;
+-				cur_addr   <= mem_addr;
++				cur_addr   <= f_addr;
+ 				bytes_left <= f_bytes;
+ 				wshift     <= f_wsh;
+ 				rshift     <= 0;
+ 				fc         <= mem_fc;
+-				longword   <= (mem_size == `AP040_SZ_L);
++				line_r     <= mem_line;
++				l_k        <= 0;
++				l_i        <= mem_addr[3:2];
++				longword   <= mem_line || (mem_size == `AP040_SZ_L);
++				long_cand  <= mem_line || (mem_size == `AP040_SZ_L) && (mem_addr[1:0] == 2'b00);
++				line_cand  <= mem_line && !mem_write;
++				data_write_lo <= f_wd[15:0];
+ 				busstate   <= mem_instr ? `AP040_BUS_FETCH :
+ 				              mem_write ? `AP040_BUS_WRITE : `AP040_BUS_READ;
+ 				nwr        <= ~mem_write;
+-				addr_out   <= mem_addr;
++				addr_out   <= f_addr;
+ 				nuds       <= f_odd;
+ 				nlds       <= !f_odd && !f_word;
+ 				data_write <= (f_odd || !f_word) ? {f_wsh[31:24], f_wsh[31:24]}
+@@ -157,6 +254,8 @@ always @(posedge clk) begin
+ 			// accept the next word of the same internal transfer.  Reassert
+ 			// the saved request without consuming data on the boundary edge.
+ 			subcycle_gap <= 0;
++			long_cand  <= l_gap;      // a line's next long word: offered whole
++			l_gap      <= 0;
+ 			busstate   <= instr_r ? `AP040_BUS_FETCH :
+ 			              write_r ? `AP040_BUS_WRITE : `AP040_BUS_READ;
+ 			nwr        <= ~write_r;
+@@ -166,16 +265,80 @@ always @(posedge clk) begin
+ 			              ? {wshift[31:24], wshift[31:24]}
+ 			              : wshift[31:16];
+ 		end
++		else if (line_cand && line_ack) begin
++			// the whole line in one transfer
++			mem_rline <= data_in_line;
++			active    <= 0;
++			busstate  <= `AP040_BUS_IDLE;
++			nwr       <= 1;
++			nuds      <= 1;
++			nlds      <= 1;
++			longword  <= 0;
++			long_cand <= 0;
++			line_cand <= 0;
++			line_r    <= 0;
++			subcycle_gap <= 0;
++			mem_ack   <= 1;
++		end
++		else if (long_cand && long_ack) begin
++			// the long word in one transfer
++			long_cand <= 0;
++			line_cand <= 0;
++			if (!write_r) mem_rline[127 - 32 * l_i -: 32] <= {data_in_hi, data_in};
++			if (line_r && l_k != 2'd3) begin
++				// a line's next long word
++				l_k          <= l_k + 2'd1;
++				l_i          <= l_n;
++				cur_addr     <= l_addr;
++				addr_out     <= l_addr;
++				bytes_left   <= 3'd4;
++				wshift       <= lw(mem_wline, l_n);
++				data_write_lo <= lw(mem_wline, l_n);
++				rshift       <= 0;
++				advance(l_addr, 3'd4, lw(mem_wline, l_n), 1'b1);
++			end
++			else begin
++				// complete
++				active    <= 0;
++				busstate  <= `AP040_BUS_IDLE;
++				nwr       <= 1;
++				nuds      <= 1;
++				nlds      <= 1;
++				longword  <= 0;
++				line_r    <= 0;
++				subcycle_gap <= 0;
++				mem_ack   <= 1;
++				if (!write_r) mem_rdata <= {data_in_hi, data_in};
++			end
++		end
+ 		else begin
+ 			// one qualified completion for the in-flight 16-bit sub-cycle
++			long_cand <= 0;
++			line_cand <= 0;
+ 			if (!write_r) begin
+ 				if (cur_addr[0])              rshift <= {rshift[23:0], data_in[7:0]};
+ 				else if (bytes_left >= 3'd2)  rshift <= {rshift[15:0], data_in[15:0]};
+ 				else                          rshift <= {rshift[23:0], data_in[15:8]};
+ 			end
+ 
+-			if (next_left == 3'd0) begin
++			if (next_left == 3'd0 && line_r && l_k != 2'd3) begin
++				// a line's long word done in two sub-cycles: its next long
++				// word
++				if (!write_r) mem_rline[127 - 32 * l_i -: 32] <= rd_last;
++				l_k          <= l_k + 2'd1;
++				l_i          <= l_n;
++				cur_addr     <= l_addr;
++				addr_out     <= l_addr;
++				bytes_left   <= 3'd4;
++				wshift       <= lw(mem_wline, l_n);
++				data_write_lo <= lw(mem_wline, l_n);
++				rshift       <= 0;
++				advance(l_addr, 3'd4, lw(mem_wline, l_n), 1'b1);
++			end
++			else if (next_left == 3'd0) begin
+ 				// transaction complete: return to idle and pulse ack
++				if (!write_r && line_r) mem_rline[127 - 32 * l_i -: 32] <= rd_last;
++				line_r   <= 0;
+ 				active   <= 0;
+ 				busstate <= `AP040_BUS_IDLE;
+ 				nwr      <= 1;
+@@ -191,19 +354,12 @@ always @(posedge clk) begin
+ 				end
+ 			end
+ 			else begin
+-				// Set up the following sub-cycle, but first lower the request
+-				// for one sampled clock.  cpu_cache_new and both RAM write
+-				// buffers retain ack/address state until cpu_cs drops; changing
+-				// addr_out under their held acknowledge loses the second word.
++				// the following sub-cycle (see present, advance)
+ 				cur_addr   <= next_addr;
+ 				bytes_left <= next_left;
+ 				wshift     <= next_wsh;
+ 				addr_out   <= next_addr;
+-				busstate   <= `AP040_BUS_IDLE;
+-				nwr        <= 1;
+-				nuds       <= 1;
+-				nlds       <= 1;
+-				subcycle_gap <= 1;
++				advance(next_addr, next_left, next_wsh, 1'b0);
+ 			end
+ 		end
+ 	end

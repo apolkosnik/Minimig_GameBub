@@ -250,6 +250,7 @@ wire        s21_en;
 wire        long_cand;
 wire [15:0] cpu_dout_lo_p;
 wire        long_ack;
+wire [15:0] ramdout_hi_s;
 wire        skipfetch;
 wire  [2:0] fc_p;
 wire        cacr_wr;
@@ -283,7 +284,7 @@ cpu_inst_p
   .s21_en(s21_en),
   .long_cand(long_cand),
   .long_ack(long_ack),
-  .data_in_hi(ramdout_hi),
+  .data_in_hi(ramdout_hi_s),
   .data_write_lo(cpu_dout_lo_p),
   
   .cpu({cpucfg[1], cpucfg[1] | cpucfg[0]}),
@@ -421,9 +422,13 @@ assign clkena_p_thr  = cpu_req ? ~req_gate : ~cyc_hold;
 assign clkena_p_rest = (~cpu_req | chipready | fastchip_ready) & clkena_p_thr;
 wire clkena_p_throttled = clkena_p_rest | (ramready & clkena_p_thr);
 
+// Game Bub port: the long word in one RAM transfer (ramready_l) also for the
+// RTG board's memory (its bytes swapped as ramdin's and ramdout2's are) and
+// the Kickstart ROM's fetches (sel_kickram)
 assign s21_en    = cpu030;
-assign ramlong1  = long_cand & s21_en & sel_zram & ~sel_rtg & ~req_gate;
-assign ramdin_lo = cpu_dout_lo_p;
+assign ramlong1  = long_cand & s21_en & (sel_zram | sel_rtg | sel_kickram) & ~req_gate;
+assign ramdin_lo = sel_rtg ? {cpu_dout_lo_p[7:0], cpu_dout_lo_p[15:8]} : cpu_dout_lo_p;
+assign ramdout_hi_s = sel_rtg ? {ramdout_hi[7:0], ramdout_hi[15:8]} : ramdout_hi;
 assign long_ack  = ramlong1 & ramready_l;
 
 reg       chipreq;

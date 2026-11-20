@@ -7,3 +7,5 @@
 /sim/asm/*.bin
 /sim/gls/work
 /sim/sdr/obj_*
+/sim/*.log
+__pycache__/

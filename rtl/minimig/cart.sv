@@ -62,6 +62,7 @@ module cart
 	input         cpuhlt,
 	input         ar_en,             // the cartridge is the Action Replay, not HRTmon
 	input         ar_fetch,          // the CPU took an instruction fetch outside $A80000-$AFFFFF (cpu_wrapper)
+	input         nmi_ack_toggle,    // flips at every level-7 acknowledge of a CPU that makes no acknowledge cycle (else 0)
 	output [15:0] cart_data_out,
 	output [15:0] cart_data_mask,    // ANDed onto the memory's read data
 	output reg    int7 = 1'b0,
@@ -168,6 +169,20 @@ wire int7_req = ar_en ? ar_frz : (clk7_en && freeze_req);
 // level7 interrupt ack cycle, on Amiga interrupt vector number is read from kickstart rom
 wire int7_ack = &cpu_address_in && ~_cpu_as;
 
+// Game Bub port: a CPU that takes its autovector by itself (the AP68040
+// variant: its bus bridge answers the acknowledge) makes no acknowledge
+// cycle on this bus. It flips nmi_ack_toggle at every level-7 acknowledge
+// instead (another clock: synchronized here, and taken at a 7 MHz enable so
+// that none is lost). The level drops and the NMI vector's override is armed
+// with it; that CPU reads the vector after it has written its stack frame.
+reg  [1:0] nmi_ack_s = 2'b00;
+reg        nmi_ack_seen = 1'b0;
+always @ (posedge clk) begin
+	nmi_ack_s <= {nmi_ack_s[0], nmi_ack_toggle};
+	if (clk7_en) nmi_ack_seen <= nmi_ack_s[1];
+end
+wire x_int7_ack = (nmi_ack_s[1] != nmi_ack_seen);
+
 // level 7 interrupt request logic
 // interrupt request lines are sampled during S4->S5 transition (falling cpu clock edge)
 reg int7_pend = 1'b0;   // (the Action Replay's freeze between two 7 MHz enables)
@@ -178,7 +193,7 @@ always @ (posedge clk) begin
 	if (clk7_en) begin
 		     if (cpu_rst)  int7 <= 0;
 		else if (int7_req | int7_pend) int7 <= 1;
-		else if (int7_ack) int7 <= 0;
+		else if (int7_ack | x_int7_ack) int7 <= 0;
 	end
 end
 
@@ -197,7 +212,7 @@ always @ (posedge clk) begin
 	if (clk7_en) begin
 		     if (cpu_rst)              l_int7 <= 0;
 		else if (l_int7_req)           l_int7 <= 1;
-		else if (l_int7_ack && cpu_rd) l_int7 <= 0;
+		else if ((l_int7_ack && cpu_rd) || x_int7_ack) l_int7 <= 0;
 	end
 end
 
@@ -210,7 +225,7 @@ always @ (posedge clk) begin
 			active <= 0;
 			stealth <= 0;
 		end
-		else if (l_int7 && l_int7_ack && cpu_rd) begin
+		else if ((l_int7 && l_int7_ack && cpu_rd) || (x_int7_ack && (int7 || l_int7))) begin
 			active <= 1;
 			stealth <= 1;
 		end

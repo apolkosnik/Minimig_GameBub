@@ -1,0 +1,29 @@
+diff --git a/rtl/minimig/minimig.sv b/rtl/minimig/minimig.sv
+index ee08053..2a2b987 100644
+--- a/rtl/minimig/minimig.sv
++++ b/rtl/minimig/minimig.sv
+@@ -786,7 +786,6 @@ ciab CIAB1
+ );
+ 
+ wire cpu_long_en;
+-assign chip32_en = cpucfg[1] & (chipset_config[4] | (chipset_config[3] & ~cpucfg[0])) & ~ovr & ~cpuhlt;
+ assign ram_long  = cpu_long_en & ~dbr & |bank[3:0];
+ 
+ //instantiate cpu bridge
+@@ -1006,6 +1005,16 @@ always @(posedge clk) begin
+ 	else if(sel_cia_a & (cpu_lwr|cpu_hwr)) ovl <= 0;
+ end
+ 
++// Game Bub port: no 32-bit chip bus access while the Kickstart overlays chip
++// RAM (ovl). The SDRAM reads the second word only from chip RAM (ram_long:
++// bank[3:0]), not from the ROM the overlay puts at 0, and cpu_wrapper took
++// what the last 32-bit read had left for it: the low word of every long
++// word read below $80000 after a reset. The TG68K reads its initial stack
++// pointer so (nobody uses it); the 68040 (the AP68040 variant) reads all its
++// long words so: the low half of its start address was that left over
++// word, 0 after the core's start and anything after a reset.
++assign chip32_en = cpucfg[1] & (chipset_config[4] | (chipset_config[3] & ~cpucfg[0])) & ~ovr & ~cpuhlt & ~ovl;
++
+ //-------------------------------------------------------------------------------------
+ 
+ wire [15:0] rtc_out = (sel_rtc && cpu_rd) ? {12'h000, rtc_reg[{cpu_address_out[5:2], 2'b00} +:4]} : 16'h0000;

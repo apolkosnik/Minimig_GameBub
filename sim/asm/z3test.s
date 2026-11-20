@@ -22,7 +22,8 @@
 ;   $10E  the second board's
 ;   $120  failing address, $124 value read, $128 value expected
 ;
-; COLOR00 is green at the end, red after a failure.
+; COLOR00 is green at the end, red after a failure (-DDIAG: a colour for
+; what failed, see fail).
 ; SPDX-License-Identifier: GPL-3.0-or-later
 
 	machine	68030
@@ -163,7 +164,32 @@ fail:
 	move.l	d0,$124
 	move.l	d1,$128
 	move.w	$100,$102
+	ifd	DIAG
+	; -DDIAG (hardware): what failed as COLOR00. Step 6 (lanes): orange in
+	; the Zorro III board, white in the RTG memory; step 5: blue in the
+	; Zorro III board, magenta in the RTG memory, cyan in chip RAM
+	move.l	a1,d0
+	rol.l	#8,d0
+	and.w	#$F0,d0			; the address's top nibble (4: Z3, 5: RTG)
+	cmp.w	#6,$100
+	bne.s	.s5
+	move.w	#$0F80,d1		; orange: lanes, Zorro III
+	cmp.w	#$40,d0
+	beq.s	.col
+	move.w	#$0FFF,d1		; white: lanes, RTG
+	bra.s	.col
+.s5:	move.w	#$00FF,d1		; cyan: chip RAM
+	cmp.w	#$40,d0
+	bne.s	.s5r
+	move.w	#$000F,d1		; blue: Zorro III
+	bra.s	.col
+.s5r:	cmp.w	#$50,d0
+	bne.s	.col
+	move.w	#$0F0F,d1		; magenta: RTG
+.col:	move.w	d1,$180(a6)
+	else
 	move.w	#$0F00,$180(a6)		; red
+	endc
 .stop:	bra.s	.stop
 
 ; F-line / illegal instruction: note it, skip the four byte instruction
