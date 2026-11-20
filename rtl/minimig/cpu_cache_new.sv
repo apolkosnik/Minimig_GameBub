@@ -55,8 +55,22 @@ module cpu_cache_new
   input             cpu_long,
   input      [15:0] cpu_dat_w_lo,
   output reg [15:0] cpu_dat_hi,
-  output reg        cpu_ack_l
+  output reg        cpu_ack_l,
+  // Game Bub port: a line answered whole (gb_sdram_ctrl's CPU_LINE16, the
+  // AP68040 variant's own cpu_cache_new): not answered here
+  input             cpu_line,
+  output    [127:0] cpu_dat_line,
+  output            cpu_ack_line,
+  // and the next line read ahead (the AP68040 variant's): not here
+  output            pf_req,
+  output    [28:4]  pf_adr,
+  input             pf_ack
 );
+
+assign cpu_dat_line = 128'd0;
+assign cpu_ack_line = 1'b0;
+assign pf_req       = 1'b0;
+assign pf_adr       = 25'd0;
 
 
 //// internal signals ////
@@ -926,30 +940,46 @@ module dpram_be_256x16
 	output [15:0] q_b
 );
 
-dpram #(8,8) ram_l
-(
-	.clock(clock),
-	.address_a(address_a),
-	.data_a(data_a[7:0]),
-	.wren_a(byteena_a[0] & wren_a),
-	.q_a(q_a[7:0]),
-	.address_b(address_b),
-	.data_b(data_b[7:0]),
-	.wren_b(byteena_b[0] & wren_b),
-	.q_b(q_b[7:0])
-);
+// Game Bub port: one true dual port RAM with byte writes, one RAMB18 where
+// two dpram(8,8) took two. Vivado 2018.3 infers the byte-write true dual
+// port RAM read first (UG901's template, one process per port); as dpram,
+// a port that writes reads the new data (its unwritten byte as stored): the
+// bytes it wrote are taken from registers over the RAM's output. The memory
+// starts at zero.
+(* ram_style = "block" *)
+reg [15:0] mem [0:255];
+reg [15:0] r_a, r_b, d_a, d_b;
+reg  [1:0] w_a, w_b;
 
-dpram #(8,8) ram_u
-(
-	.clock(clock),
-	.address_a(address_a),
-	.data_a(data_a[15:8]),
-	.wren_a(byteena_a[1] & wren_a),
-	.q_a(q_a[15:8]),
-	.address_b(address_b),
-	.data_b(data_b[15:8]),
-	.wren_b(byteena_b[1] & wren_b),
-	.q_b(q_b[15:8])
-);
+integer i;
+initial begin
+	for (i = 0; i < 256; i = i + 1) mem[i] = 16'd0;
+	r_a = 16'd0;
+	r_b = 16'd0;
+	w_a = 2'b00;
+	w_b = 2'b00;
+end
+
+always @(posedge clock) begin
+	for (int j = 0; j < 2; j++)
+		if (wren_a && byteena_a[j]) mem[address_a][j*8 +: 8] <= data_a[j*8 +: 8];
+	r_a <= mem[address_a];
+end
+
+always @(posedge clock) begin
+	for (int j = 0; j < 2; j++)
+		if (wren_b && byteena_b[j]) mem[address_b][j*8 +: 8] <= data_b[j*8 +: 8];
+	r_b <= mem[address_b];
+end
+
+always @(posedge clock) begin
+	w_a <= {2{wren_a}} & byteena_a;
+	d_a <= data_a;
+	w_b <= {2{wren_b}} & byteena_b;
+	d_b <= data_b;
+end
+
+assign q_a = {w_a[1] ? d_a[15:8] : r_a[15:8], w_a[0] ? d_a[7:0] : r_a[7:0]};
+assign q_b = {w_b[1] ? d_b[15:8] : r_b[15:8], w_b[0] ? d_b[7:0] : r_b[7:0]};
 
 endmodule

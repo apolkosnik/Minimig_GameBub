@@ -39,8 +39,41 @@
 #           AmigaOS 3.2): scattered reads and writes over 120 pages, base
 #           registers in other pages than the address, U / M bits, write
 #           protection, remapping with PFLUSHA, code in translated pages
+#   mmu040  (the AP68040 variant's tree) mmu040test.rom: the 68040's MMU
+#           with 4 KB pages and its copyback data cache; z3_040 replaces
+#           z3_030 / z3_020 there
 #   rtg     rtgtest.rom: the RTG board's registers, palette and picture
 #           (six modes, every pixel of an HDMI frame)
+#   ram_*   ramtest.rom: the CPU's RAM in the SDRAM (Zorro III / Zorro II and
+#           the RTG memory): every size and alignment, long words in one
+#           transfer, mixed sequences compared with chip RAM; ram040_*
+#           (the AP68040 variant) also with the data cache's line pushes
+#           and fills; $10A..$10E timings
+#   vector  vectest.rom: the start address after a reset with the chip bus's
+#           32-bit access on (AGA): at the core's start and after the
+#           menu's Reset
+#   smc     smctest.rom: code in chip RAM changed by the CPU and by the
+#           blitter and run again at once, the instruction cache on: the
+#           cache in front of the SDRAM must follow every write
+#   smcstress  smcstress.rom: the same at random, 3000 rounds over sixteen
+#           routines, more of them in one set of the 68040's instruction
+#           cache than it has ways
+#   cart_*  carttest.rom with a cartridge image, the file the core takes
+#           one from (the stubs hrtstub.rom, as HRTmon, and arstub.rom, in
+#           the Action Replay's layout): its upload and HRTmon's
+#           configuration block, the Help key's freeze (a USB key, then a
+#           button set to Help) with the level 7 vector given by the
+#           cartridge, its memory and its copy of the custom registers,
+#           and the Action Replay's other freezes (the first word written
+#           to chip RAM after a reset, a read of CIA-A PRA, a write of CIA-B
+#           PRB) and its hiding again. cart_hrt, cart_ar: AGA; *_c: the
+#           instruction cache on and the test in chip RAM (a 68040 caches
+#           it: the Action Replay must still see the CPU leave); *_o: the
+#           standard machine (the 68000 in the standard core), NTSC and a
+#           hard disk for HRTmon's configuration
+#   menu_*  the Game Bub menu over a running Amiga: the CPU halted while the
+#           menu has the focus, the Reset action, the CPU running again when
+#           the menu closes, at four moments of the floppy server's poll
 #   floppy  wrtest.rom: a track written with disk DMA, decoded into the
 #           image, saved on exit (CoreHalt, FileReadStart/End)
 #   ide_*   idetest.rom: the Gayle IDE port with hard disk images served by
@@ -56,6 +89,12 @@
 #   ADF13=<OFS bootable ADF> ADF31=<bootable ADF for 3.1>
 #   HDF31=<bootable partition image> HDFRDB31=<bootable image with an RDB>
 #   (sim/make_hdf.sh makes both from the files of an ADF)
+# and with KICK31 the real cartridges (not included):
+#   HRTMON=<HRTMON.ROM>  ks31_hrtmon: Help over the insert-disk screen, the
+#           CPU in HRTmon until "x" and Return, in Kickstart again, and in
+#           HRTmon after the next Help
+#   AR5=<AR5.ROM>        ks31_ar5: the same with the Action Replay (Action
+#           Replay V, the DeMoN v2 build), left with "x" and Return
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -u
 cd "$(dirname "$0")"
@@ -99,18 +138,85 @@ run aga256t --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=7 --expect-n
 # z3test.rom: the 68030 / 68020, the 16 MB Zorro III board and the RTG
 # board's memory in the second SDRAM chip (autoconfig, patterns, lanes)
 Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:10A:F000:A000 --check-word 790:10C:F000:0000 --check-word 790:10E:F000:8000 --check-word 790:110:F000:0000"
-run z3_030 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0001
-run z3_020 --kick asm/z3test.rom --ms 800 --set 1048=3 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
-# mmutest.rom: the 68030's MMU with 1 KB pages (micro-TLB, table walk, U / M,
-# write protection, PFLUSHA, code in translated pages); $10A..$10E timings
-run mmu --kick asm/mmutest.rom --ms 1600 --set 1048=4 --set 104C=8 --check-word 1590:100:FFFF:600D --check-word 1590:102:FFFF:0000
+RTGROM=rtgtest.rom
+if [ -d ../rtl/ap68040 ]; then
+	# a build variant's tree with the AP68040 (tools/stage_variant.sh): the
+	# 68040 has no PMOVE (F-line, as the 68020's), and its own MMU test
+	run z3_040 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
+	# mmu040test.rom: the 68040's MMU with 4 KB pages (TTRs, table walk,
+	# U / M, write protection, PFLUSHA, code in translated pages) and its
+	# copyback data cache through the bus bridge (CINVA, CPUSHA)
+	RTGROM=rtgtest040.rom   # the 68040's instruction cache on, as Kickstart has it
+	run mmu040 --kick asm/mmu040test.rom --ms 1500 --set 1044=2 --set 1048=4 --set 104C=8 --check-word 1490:100:FFFF:600D --check-word 1490:102:FFFF:0000
+	run ram040_z3 --kick asm/ramtest040.rom --ms 1500 --set 1048=4 --set 104C=8 --check-word 1490:100:FFFF:600D --check-word 1490:102:FFFF:0000
+	run ram040_z2 --kick asm/ramtest040_z2.rom --ms 1500 --set 1048=4 --set 104C=7 --check-word 1490:100:FFFF:600D --check-word 1490:102:FFFF:0000
+else
+	run z3_030 --kick asm/z3test.rom --ms 800 --set 1048=4 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0001
+	run z3_020 --kick asm/z3test.rom --ms 800 --set 1048=3 --set 104C=8 $Z3CHK --check-word 790:104:FFFF:0000
+	# mmutest.rom: the 68030's MMU with 1 KB pages (micro-TLB, table walk, U / M,
+	# write protection, PFLUSHA, code in translated pages); $10A..$10E timings
+	run mmu --kick asm/mmutest.rom --ms 1600 --set 1048=4 --set 104C=8 --check-word 1590:100:FFFF:600D --check-word 1590:102:FFFF:0000
+	run ram_z3 --kick asm/ramtest.rom --ms 600 --set 1048=4 --set 104C=8 --check-word 590:100:FFFF:600D --check-word 590:102:FFFF:0000
+	run ram_z2 --kick asm/ramtest_z2.rom --ms 600 --set 1048=4 --set 104C=7 --check-word 590:100:FFFF:600D --check-word 590:102:FFFF:0000
+fi
+# vector: vectest.rom with the chipset AGA (the chip bus reads long words
+# in one 32-bit access): the CPU must take its start address from the ROM
+# at the core's start and after the menu's Reset, whatever long word it
+# read from chip RAM last
+run vector --kick asm/vectest.rom --ms 720 --set 1044=2 --set 1048=4 --set 104C=8 \
+	--check-word 520:100:FFFF:600D --check-word 520:102:FFFF:0000 --check-word 520:104:FFFF:0001 \
+	--focus 530.4:0 --hwrite 560.7:1040:1 --focus 600:1 --expect-resets 1 \
+	--check-word 710:102:FFFF:0000 --check-word 710:104:FFFF:0002
+# smc: smctest.rom: a routine in chip RAM run with the instruction cache on,
+# changed (by the CPU: a word, a byte, a long word; by the blitter; copied
+# over) and run again at once: the new code every time
+run smc --kick asm/smctest.rom --ms 700 --set 1044=2 --set 1048=4 --set 104C=8 \
+	--check-word 690:100:FFFF:600D --check-word 690:102:FFFF:0000
+# smcstress: smcstress.rom: sixteen routines in chip RAM (eight of them in
+# one set of the 68040's instruction cache), 3000 rounds of calling one or
+# changing it first (a byte write and another call; a byte write and a NOP;
+# the blitter)
+run smcstress --kick asm/smcstress.rom --ms 1500 --set 1044=2 --set 1048=4 --set 104C=8 \
+	--check-word 1490:100:FFFF:600D --check-word 1490:102:FFFF:0000
+# cart_*: carttest.rom and a cartridge image; Help from a USB keyboard
+# (Insert) and from the X button set to Help. HRTmon's configuration as its
+# stub found it ($130: 22 bytes, then maxchip): ide ($13B), aga ($13D),
+# NTSC ($142) and maxchip ($146) follow the machine.
+CARTKEYS="--set 106C=5F --hwrite 540:1038:149 --hwrite 560:1038:049 --press 600:4:40"
+CARTOK="--check-word 690:100:FFFF:600D --check-word 690:102:FFFF:0000"
+# before the first key: HRTmon not entered yet; the Action Replay once, after the reset
+CARTHRT="--check-word 480:100:FFFF:0001 --check-word 480:104:FFFF:0000 $CARTOK"
+CARTAR="--check-word 480:100:FFFF:0002 --check-word 480:104:FFFF:0001 $CARTOK"
+HRTCFG="--check-word 690:130:FFFF:0080 --check-word 690:132:FFFF:0000 --check-word 690:134:FFFF:005A --check-word 690:136:FFFF:0FFF --check-word 690:138:FFFF:FF00 --check-word 690:13E:FFFF:FF0F --check-word 690:140:FFFF:FF00 --check-word 690:144:FFFF:0001 --check-word 690:148:FFFF:0000"
+HRTAGA="--check-word 690:13A:FFFF:FF00 --check-word 690:13C:FFFF:FFFF --check-word 690:142:FFFF:00FF --check-word 690:146:FFFF:0020"
+HRTOCS="--check-word 690:13A:FFFF:FFFF --check-word 690:13C:FFFF:FF00 --check-word 690:142:FFFF:01FF --check-word 690:146:FFFF:0008"
+run cart_hrt   --kick asm/carttest_hrt.rom   --cart asm/hrtstub.rom --ms 700 --set 1044=2 --set 1048=4 --set 104C=8 $CARTKEYS $CARTHRT $HRTCFG $HRTAGA
+run cart_hrt_c --kick asm/carttest_hrt_c.rom --cart asm/hrtstub.rom --ms 700 --set 1044=2 --set 1048=4 --set 104C=8 $CARTKEYS $CARTHRT $HRTCFG $HRTAGA
+run cart_hrt_o --kick asm/carttest_hrt.rom   --cart asm/hrtstub.rom --ms 700 --set 1050=1 --hdf 0 $OUT/part.hdf $CARTKEYS $CARTHRT $HRTCFG $HRTOCS
+run cart_ar    --kick asm/carttest_ar.rom    --cart asm/arstub.rom  --ms 700 --set 1044=2 --set 1048=4 --set 104C=8 $CARTKEYS $CARTAR
+run cart_ar_c  --kick asm/carttest_ar_c.rom  --cart asm/arstub.rom  --ms 700 --set 1044=2 --set 1048=4 --set 104C=8 $CARTKEYS $CARTAR
+run cart_ar_o  --kick asm/carttest_ar.rom    --cart asm/arstub.rom  --ms 700 $CARTKEYS $CARTAR
+# menu_*: the menu opens (the focus goes: the CPU is halted), its Reset
+# action, the menu closes, at four moments of the floppy server's poll. The
+# CPU must be halted while the menu is open, be reset once and run again
+# after it, and z3test.rom must pass from the start once more. (The boot
+# sequencer took the IO bus before the floppy server had ended its poll:
+# the poll never ended, and neither did the halt or the reset.)
+[ -d ../rtl/ap68040 ] && MENU104=0000 || MENU104=0001
+MENUN=0
+for t in 520.00 521.11 523.29 525.13; do
+	MENUN=$((MENUN + 1))
+	run menu_$MENUN --kick asm/z3test.rom --ms 1000 --set 1048=4 --set 104C=8 \
+		--check-halt 510:0 --focus $t:0 --check-halt 550:1 --hwrite 560.$((MENUN * 23)):1040:1 --check-halt 595:1 \
+		--focus 600:1 --check-halt 650:0 --expect-resets 1 ${Z3CHK//790:/990:} --check-word 990:104:FFFF:$MENU104
+done
 # rtgtest.rom: the RTG board (68030): registers at both addresses, the
 # palette, nine modes (8 bit palette, 16 bit 565 and 1555, 24 bit, 32 bit;
 # unaligned bases and strides, scaled up and down, 1280 x 720 one to one,
 # 1920 x 1080, cut at 2048 pixels), each
 # shown on the framework's external picture (HDMI, tb_top) and every pixel
 # of a whole 1280 x 720 frame checked
-run rtg --kick asm/rtgtest.rom --ms 2500 --set 1048=4 --set 104C=8 --rtg-check --rtg-modes 9 \
+run rtg --kick asm/$RTGROM --ms 2500 --set 1048=4 --set 104C=8 --rtg-check --rtg-modes 9 \
 	--check-word 2400:100:FFFF:600D --check-word 2400:104:FFFF:0000
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
@@ -151,6 +257,20 @@ if [ -n "${KICK31:-}" ] && [ -n "${ADF31:-}" ]; then
 	run ks31_030 --kick "$KICK31" --disk 0 "$ADF31" --set 1044=2 --set 1048=4 --set 104C=8 --ms 12000 --expect-sectors 100 --frames-dir $OUT/ks31_030 --shot-every 100
 fi
 if [ -n "${KICK31:-}" ]; then
+	# the real cartridges under Kickstart 3.1: where the CPU is (--check-pc)
+	# before Help (4.6 s), in the monitor, after "x" and Return, after Help again
+	HELP1="--hwrite 4600:1038:149 --hwrite 4650:1038:049"
+	[ -n "${HRTMON:-}" ] && run ks31_hrtmon --kick "$KICK31" --cart "$HRTMON" --set 1044=2 --set 1048=4 --set 104C=8 --ms 8400 \
+		$HELP1 --hwrite 6400:1038:11B --hwrite 6450:1038:01B --hwrite 6500:1038:128 --hwrite 6550:1038:028 \
+		--hwrite 7400:1038:149 --hwrite 7450:1038:049 \
+		--check-pc 4000:4500:A00000:B00000:0:0 --check-pc 5300:6300:A00000:A80000:90:100 \
+		--check-pc 6900:7300:A00000:B00000:0:2 --check-pc 7700:8300:A00000:A80000:90:100
+	# (the Action Replay looks through memory before its prompt: 2.7 s on
+	# the 68030, 3.0 s on the 68040, and takes no key before)
+	[ -n "${AR5:-}" ] && run ks31_ar5 --kick "$KICK31" --cart "$AR5" --set 1044=2 --set 1048=4 --set 104C=8 --ms 9700 \
+		$HELP1 --hwrite 8400:1038:11B --hwrite 8450:1038:01B --hwrite 8500:1038:128 --hwrite 8550:1038:028 \
+		--check-pc 4000:4500:A00000:B00000:0:0 --check-pc 5000:8300:A80000:B00000:90:100 \
+		--check-pc 9100:9600:A00000:B00000:0:2
 	[ -n "${HDF31:-}" ] && run ks31_hdf --kick "$KICK31" --hdf 0 "$HDF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60
 	[ -n "${HDFRDB31:-}" ] && run ks31_rdb --kick "$KICK31" --hdf 0 "$HDFRDB31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-hdd-read 60
 fi

@@ -1,0 +1,69 @@
+--- a/ap68040_minimig.sv
++++ b/ap68040_minimig.sv
+@@ -45,6 +45,17 @@
+ //    before it invalidates, so a write that met the fill takes the line   //
+ //    out after it; the map and the queue are kept over a reset, as the    //
+ //    cache's lines are.  Data accesses to chip RAM stay inhibited.        //
++//  * Game Bub port: a cartridge's code (ar_on: one is fitted; HRTmon's   //
++//    512 KB at $A00000, the Action Replay's ROM at $A80000-$ABFFFF) is    //
++//    let into the instruction cache too: nothing but the processor       //
++//    writes there, a real 68040 caches a cartridge the same, and its      //
++//    code would crawl uncached (a line transfer a long word).  Every      //
++//    line goes at a reset (the image is uploaded again with the           //
++//    processor halted).  The Action Replay hides at the first             //
++//    instruction fetched outside it after its control register            //
++//    ($A80000-$A80003) is written, and a fetch the instruction cache      //
++//    answers is not on the bus: that write takes every line out of the    //
++//    cache too, so the first instruction outside is fetched.              //
+ //  * An interrupt acknowledge (TT = 3) is answered with AVEC, as the       //
+ //    Amiga autovectors every level; a level-7 acknowledge flips           //
+ //    nmi_ack_toggle for the cartridge monitor.  A breakpoint acknowledge  //
+@@ -104,6 +115,7 @@ module ap68040_minimig
+ 	input  logic        chipcode,       // fetches from chip RAM are the RAM's (cpu_wrapper: no overlay)
+ 	input  logic        cw_tgl,         // flips for every write to chip RAM (the SDRAM controller's
+ 	input  logic [20:4] cw_line,        // ... clock: twice this one, edges aligned), its line held
++	input  logic        ar_on,          // a cartridge is fitted: its code is cached; a write of the Action Replay's control register empties the instruction cache
+ 
+ 	input  logic  [2:0] ipl_n,          // IPL2-IPL0, active low as the pins are
+ 	output logic        nmi_ack_toggle, // flips for every level-7 acknowledge
+@@ -230,8 +242,12 @@ wire iack = (tt == 2'd3);   // interrupt or breakpoint acknowledge
+ // Game Bub port: a code access to chip RAM that may enter the instruction cache
+ logic chipcode_q;
+ always_ff @(posedge clk) chipcode_q <= chipcode;
++logic ar_on_q = 1'b0;
++always_ff @(posedge clk) ar_on_q <= ar_on;
+ wire chipram = (a_o[31:21] == 11'd0);
+ wire chipc   = chipcode_q && chipram && rw_n && ((tm == 3'd2) || (tm == 3'd6));
++// a cartridge's code: $A00000-$ABFFFF (HRTmon's memory, the Action Replay's ROM)
++wire cartc   = ar_on_q && (a_o[31:20] == 12'h00A) && (a_o[19:18] != 2'b11) && rw_n && ((tm == 3'd2) || (tm == 3'd6));
+ wire line = (siz == 2'b11); // SIZ: a line transfer
+ logic pts;              // a transfer started while a posted write was in flight
+ wire  ts_e = ts || pts;  // (the core holds it on the bus until its TA)
+@@ -292,7 +308,7 @@ always_ff @(posedge clk) begin
+ 			la32      <= a_o[3:2];
+ 			// a line write's first beat (the rest as their TAs go)
+ 			mem_wline[127 - 32 * a_o[3:2] -: 32] <= d_o;
+-			cach      <= fastram(a_o, z2ram_ena, z3ram_base0, z3ram_ena0, z3ram_base1, z3ram_ena1) || chipc;
++			cach      <= fastram(a_o, z2ram_ena, z3ram_base0, z3ram_ena0, z3ram_base1, z3ram_ena1) || chipc || cartc;
+ 		end
+ 		// an acknowledge cycle is answered at once, in any state
+ 		if (ts && iack) begin
+@@ -449,6 +465,7 @@ logic        x_ov = 1'b0;                  // one was lost: every line goes
+ 
+ wire cw_evt = (cw_s1 != cw_s2);
+ wire ea_evt = ts && !iack && !rw_n && chipram;
++wire ar_ctlw = ts && !iack && !rw_n && ar_on_q && (a_o[31:2] == 30'h002A0000);   // $A80000-$A80003
+ wire lk_b   = eb_p;                        // the controller's first (it cannot wait)
+ wire lk_a   = ea_p && !eb_p;
+ assign cmap_ra = lk_b ? eb_l[20:7] : ea_l[20:7];
+@@ -495,6 +512,10 @@ always_ff @(posedge clk) begin
+ 	end
+ 	if (xq_pop) xq_h <= xq_h + 3'd1;
+ 	xq_n <= xq_n + {3'd0, xq_push} - {3'd0, xq_pop};
++
++	// the Action Replay's control register written, or a reset (a
++	// cartridge's image may be uploaded anew): every line goes
++	if (ar_ctlw || !nreset) x_ov <= 1'b1;
+ end
+ 
+ endmodule

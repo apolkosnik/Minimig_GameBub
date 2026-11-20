@@ -45,6 +45,16 @@ start:
 	clr.w	$100
 	clr.w	$102
 	clr.w	$104
+	ifd	CACHE040
+	; rtgtest040.rom (the AP68040 variant): the 68040's instruction cache
+	; on, as Kickstart's exec turns it on (a 68040 with its caches off
+	; fetches every instruction word from the bus)
+	machine	68040
+	cinva	bc
+	move.l	#$00008000,d0		; CACR IE
+	movec	d0,cacr
+	machine	68030
+	endif
 
 	; ---- 1: autoconfig
 	move.w	#1,d7

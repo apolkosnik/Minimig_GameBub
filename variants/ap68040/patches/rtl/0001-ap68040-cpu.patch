@@ -1,0 +1,560 @@
+diff --git a/rtl/gamebub/gb_clocks.sv b/rtl/gamebub/gb_clocks.sv
+--- a/rtl/gamebub/gb_clocks.sv
++++ b/rtl/gamebub/gb_clocks.sv
+@@ -5,6 +5,7 @@
+ //   CLKOUT1  /32   28.385 MHz  Amiga / system clock    (PAL 28.375 +0.036 %)
+ //   CLKOUT2  /5   181.667 MHz  host SPI (>= 160 MHz required)
+ //   CLKOUT3  /N   display clock (N from MinimigCore.scala)
++//   CLKOUT5  /16   56.771 MHz  AP68040 variant: the CPU (2 x clk_sys, aligned)
+ //   CLKOUT4  /8   113.542 MHz  SDRAM clock, clk_114 delayed by 39.375 deg
+ //                 (0.963 ns, 7 steps of 1/8 VCO period): drives only the ODDR
+ //                 that forwards it (inverted) to the SDRAM pins; the delay
+@@ -21,13 +22,14 @@
+ 	output wire clk_114,
+ 	output wire clk_sys,
+ 	output wire clk_sdram,
++	output wire clk_cpu,
+ 	output wire clk_display,
+ 	output wire clk_spi,
+ 	output wire locked
+ );
+ 
+ wire clk_fb, clk_fb_buf;
+-wire clk_114_u, clk_sys_u, clk_sdram_u;
++wire clk_114_u, clk_sys_u, clk_sdram_u, clk_cpu_u;
+ 
+ MMCME2_BASE #(
+ 	.BANDWIDTH          ("OPTIMIZED"),
+@@ -41,18 +43,21 @@
+ 	.CLKOUT2_DIVIDE     (5),
+ 	.CLKOUT3_DIVIDE     (DISPLAY_DIVIDER),
+ 	.CLKOUT4_DIVIDE     (8),
++	.CLKOUT5_DIVIDE     (16),
+ 
+ 	.CLKOUT0_PHASE      (0.0),
+ 	.CLKOUT1_PHASE      (0.0),
+ 	.CLKOUT2_PHASE      (0.0),
+ 	.CLKOUT3_PHASE      (0.0),
+ 	.CLKOUT4_PHASE      (39.375),
++	.CLKOUT5_PHASE      (0.0),
+ 
+ 	.CLKOUT0_DUTY_CYCLE (0.5),
+ 	.CLKOUT1_DUTY_CYCLE (0.5),
+ 	.CLKOUT2_DUTY_CYCLE (0.5),
+ 	.CLKOUT3_DUTY_CYCLE (0.5),
+ 	.CLKOUT4_DUTY_CYCLE (0.5),
++	.CLKOUT5_DUTY_CYCLE (0.5),
+ 
+ 	.STARTUP_WAIT       ("FALSE")
+ ) mmcm (
+@@ -65,7 +70,7 @@
+ 	.CLKOUT3   (clk_display),
+ 	.CLKOUT3B  (),
+ 	.CLKOUT4   (clk_sdram_u),
+-	.CLKOUT5   (),
++	.CLKOUT5   (clk_cpu_u),
+ 	.CLKOUT6   (),
+ 	.CLKFBOUT  (clk_fb),
+ 	.CLKFBOUTB (),
+@@ -82,5 +87,6 @@
+ BUFG bufg_114 (.I(clk_114_u), .O(clk_114));
+ BUFG bufg_sys (.I(clk_sys_u), .O(clk_sys));
+ BUFG bufg_sdram (.I(clk_sdram_u), .O(clk_sdram));
++BUFG bufg_cpu (.I(clk_cpu_u), .O(clk_cpu));
+ 
+ endmodule
+diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
+--- a/rtl/minimig/cpu_wrapper.sv
++++ b/rtl/minimig/cpu_wrapper.sv
+@@ -30,10 +30,11 @@
+ 	output reg        reset_out,
+ 
+ 	input             clk,
++	input             clk_cpu,       // AP68040 variant: the CPU's clock, 2 x clk, edges aligned
+ 	input             ph1,
+ 	input             ph2,
+ 
+-	input       [4:0] cpucfg,
++	input       [4:0] cpucfg_osd,    // AP68040 variant: not used (cpucfg below)
+ 	input             ntsc,
+ 	input       [2:0] fastramcfg,
+ 	input       [2:0] cachecfg,
+@@ -82,6 +83,8 @@
+ 
+ 	input             ar_on,         // the Action Replay is fitted ($A80000-$AFFFFF through the chip bus)
+ 	output reg        ar_fetch = 0,  // an instruction fetch outside $A80000-$AFFFFF (one clock)
++	output            nmi_ack_toggle, // AP68040 variant: flips at every level-7 acknowledge (the bridge
++	                                  // answers it: no acknowledge cycle reaches the cartridge)
+ 
+ 	input      [15:0] cdtv_din,
+ 	input             cdtv_selack,
+@@ -104,11 +107,22 @@
+ 	output     [15:0] ramdin_lo,
+ 	input      [15:0] ramdout_hi,
+ 	input             ramready_l,
++	output            ramline,       // AP68040 variant: a line read, answered whole
++	input     [127:0] ramdout_line,
++	input             ramready_line,
++	input             chipwr_tgl,    // AP68040 variant: every write to chip RAM (gb_sdram_ctrl),
++	input      [20:4] chipwr_line,   // for the lines of it in the CPU's instruction cache
+ 	output            dcache_sw_en
+ );
+ 
+ assign dcache_sw_en = 1'b1;
+ 
++// AP68040 variant: the CPU is the AP68040 behind ap68040_minimig and the
++// 16-bit bus adapter (variants/ap68040). The wrapper's decoding takes the
++// 68030's configuration: a 32-bit address bus, Zorro III RAM and the RTG
++// board offered, no 68EC020 instruction cache, no cycle throttle.
++wire [4:0] cpucfg = 5'b00010;
++
+ wire        ec020      = (cpucfg[1:0] == 2'b11) & cpucfg[2];
+ wire        ec030      = (cpucfg[1:0] == 2'b10) & cpucfg[2];
+ wire        z3cpu      = cpucfg[1] & ~ec020;
+@@ -251,110 +265,157 @@
+ wire [15:0] cpu_dout_lo_p;
+ wire        long_ack;
+ wire [15:0] ramdout_hi_s;
++wire         line_cand;      // AP68040 variant: the adapter's line read (below)
++wire         line_ack;
++wire [127:0] ramdout_line_s;
+ wire        skipfetch;
+ wire  [2:0] fc_p;
+ wire        cacr_wr;
+ wire  [5:0] caar;
+ 
+-TG68KdotC_Kernel
+-#(
+-	.sr_read(2),        // 0=>user,   1=>privileged,    2=>switchable with CPU(0)
+-	.vbr_stackframe(2), // 0=>no,     1=>yes/extended,  2=>switchable with CPU(0)
+-	.extaddr_mode(2),   // 0=>no,     1=>yes,           2=>switchable with CPU(1)
+-	.mul_mode(2),       // 0=>16Bit,  1=>32Bit,         2=>switchable with CPU(1),  3=>no MUL,
+-	.div_mode(2),       // 0=>16Bit,  1=>32Bit,         2=>switchable with CPU(1),  3=>no DIV,
+-	.bitfield(2)        // 0=>no,     1=>yes,           2=>switchable with CPU(1)
+-)
+-cpu_inst_p
++//--------------------------------------------------------------------------//
++// AP68040 variant: the CPU. The AP68040 runs on clk_cpu behind              //
++// ap68040_minimig, which turns every 68040 bus transfer into one request   //
++// for ap040_bus16_adapter; the adapter runs in this clock domain and keeps //
++// the TG68K's bus contract (busstate, nwr / nuds / nlds, 16-bit data, one  //
++// sub-cycle per clkena_in), with its long word in one RAM transfer        //
++// (long_cand / long_ack, as the TG68K's) and a line (a 68040 burst) as one //
++// request of four long words. The TG68K's other extras are                 //
++// absent: no opcode stream for cpu_cycles, no 68EC020 cache control.       //
++//--------------------------------------------------------------------------//
++assign opc_start     = 1'b0;
++assign opc_out       = 16'd0;
++assign opc_cond      = 1'b0;
++assign opc_snd       = 16'd0;
++assign opc_dbx       = 1'b0;
++assign cacr_x        = 14'd0;
++assign cacr_wr       = 1'b0;
++assign caar          = 6'd0;
++assign mmu_busy      = 1'b0;
++assign skipfetch     = 1'b0;
++assign cacr_p        = 4'd0;
++assign vbr_p         = 32'd0;
++
++wire        mem_req, mem_write, mem_instr, mem_ci, mem_ack, mem_line;
++wire        chipcode;      // fetches from chip RAM are RAM's (turbochip_d, below)
++wire [127:0] mem_wline, mem_rline;
++wire  [1:0] mem_size;
++wire  [2:0] mem_tm;
++wire [31:0] mem_addr, mem_wdata, mem_rdata;
++wire        bus_berr;
++wire        reset_out_c;
++wire [31:0] vbr_c, cacr_c;
++
++ap68040_minimig cpu_inst_p
+ (
+-  .clk(clk),
+-  .nreset(reset),
+-  .clkena_in(clkena_p_throttled),
+-  .data_in(cpu_din),
+-  .ipl(cpu_ipl),
+-  .ipl_autovector(1),
+-  .regin_out(),
+-  .addr_out(cpu_addr_p),
+-  .data_write(cpu_dout_p),
+-  .nwr(wr_p),
+-  .nuds(uds_p),
+-  .nlds(lds_p),
+-  .nresetout(reset_out_p),
+-  .longword(longword),
+-  .s21_en(s21_en),
+-  .long_cand(long_cand),
+-  .long_ack(long_ack),
+-  .data_in_hi(ramdout_hi_s),
+-  .data_write_lo(cpu_dout_lo_p),
+-  
+-  .cpu({cpucfg[1], cpucfg[1] | cpucfg[0]}),
+-  .cpu030(cpu030),
+-  .ec030(ec030),
+-  .opc_start(opc_start),
+-  .opc_out(opc_out),
+-  .opc_cond(opc_cond),
+-  .opc_snd(opc_snd),
+-  .opc_dbx(opc_dbx),
+-  .opc_cacr(cacr_x),
+-  .opc_cacr_wr(cacr_wr),
+-  .opc_caar(caar),
+-  .fc(fc_p),
+-  .mmu_busy(mmu_busy),
+-  .skipfetch(skipfetch),
+-  .busstate(cpustate_p),		// 0: fetch code, 1: no memaccess, 2: read data, 3: write data
+-  .cacr_out(cacr_p),
+-  .d_cache_out(),
+-  .vbr_out(vbr_p)
++	.clk               (clk_cpu),
++	.nreset            (reset),
++	.z2ram_ena         (z2ram_ena),
++	.z3ram_base0       (z3ram_base0),
++	.z3ram_ena0        (z3ram_ena0),
++	.z3ram_base1       (z3ram_base1),
++	.z3ram_ena1        (z3ram_ena1),
++	.mem_req           (mem_req),
++	.mem_write         (mem_write),
++	.mem_instr         (mem_instr),
++	.mem_size          (mem_size),
++	.mem_addr          (mem_addr),
++	.mem_wdata         (mem_wdata),
++	.mem_tm            (mem_tm),
++	.mem_ci            (mem_ci),
++	.mem_line          (mem_line),
++	.mem_wline         (mem_wline),
++	.mem_ack           (mem_ack),
++	.mem_rdata         (mem_rdata),
++	.mem_rline         (mem_rline),
++	.mem_berr          (bus_berr),
++	.chipcode          (chipcode),
++	.cw_tgl            (chipwr_tgl),
++	.cw_line           (chipwr_line),
++	.ar_on             (ar_on),          // (a cartridge: only the Action Replay has its control register at $A80000)
++	.ipl_n             (cpu_ipl),
++	.nmi_ack_toggle    (nmi_ack_toggle),
++	.nresetout         (reset_out_c),
++	.cacr_out          (cacr_c),
++	.vbr_out           (vbr_c),
++	.cache_maint_toggle(),
++	.debug_halted      (),
++	.debug_pc          ()
+ );
+ 
+-wire [15:0] cpu_dout_o;
+-wire [23:1] cpu_addr_o;
+-wire  [2:0] fc_o;
+-wire        wr_o;
+-wire        as_o;
+-wire        uds_o;
+-wire        lds_o;
+-wire        reset_out_o;
++ap040_bus16_adapter adapter
++(
++	.clk       (clk),
++	.nreset    (reset),
++	.clkena_in (clkena_p_throttled),
++	.mem_req   (mem_req),
++	.mem_berr  (bus_berr),
++	.mem_write (mem_write),
++	.mem_instr (mem_instr),
++	.mem_size  (mem_size),
++	.mem_addr  (mem_addr),
++	.mem_wdata (mem_wdata),
++	.mem_fc    (mem_tm),
++	.mem_ack   (mem_ack),
++	.mem_rdata (mem_rdata),
++	.mem_line  (mem_line),
++	.mem_wline (mem_wline),
++	.mem_rline (mem_rline),
++	.data_in   (cpu_din),
++	.addr_out  (cpu_addr_p),
++	.data_write(cpu_dout_p),
++	.nwr       (wr_p),
++	.nuds      (uds_p),
++	.nlds      (lds_p),
++	.busstate  (cpustate_p),
++	.longword  (longword),
++	.fc        (fc_p),
++	.long_cand (long_cand),
++	.data_write_lo(cpu_dout_lo_p),
++	.long_ack  (long_ack),
++	.data_in_hi(ramdout_hi_s),
++	.ram_port  (ramsel_i),
++	.line_cand (line_cand),
++	.line_ack  (line_ack),
++	.data_in_line(ramdout_line_s)
++);
+ 
+-fx68k cpu_inst_o
++// RSTO (the RESET instruction) into this clock
++reg reset_out_s = 1'b1;
++always @(posedge clk) reset_out_s <= reset_out_c;
++assign reset_out_p = reset_out_s;
++
++// a transfer nothing answers ends with a bus error (2^20 clocks, 37 ms:
++// chip RAM can wait thousands of clocks for a DMA slot)
++ap040_bus_timeout #(.COUNTER_BITS(20)) bus_timeout
+ (
+-	.clk(clk),
+-	.enPhi1(ph1),
+-	.enPhi2(ph2),
+-
+-	.extReset(~reset),
+-	.pwrUp(~reset),
+-	.oRESETn(reset_out_o),
+-	.HALTn(1),
+-
+-	.eRWn(wr_o),
+-	.ASn(as_o),
+-	.LDSn(lds_o),
+-	.UDSn(uds_o),
+-	.DTACKn(ramsel ? ~ramready : chip_dtack),
+-
+-	.FC0(fc_o[0]),
+-	.FC1(fc_o[1]),
+-	.FC2(fc_o[2]), 
+-
+-	.VPAn(~&fc_o),
+-	.BERRn(1),
+-	.BRn(1),
+-	.BGACKn(1),
+-	.IPL0n(chip_ipl[0]),
+-	.IPL1n(chip_ipl[1]),
+-	.IPL2n(chip_ipl[2]),
+-	.iEdb(cpu_din),
+-	.oEdb(cpu_dout_o),
+-	.eab(cpu_addr_o)
++	.clk      (clk),
++	.nreset   (reset & reset_out),
++	.req      (cpu_req),
++	.complete (chipready | ramready | fastchip_ready),
++	.berr     (bus_berr)
+ );
+ 
++// the 68000 (fx68k) is not built
++wire [15:0] cpu_dout_o  = 16'd0;
++wire [23:1] cpu_addr_o  = 23'd0;
++wire  [2:0] fc_o        = 3'd0;
++wire        wr_o        = 1'b1;
++wire        as_o        = 1'b1;
++wire        uds_o       = 1'b1;
++wire        lds_o       = 1'b1;
++wire        reset_out_o = 1'b1;
++
+ wire cpu_req = (cpustate != 1);
+ 
+ wire cchip = turbochip_d & !cpustate;
+ wire ckick = turbokick_d & !cpustate;
+ 
+ reg turbochip_d;
++// AP68040 variant: the fetches from chip RAM then come from the RAM port
++// (sel_chipram: not the overlay's, not the chip bus's), and the bridge lets
++// them into the CPU's instruction cache
++assign chipcode = turbochip_d;
+ reg turbokick_d;
+ reg ic_ena;
+ always @(posedge clk) begin
+@@ -376,28 +437,8 @@
+ (* keep *) wire clkena_p_rest;
+ wire skip_rd       = skipfetch & (cpustate_p == 2) & ~ramsel_i & ~fastchip_selack;
+ 
+-wire cyc_hold;
+-cpu_cycles cycles
+-(
+-	.clk(clk),
+-	.reset(reset),
+-	.ntsc(ntsc),
+-	.mode({cpu030 & |cpucfg[4:3], stock_speed | (cpu030 & cpucfg[4])}),
+-	.opc_start(opc_start),
+-	.opc(opc_out),
+-	.opc_cond(opc_cond),
+-	.opc_snd(opc_snd),
+-	.opc_dbx(opc_dbx),
+-	.cpu_ena(clkena_p_throttled & ~mmu_busy),
+-	.bus_ack(clkena_p_throttled & cpu_req & ~skip_rd),
+-	.bus_state(cpustate_p),
+-	.bus_addr(cpu_addr_m),
+-	.bus_long(longword),
+-	.bus_l1(clkena_p_throttled & long_ack),
+-	.cacr(cacr_x),
+-	.cacr_clr(ec020 ? cacr_wr & cacr_x[3] : cacr_p[3]),
+-	.hold(cyc_hold)
+-);
++// AP68040 variant: no cycle throttle (cpu_cycles follows the TG68K's opcodes)
++wire cyc_hold = 1'b0;
+ 
+ // the Action Replay hides at the first instruction fetched from outside it:
+ // a fetch the CPU takes (TG68K: busstate 0 acknowledged; the 68000: AS with
+@@ -420,7 +461,8 @@
+ wire req_gate = cyc_hold & ~inflight;
+ assign clkena_p_thr  = cpu_req ? ~req_gate : ~cyc_hold;
+ assign clkena_p_rest = (~cpu_req | chipready | fastchip_ready) & clkena_p_thr;
+-wire clkena_p_throttled = clkena_p_rest | (ramready & clkena_p_thr);
++// AP68040 variant: a bus error also ends the adapter's sub-cycle
++wire clkena_p_throttled = clkena_p_rest | (ramready & clkena_p_thr) | bus_berr;
+ 
+ // Game Bub port: the long word in one RAM transfer (ramready_l) also for the
+ // RTG board's memory (its bytes swapped as ramdin's and ramdout2's are) and
+@@ -431,6 +473,16 @@
+ assign ramdout_hi_s = sel_rtg ? {ramdout_hi[7:0], ramdout_hi[15:8]} : ramdout_hi;
+ assign long_ack  = ramlong1 & ramready_l;
+ 
++// AP68040 variant: the adapter's line read in one RAM transfer (each word's
++// bytes swapped in the RTG memory, as ramdout2's are)
++genvar lw_i;
++for (lw_i = 0; lw_i < 8; lw_i = lw_i + 1) begin : line_swap
++	assign ramdout_line_s[16*lw_i +: 16] = sel_rtg ? {ramdout_line[16*lw_i +: 8], ramdout_line[16*lw_i + 8 +: 8]}
++	                                               : ramdout_line[16*lw_i +: 16];
++end
++assign ramline   = line_cand & ramsel_i & wr & ~req_gate;
++assign line_ack  = ramline & ramready_line;
++
+ reg       chipreq;
+ reg [2:0] cpu_ipl;
+ always @(posedge clk) begin
+@@ -541,6 +593,19 @@
+ 		ic_clre <= 0;
+ 		ic_nq <= 0;
+ 	end
++	else if (bus_berr) begin
++		// AP68040 variant: the adapter drops the transfer on a bus error;
++		// the chip bus cycle goes too, so the exception's own transfers
++		// start from a clean bus (as in the MiSTer AP68040 port)
++		stage <= 0;
++		c_as <= 1;
++		c_rw <= 1;
++		c_uds <= 1;
++		c_lds <= 1;
++		c_long <= 0;
++		ready <= 0;
++		chipready <= 0;
++	end
+ 	else begin
+ 		if (ph2n) begin
+ 			waitm <= chip_dtack;
+diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
+--- a/rtl/minimig_gamebub.sv
++++ b/rtl/minimig_gamebub.sv
+@@ -142,7 +142,7 @@
+ // ===========================================================================
+ // Clocks
+ // ===========================================================================
+-wire clk_114, clk_sys, clk_sdram, locked;
++wire clk_114, clk_sys, clk_sdram, clk_cpu, locked;
+ 
+ gb_clocks #(.DISPLAY_DIVIDER(DISPLAY_DIVIDER)) clocks
+ (
+@@ -150,6 +150,7 @@
+ 	.clk_114      (clk_114),
+ 	.clk_sys      (clk_sys),
+ 	.clk_sdram    (clk_sdram),
++	.clk_cpu      (clk_cpu),
+ 	.clk_display  (clocks_clockOutDisplay),
+ 	.clk_spi      (clocks_clockOutSpi),
+ 	.locked       (locked)
+@@ -520,7 +521,12 @@
+ // 68000, 68010, 68EC020, 68020 and 68030 (with its MMU). The 68020 and
+ // 68030 address 32 bits: Zorro III RAM and the RTG board's memory are in
+ // the second SDRAM chip (see the SDRAM section).
+-wire  [4:0] cpucfg_m = cpucfg;
++// AP68040 variant: the CPU is the 68040 whatever the menu's CPU setting
++// says (the variant offers only it): the 68030's configuration (a 32-bit
++// CPU, cpu_wrapper's own cpucfg), so the RAM port's chip select drops
++// between the CPU's transfers (cpu_type below), which the bus adapter's
++// back-to-back RAM sub-cycles need
++wire  [4:0] cpucfg_m = 5'b00010;
+ 
+ wire cpu_type = cpucfg_m[1];
+ reg  cpu_ph1;
+@@ -557,9 +563,15 @@
+ wire [15:0] ram_dout;
+ wire        ram_ready;
+ wire        ram_long1;     // a long word in one RAM transfer (cpu_wrapper ramlong1)
++wire        cpu_nmi_ack;   // AP68040 variant: flips at every level-7 acknowledge, for the cartridge
++wire        chipwr_tgl;    // AP68040 variant: every write to chip RAM, from the SDRAM
++wire [20:4] chipwr_line;   // controller to the CPU's bridge (its instruction cache)
+ wire [15:0] ram_din_lo;
+ wire [15:0] ram_dout_hi;
+ wire        ram_ready_l;
++wire        ram_line;       // AP68040 variant: a line read on the RAM port
++wire [127:0] ram_dout_line;
++wire        ram_ready_line;
+ wire        ar_fetch;
+ wire        dcache_sw_en;
+ wire        toccata_ena, a2065_ena;
+@@ -605,6 +617,7 @@
+ 	.reset_out    (cpu_nrst_out    ),
+ 
+ 	.clk          (clk_sys         ),
++	.clk_cpu      (clk_cpu         ),
+ 	.ph1          (cpu_ph1         ),
+ 	.ph2          (cpu_ph2         ),
+ 
+@@ -631,7 +644,7 @@
+ 	.fastchip_ready  (fastchip_ready),
+ 	.fastchip_lw     (             ),
+ 
+-	.cpucfg       (cpucfg_m        ),
++	.cpucfg_osd   (cpucfg_m        ),
+ 	.ntsc         (ntsc            ),
+ 	.cachecfg     (cachecfg        ),
+ 	.fastramcfg   (memcfg[6:4]     ),   // 0-3 Zorro II RAM, 6: Zorro III 16 MB (8 MB Zorro II on a 24 bit CPU)
+@@ -649,6 +662,7 @@
+ 
+ 	.ar_on        (cart_on         ),   // a cartridge is fitted (its file, gb_boot): $A80000-$AFFFFF on the chip bus
+ 	.ar_fetch     (ar_fetch        ),
++	.nmi_ack_toggle(cpu_nmi_ack    ),
+ 
+ 	.ramsel       (ram_sel         ),
+ 	.ramaddr      (ram_addr        ),
+@@ -662,6 +676,11 @@
+ 	.ramdin_lo    (ram_din_lo      ),
+ 	.ramdout_hi   (ram_dout_hi     ),
+ 	.ramready_l   (ram_ready_l     ),
++	.ramline      (ram_line        ),
++	.ramdout_line (ram_dout_line   ),
++	.ramready_line(ram_ready_line  ),
++	.chipwr_tgl   (chipwr_tgl      ),
++	.chipwr_line  (chipwr_line     ),
+ 
+ 	.cpustate     (cpu_state       ),
+ 	.cacr         (cpu_cacr        ),
+@@ -706,7 +725,12 @@
+                              rtg_sel ? {3'b100, ram_addr[22:1]} :
+                                        {2'b00, zram_sel, ram_addr[22:1]};
+ 
+-gb_sdram_ctrl ram1
++// AP68040 variant: a CPU read of SDRAM chip 1 (the Zorro III RAM, the RTG
++// memory) takes the 16 bytes of the 68040's line in one slot, and the
++// CPU's writes queue (eight): a line's four long words are taken at once
++gb_sdram_ctrl
++#(.CPU_LINE16(1), .WQN(8))
++ram1
+ (
+ 	.sysclk       (clk_114         ),
+ 	.sdclk        (clk_sdram       ),
+@@ -743,9 +767,11 @@
+ 	.cpuWR_lo     (ram_din_lo      ),
+ 	.cpuRD_hi     (ram_dout_hi     ),
+ 	.ramready_l   (ram_ready_l     ),
+-	.cpuLine      (1'b0            ),   // (the AP68040 variant's line reads)
+-	.cpuRD_line   (                ),
+-	.ramready_line(                ),
++	.cpuLine      (ram_line        ),   // AP68040 variant: a line read, answered whole
++	.cpuRD_line   (ram_dout_line   ),
++	.ramready_line(ram_ready_line  ),
++	.chipwr_tgl   (chipwr_tgl      ),
++	.chipwr_line  (chipwr_line     ),
+ 
+ 	.chipWR       (ram_data        ),
+ 	.chipAddr     ({1'b0, ram_address}),
+@@ -845,7 +871,7 @@
+ 	.ovr          (                 ),
+ 	.cart_ar      (cart_ar          ),
+ 	.ar_fetch     (ar_fetch         ),
+-	.nmi_ack_toggle(1'b0            ),   // (the TG68K and the fx68k make the acknowledge cycle)
++	.nmi_ack_toggle(cpu_nmi_ack     ),   // AP68040 variant: its bridge answers the acknowledge
+ 
+ 	//sram pins
+ 	.ram_data     (ram_data         ),

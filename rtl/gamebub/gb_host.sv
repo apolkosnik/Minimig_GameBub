@@ -7,6 +7,8 @@
 //   0x0000_0010..20       debug, read only: floppy sectors read / written,
 //                         last floppy error, boot state, first word of the
 //                         Kickstart as received
+//   0x0000_0044           debug, read only: the cartridge image: bits 19:0
+//                         its size, bit 30 loaded, bit 31 the Action Replay
 //   0x0000_0024..3C       debug, read only: hard disk state, sectors read /
 //                         written, geometry and size of the two drives
 //   0x0000_0040           debug, read only: pixels of the last frame whose
@@ -27,6 +29,10 @@
 //                         up to 1 MB each -> SDRAM
 //   0x2000_0000           Kickstart ROM image (files.json id 4), up to
 //                         1 MB -> SDRAM staging area
+//   0x2010_0000           cartridge image (files.json id 7, optional), up to
+//                         512 KB -> SDRAM staging area: HRTmon ("HRT!" in
+//                         its bytes 4 to 7) or else the Action Replay (AR5,
+//                         DeMoN v2: ROM and RAM image); gb_boot uploads it
 //   0x3000_0000..3FFF     sector buffer of the hard disk server (gb_ide):
 //                         the firmware's FileRead / FileWrite of the hard
 //                         disk images (files.json ids 5, 6, on demand) go
@@ -62,6 +68,8 @@ module gb_host
 	parameter [24:1] KICK_STAGE = 24'hB80000,  // SDRAM word address of the ROM
 	parameter        NUM_SLOTS  = 4,
 	parameter [15:0] KICK_ID    = 16'd4,       // files.json id of the Kickstart
+	parameter [24:1] CART_STAGE = 24'hB00000,  // SDRAM word address of the cartridge image
+	parameter [15:0] CART_ID    = 16'd7,       // files.json id of the cartridge
 	parameter [24:0] EJECT_TIME = 25'd14000000 // ~0.5 s at 28 MHz
 )
 (
@@ -106,6 +114,9 @@ module gb_host
 	output reg  [4:0] cfg_floppy,
 	output reg  [1:0] cfg_audmix,
 	output reg [20:0] kick_size,
+	output reg        cart_loaded,    // a cartridge image is in its staging area
+	output reg        cart_ar,        // it is the Action Replay, not HRTmon
+	output reg [19:0] cart_size,      // bytes, 512 KB at most
 
 	// drives
 	output reg  [3:0] drv_present,
@@ -175,6 +186,7 @@ localparam [15:0] CMD_FILE_RD_END    = 16'h0303;
 localparam [2:0] STATUS_SETUP = 3'd2, STATUS_CORE_HALT = 3'd3, STATUS_CORE_RUN = 3'd4;
 
 localparam [20:0] MAX_IMAGE = 21'h100000;
+localparam [19:0] MAX_CART  = 20'h80000;
 
 // ------------------------------------------------------------- settings
 reg  [7:0] set_chipset;   // 0 OCS, 1 ECS, 2 AGA
@@ -298,11 +310,13 @@ reg [15:0] m_r0;
 wire        is_reg   = (mem_address[31:16] == 16'h0000);
 wire        is_disk  = (mem_address[31:28] == 4'h1) && (mem_address[27:22] == 6'd0) && (mem_address[21:20] < NUM_SLOTS);
 wire        is_kick  = (mem_address[31:20] == 12'h200);
+wire        is_cart  = (mem_address[31:19] == 13'h0402);     // 0x2010_0000..7FFFF
 wire        is_cmd   = (mem_address[31:4] == 28'hF000000);
 wire        is_ccmd  = (mem_address[31:5] == 27'h7800080);     // 0xF000_1000..1F
 wire        is_buf   = (mem_address[31:14] == 18'h0C000);      // 0x3000_0000..3FFF
 wire [24:1] disk_adr = SLOT_BASE + SLOT_WORDS * mem_address[21:20] + {5'd0, mem_address[19:1]};
 wire [24:1] kick_adr = KICK_STAGE + {5'd0, mem_address[19:1]};
+wire [24:1] cart_adr = CART_STAGE + {6'd0, mem_address[18:1]};
 
 function automatic [31:0] reg_read(input [15:0] a);
 	case (a)
@@ -321,6 +335,7 @@ function automatic [31:0] reg_read(input [15:0] a);
 		16'h0038: reg_read = ide_total0;
 		16'h003C: reg_read = ide_total1;
 		16'h0040: reg_read = {12'd0, video_fixed_pixels};
+		16'h0044: reg_read = {cart_ar, cart_loaded, 10'd0, cart_size};
 		16'h1000: reg_read = stat_stalls;
 		16'h1004: reg_read = stat_cycles;
 		16'h1030: reg_read = {hmouse_dy, hmouse_dx};
@@ -378,6 +393,9 @@ always @(posedge clk) begin
 		kick_dirty   <= 1'b0;
 		kick_size    <= 21'd0;
 		kick_first   <= 32'd0;
+		cart_loaded  <= 1'b0;
+		cart_ar      <= 1'b0;
+		cart_size    <= 20'd0;
 		div_busy     <= 1'b0;
 		set_chipset  <= 8'd0;
 		set_cpu      <= 8'd0;
@@ -450,9 +468,12 @@ always @(posedge clk) begin
 		// then is the one just completed, so a new one starts only after it.
 		M_IDLE:
 			if (mem_enable && !mem_done) begin
-				if (is_disk || is_kick) begin
+				if (is_disk || is_kick || is_cart) begin
 					if (mem_write && is_kick && mem_address[19:0] == 20'd0) kick_first <= mem_dataWrite;
-					m_base  <= is_disk ? disk_adr : kick_adr;
+					// the cartridge's kind: HRTmon has "HRT!" in its bytes 4 to 7
+					// (byte 4 in bits 7:0 of the host's word)
+					if (mem_write && is_cart && mem_address[18:0] == 19'd4) cart_ar <= (mem_dataWrite != 32'h21545248);
+					m_base  <= is_disk ? disk_adr : is_kick ? kick_adr : cart_adr;
 					m_wdata <= mem_dataWrite;
 					mstate  <= mem_write ? M_W0 : M_R0;
 				end
@@ -646,6 +667,9 @@ always @(posedge clk) begin
 						if (reg_p1[15:0] == KICK_ID) begin
 							kick_loaded <= 1'b0;
 						end
+						else if (reg_p1[15:0] == CART_ID) begin
+							cart_loaded <= 1'b0;
+						end
 						else if (reg_p1[15:0] < NUM_SLOTS) begin
 							// the drive is empty while its image arrives
 							slot_size[reg_p1[1:0]]   <= 21'd0;
@@ -657,6 +681,11 @@ always @(posedge clk) begin
 							kick_size   <= clamp_size(reg_p2);
 							kick_loaded <= (reg_p2 != 32'd0);
 							kick_dirty  <= 1'b1;
+						end
+						else if (reg_p1[15:0] == CART_ID) begin
+							// (an image shorter than its first two long words is none)
+							cart_size   <= (reg_p2 > {12'd0, MAX_CART}) ? MAX_CART : reg_p2[19:0];
+							cart_loaded <= (reg_p2 >= 32'd8);
 						end
 						else if (reg_p1[15:0] < NUM_SLOTS) begin
 							slot_size[reg_p1[1:0]] <= clamp_size(reg_p2);

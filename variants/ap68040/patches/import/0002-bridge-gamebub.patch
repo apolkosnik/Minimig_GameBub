@@ -1,0 +1,56 @@
+--- a/ap68040_minimig.sv
++++ b/ap68040_minimig.sv
+@@ -13,7 +13,9 @@
+ //  * TBI is held asserted: a line transfer runs as four long-word          //
+ //    transfers (MC68040UM 7.4.4), each a request here.                    //
+ //  * TCI (MC68040UM 4.3.2) is asserted for every transfer outside the     //
+-//    configured Zorro II/III fast RAM: only fast RAM enters the caches,  //
++//    configured Zorro II/III fast RAM and the Kickstart ROM ($F80000-     //
++//    $FFFFFF, $E00000-$E7FFFF; read only to the CPU, loaded before it     //
++//    starts, so never stale): only they enter the caches,                 //
+ //    whatever the MMU and the TTRs say (with translation off a 68040     //
+ //    caches everything).  Chip RAM changes under chipset DMA that nothing //
+ //    snoops, and old programs modify code there without flushing; device  //
+@@ -53,7 +55,7 @@
+ 	// the cacheable window: the configured Zorro II/III fast RAM (from the
+ 	// wrapper's autoconfig; changes only while the machine configures)
+ 	input  logic        z2ram_ena,
+-	input  logic  [4:0] z3ram_base0,    // 128 MB block
++	input  logic  [7:0] z3ram_base0,    // 16 MB block (Game Bub port)
+ 	input  logic        z3ram_ena0,
+ 	input  logic  [3:0] z3ram_base1,    // 256 MB block
+ 	input  logic        z3ram_ena1,
+@@ -107,9 +109,14 @@
+ 	.ipl_n(ipl_n), .avec_n(1'b0),
+ 	.br_n(), .bg_n(1'b0), .bb_n_i(1'b1), .bb_n_o(), .bb_oe(),
+ 	.rsto_n(rsto_n), .cdis_n(1'b1), .mdis_n(1'b1), .ipend_n(), .pst(),
+-	.dbg_pc(debug_pc), .dbg_retire(), .dbg_halted(debug_halted),
+-	.dbg_vbr(vbr_out), .dbg_cacr(cacr_out), .dbg_cmaint(cmaint)
++	.dbg_pc(debug_pc), .dbg_retire(), .dbg_halted(debug_halted)
+ );
++// Game Bub port: AP68040 main has no VBR / CACR / cache maintenance
++// outputs (the MiSTer copy's local additions): the NMI vector is taken at
++// VBR 0 and the controller has no cache of its own to keep in step
++assign vbr_out  = 32'd0;
++assign cacr_out = 32'd0;
++assign cmaint   = 1'b0;
+ 
+ assign nresetout = rsto_n;
+ 
+@@ -159,10 +166,13 @@
+ logic       cach;       // the transfer's address is in the cacheable window
+ 
+ // the configured fast RAM (as cpu_wrapper decodes it for the RAM port)
+-function automatic logic fastram(input logic [31:0] a, input logic z2, input logic [4:0] b0,
++// Game Bub port: the Zorro III board's base in 16 MB units; the Kickstart
++// ROM cacheable too
++function automatic logic fastram(input logic [31:0] a, input logic z2, input logic [7:0] b0,
+                                  input logic e0, input logic [3:0] b1, input logic e1);
+-	fastram = ((a[31:27] == b0) && e0) || ((a[31:28] == b1) && e1) ||
+-	          ((a[31:24] == 8'd0) && (a[23] ^ |a[22:21]) && z2);
++	fastram = ((a[31:24] == b0) && e0) || ((a[31:28] == b1) && e1) ||
++	          ((a[31:24] == 8'd0) && (a[23] ^ |a[22:21]) && z2) ||
++	          ((a[31:24] == 8'd0) && ((a[23:19] == 5'b11111) || (a[23:19] == 5'b11100)));
+ endfunction
+ 
+ wire ts   = !ts_n;

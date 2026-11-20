@@ -1,0 +1,280 @@
+--- a/ap68040_minimig.sv
++++ b/ap68040_minimig.sv
+@@ -10,8 +10,16 @@
+ // clock), so the request and the acknowledge cross as plain registered    //
+ // signals that the fitter times like any other path.                      //
+ //                                                                          //
+-//  * TBI is held asserted: a line transfer runs as four long-word          //
+-//    transfers (MC68040UM 7.4.4), each a request here.                    //
++//  * Game Bub port: a line transfer is a burst (TBI negated) and one     //
++//    request (mem_line, 16 bytes): a read's four beats are answered on    //
++//    four bus clocks running once the adapter has the line, from the long //
++//    word asked for on, wrapping in the line (7.4.2); a write's first     //
++//    three beats are acknowledged at once to collect the line, the last   //
++//    as the line goes to the adapter (posted, below).                    //
++//  * Game Bub port: writes to the fast RAM (and lines, which are only    //
++//    ever the fast RAM's) are posted: TA as the request goes, the next   //
++//    transfer waiting on the bus until the adapter is done.  A bus error //
++//    on a posted write is not reported (the fast RAM answers).           //
+ //  * TCI (MC68040UM 4.3.2) is asserted for every transfer outside the     //
+ //    configured Zorro II/III fast RAM and the Kickstart ROM ($F80000-     //
+ //    $FFFFFF, $E00000-$E7FFFF; read only to the CPU, loaded before it     //
+@@ -69,8 +77,11 @@ module ap68040_minimig
+ 	output logic [31:0] mem_wdata,      // right-aligned by size
+ 	output logic  [2:0] mem_tm,         // the transfer's TM2-TM0
+ 	output logic        mem_ci,         // cache inhibited (CIOUT)
++	output logic        mem_line,       // a line: 16 bytes (Game Bub port)
++	output logic [127:0] mem_wline,     // a line's write data, long word 0 in 127:96
+ 	input  logic        mem_ack,        // one system clock: mem_rdata valid
+ 	input  logic [31:0] mem_rdata,      // right-aligned by size
++	input  logic [127:0] mem_rline,     // a line's read data
+ 	input  logic        mem_berr,       // level: the bus watchdog
+ 
+ 	input  logic  [2:0] ipl_n,          // IPL2-IPL0, active low as the pins are
+@@ -105,7 +116,7 @@ ap68040 #(
+ 	.rw_n(rw_n), .siz(siz), .tt(tt), .tm(tm), .tln(), .upa(),
+ 	.ciout_n(ciout_n), .lock_n(), .locke_n(),
+ 	.ts_n(ts_n), .tip_n(), .ta_n(ta_n), .tea_n(tea_n),
+-	.tci_n(tci_n), .tbi_n(1'b0),
++	.tci_n(tci_n), .tbi_n(1'b1),
+ 	.ipl_n(ipl_n), .avec_n(1'b0),
+ 	.br_n(), .bg_n(1'b0), .bb_n_i(1'b1), .bb_n_o(), .bb_oe(),
+ 	.rsto_n(rsto_n), .cdis_n(1'b1), .mdis_n(1'b1), .ipend_n(), .pst(),
+@@ -155,12 +166,27 @@ function automatic logic [31:0] rlane(input logic [1:0] s, input logic [31:0] d)
+ 	endcase
+ endfunction
+ 
+-localparam logic [1:0] C_IDLE = 2'd0,   // waiting for TS
+-                       C_REQ  = 2'd1,   // the request is with the adapter
+-                       C_ACK  = 2'd2,   // TA or TEA driven this bus clock
+-                       C_BERR = 2'd3;   // the watchdog's berr being withdrawn
++localparam logic [2:0] C_IDLE = 3'd0,   // waiting for TS
++                       C_REQ  = 3'd1,   // the request is with the adapter
++                       C_ACK  = 3'd2,   // TA or TEA driven this bus clock
++                       C_BERR = 3'd3,   // the watchdog's berr being withdrawn
++                       C_LRD  = 3'd4,   // a line read's beats 1-3
++                       C_LWR  = 3'd5,   // a line write's beats 0-2 being collected
++                       C_PREQ = 3'd6;   // a posted write with the adapter
+ 
+-logic [1:0] st;
++logic [2:0] st;
++logic [1:0] lbeat;      // C_LRD: the beat driven next; C_LWR: the clock of the collection
++logic [1:0] la32;       // the line's first long word (A3:A2)
++
++// Game Bub port: the request is raised in the bus clock in which TS is on
++// the bus, from the bus itself (the core holds address and data until TA),
++// and from the latched copies after it: an adapter clock edge in that bus
++// clock takes the transfer one system clock sooner. (Not a line write: its
++// beats are collected first; not while berr is being withdrawn.)
++logic        req_q, write_q, instr_q, ci_q, line_q;
++logic  [1:0] size_q;
++logic [31:0] addr_q, wdata_q;
++logic  [2:0] tm_q;
+ logic       pend;       // a transfer arrived while berr was being withdrawn
+ logic       err_ack;    // the acknowledge being driven is TEA
+ logic       cach;       // the transfer's address is in the cacheable window
+@@ -177,6 +203,25 @@ endfunction
+ 
+ wire ts   = !ts_n;
+ wire iack = (tt == 2'd3);   // interrupt or breakpoint acknowledge
++wire line = (siz == 2'b11); // SIZ: a line transfer
++logic pts;              // a transfer started while a posted write was in flight
++wire  ts_e = ts || pts;  // (the core holds it on the bus until its TA)
++wire  post = !rw_n && !line && fastram(a_o, z2ram_ena, z3ram_base0, z3ram_ena0, z3ram_base1, z3ram_ena1);
++wire start_now = ts_e && !iack && (st == C_IDLE) && !mem_berr && !(line && !rw_n);
++
++assign mem_req   = req_q || start_now;
++assign mem_write = start_now ? !rw_n : write_q;
++assign mem_instr = start_now ? ((tm == 3'd2) || (tm == 3'd6)) : instr_q;
++assign mem_size  = start_now ? asz(siz) : size_q;
++assign mem_addr  = start_now ? a_o : addr_q;
++assign mem_wdata = start_now ? wlane(siz, a_o[1:0], d_o) : wdata_q;
++assign mem_tm    = start_now ? tm : tm_q;
++assign mem_ci    = start_now ? !ciout_n : ci_q;
++assign mem_line  = start_now ? line : line_q;
++
++function automatic logic [31:0] lword(input logic [127:0] l, input logic [1:0] i);
++	lword = l[127 - 32 * i -: 32];
++endfunction
+ 
+ always_ff @(posedge clk) begin
+ 	ta_n  <= 1'b1;
+@@ -186,29 +231,38 @@ always_ff @(posedge clk) begin
+ 		st             <= C_IDLE;
+ 		pend           <= 1'b0;
+ 		err_ack        <= 1'b0;
+-		mem_req        <= 1'b0;
+-		mem_write      <= 1'b0;
+-		mem_instr      <= 1'b0;
+-		mem_size       <= 2'd0;
+-		mem_addr       <= '0;
+-		mem_wdata      <= '0;
+-		mem_tm         <= '0;
+-		mem_ci         <= 1'b0;
++		req_q        <= 1'b0;
++		write_q      <= 1'b0;
++		instr_q      <= 1'b0;
++		size_q       <= 2'd0;
++		addr_q       <= '0;
++		wdata_q      <= '0;
++		tm_q         <= '0;
++		ci_q         <= 1'b0;
++		line_q       <= 1'b0;
++		mem_wline      <= '0;
++		lbeat          <= 2'd0;
++		la32           <= 2'd0;
+ 		cach           <= 1'b0;
++		pts            <= 1'b0;
+ 		d_i            <= '0;
+ 		nmi_ack_toggle <= 1'b0;
+ 	end
+ 	else begin
+ 		// every memory transfer is latched as it starts (TS lasts one bus
+ 		// clock); the core holds the address and data until TA
+-		if (ts && !iack) begin
+-			mem_write <= !rw_n;
+-			mem_instr <= (tm == 3'd2) || (tm == 3'd6);   // user, supervisor code
+-			mem_size  <= asz(siz);
+-			mem_addr  <= a_o;
+-			mem_wdata <= wlane(siz, a_o[1:0], d_o);
+-			mem_tm    <= tm;
+-			mem_ci    <= !ciout_n;
++		if (ts_e && !iack && st != C_PREQ) begin
++			write_q <= !rw_n;
++			instr_q <= (tm == 3'd2) || (tm == 3'd6);   // user, supervisor code
++			size_q  <= asz(siz);
++			addr_q  <= a_o;
++			wdata_q <= wlane(siz, a_o[1:0], d_o);
++			tm_q    <= tm;
++			ci_q    <= !ciout_n;
++			line_q  <= line;
++			la32      <= a_o[3:2];
++			// a line write's first beat (the rest as their TAs go)
++			mem_wline[127 - 32 * a_o[3:2] -: 32] <= d_o;
+ 			cach      <= fastram(a_o, z2ram_ena, z3ram_base0, z3ram_ena0, z3ram_base1, z3ram_ena1);
+ 		end
+ 		// an acknowledge cycle is answered at once, in any state
+@@ -220,46 +274,113 @@ always_ff @(posedge clk) begin
+ 
+ 		case (st)
+ 		C_IDLE: begin
+-			if (ts && !iack) begin
++			if (ts_e && !iack) begin
++				pts <= 1'b0;
+ 				if (mem_berr) begin
+ 					pend <= 1'b1;
+ 					st   <= C_BERR;
+ 				end
++				else if (post) begin
++					// a write to the fast RAM: TA now, the write behind it
++					ta_n  <= 1'b0;
++					req_q <= 1'b1;
++					st    <= C_PREQ;
++				end
++				else if (line && !rw_n) begin
++					// a line write: beat 0's TA now
++					ta_n  <= 1'b0;
++					lbeat <= 2'd1;
++					st    <= C_LWR;
++				end
+ 				else begin
+-					mem_req <= 1'b1;
++					req_q <= 1'b1;
+ 					st      <= C_REQ;
+ 				end
+ 			end
+ 		end
+ 
++		C_LWR: begin
++			// beats 1 and 2 acknowledged on the next clocks; each beat's data is
++			// on the bus from the clock after the core took the previous TA
++			lbeat <= lbeat + 2'd1;
++			if (lbeat == 2'd1) ta_n <= 1'b0;                        // beat 1
++			if (lbeat == 2'd2) begin
++				ta_n <= 1'b0;                                          // beat 2
++				mem_wline[127 - 32 * (la32 + 2'd1) -: 32] <= d_o;
++			end
++			if (lbeat == 2'd3) mem_wline[127 - 32 * (la32 + 2'd2) -: 32] <= d_o;
++			if (lbeat == 2'd0) begin
++				// beat 3's data: the line goes, posted (beat 3's TA now)
++				mem_wline[127 - 32 * (la32 + 2'd3) -: 32] <= d_o;
++				ta_n  <= 1'b0;
++				req_q <= 1'b1;
++				st    <= C_PREQ;
++			end
++		end
++
+ 		C_REQ: begin
+ 			if (mem_ack) begin
+-				mem_req <= 1'b0;
+-				d_i     <= rlane(mem_size, mem_rdata);
++				req_q <= 1'b0;
++				d_i     <= line_q ? lword(mem_rline, la32) : rlane(size_q, mem_rdata);
+ 				ta_n    <= 1'b0;
+ 				tci_n   <= cach;      // sampled with the first TA of a line
+ 				err_ack <= 1'b0;
+-				st      <= C_ACK;
++				lbeat   <= 2'd1;
++				st      <= (line_q && !write_q) ? C_LRD : C_ACK;
+ 			end
+ 			else if (mem_berr) begin
+-				mem_req <= 1'b0;
++				req_q <= 1'b0;
+ 				tea_n   <= 1'b0;
+ 				err_ack <= 1'b1;
+ 				st      <= C_ACK;
+ 			end
+ 		end
+ 
++		C_LRD: begin
++			// a line read's beats 1-3, a bus clock each
++			d_i   <= lword(mem_rline, la32 + lbeat);
++			ta_n  <= 1'b0;
++			lbeat <= lbeat + 2'd1;
++			if (lbeat == 2'd3) st <= C_ACK;
++		end
++
++		C_PREQ: begin
++			// the posted write with the adapter; a transfer starting now
++			// waits (on the bus) until it is done
++			if (ts && !iack) pts <= 1'b1;
++			if (mem_ack) begin
++				req_q <= 1'b0;
++				st    <= C_IDLE;
++			end
++			else if (mem_berr) begin
++				// lost: nothing waits for it. A transfer waiting on the bus
++				// (pts) starts from C_IDLE once berr is withdrawn
++				req_q <= 1'b0;
++				st    <= C_BERR;
++			end
++		end
++
+ 		C_ACK: st <= err_ack ? C_BERR : C_IDLE;
+ 
+ 		C_BERR: begin
+ 			// the watchdog clears berr once the adapter has dropped the
+ 			// request; a transfer that started meanwhile goes then
+ 			if (ts && !iack) pend <= 1'b1;
+-			if (!mem_berr) begin
++			if (!mem_berr && pts) st <= C_IDLE;   // (latched and started there)
++			else if (!mem_berr) begin
+ 				if (pend || (ts && !iack)) begin
+-					pend    <= 1'b0;
+-					mem_req <= 1'b1;
+-					st      <= C_REQ;
++					pend <= 1'b0;
++					// (a transfer starting on this clock is latched on it: its
++					// own SIZ and R/W, not yet line_q / write_q)
++					if (pend ? (line_q && write_q) : (line && !rw_n)) begin
++						ta_n  <= 1'b0;
++						lbeat <= 2'd1;
++						st    <= C_LWR;
++					end
++					else begin
++						req_q <= 1'b1;
++						st      <= C_REQ;
++					end
+ 				end
+ 				else st <= C_IDLE;
+ 			end

@@ -14,6 +14,7 @@ module tb_top
 (
 	input         clk_114,
 	input         clk_28,
+	input         clk_57,            // CLKOUT5: 2 x clk_28 (the AP68040 variant's CPU clock)
 	input         clk_av,            // HDMI pixel clock (the framework's clock_av)
 	input         mmcm_locked,
 	input         reset,
@@ -63,6 +64,23 @@ module tb_top
 	output [23:1] dbg_chip_addr,
 	output        dbg_chip_as,
 	output        dbg_chip_rw,
+	output        dbg_chip_long,     // a 32-bit CPU chip bus cycle (cpu_wrapper chip_long)
+	output        dbg_ram_long,      // the CPU takes a long word from / to its RAM in one transfer
+	output  [3:0] dbg_sd_state,      // gb_sdram_ctrl: the window's state
+	output  [2:0] dbg_sd_c0,         // and the slots' types (CPU_RD 2, CPU_WR 3)
+	output  [2:0] dbg_sd_c1,
+	output        dbg_sd_c0_l2,      // a CPU write slot with the long word's second word
+	output        dbg_sd_c1_l2,
+	output        dbg_line,          // the AP68040's bridge: a line request answered (else 0)
+	output        dbg_line_busy,     // and a line request outstanding
+	output        dbg_line_hi,       // its address above the 24-bit space (Zorro III, RTG)
+	output        dbg_req,           // the bridge's request to the adapter
+	output        dbg_ack,           // and its acknowledge
+	output        dbg_ram_wait,      // the RAM port selected, not ready
+	output [31:0] dbg_pc,            // where the CPU is: the AP68040's PC; the TG68K's last fetch address
+	output  [2:0] dbg_ipl,           // the interrupt level at the CPU (active low)
+	output [14:0] dbg_intreq,        // Paula INTREQ and INTENA
+	output [14:0] dbg_intena,
 	output [15:0] dbg_chip_dout,     // CPU write data
 	output        dbg_cpuhlt,
 	output        dbg_boot_busy,
@@ -322,6 +340,41 @@ assign dbg_pixel_color = dut.video.palette.c2;
 assign dbg_chip_addr = dut.chip_addr;
 assign dbg_chip_as   = dut.chip_as;
 assign dbg_chip_rw   = dut.chip_rw;
+assign dbg_chip_long = dut.chip_long;
+assign dbg_ram_long = dut.cpu_wrapper.long_ack & dut.cpu_wrapper.clkena_p_throttled;
+assign dbg_ram_wait = dut.ram_sel & ~dut.ram_ready;
+assign dbg_sd_state = dut.ram1.sdram_state;
+assign dbg_sd_c0    = dut.ram1.c0_type;
+assign dbg_sd_c1    = dut.ram1.c1_type;
+assign dbg_sd_c0_l2 = dut.ram1.c0_l2;
+assign dbg_sd_c1_l2 = dut.ram1.c1_l2;
+reg [31:0] fetch_q = 32'd0;
+always @(posedge dut.cpu_wrapper.clk)
+	if (dut.cpu_wrapper.clkena_p_throttled && dut.cpu_wrapper.cpu_req && dut.cpu_wrapper.cpustate == 2'd0)
+		fetch_q <= dut.cpu_wrapper.cpu_addr_m;
+assign dbg_ipl    = dut.cpu_wrapper.cpu_ipl;
+assign dbg_intreq = dut.minimig.PAULA1.pi1.intreq[14:0];
+assign dbg_intena = dut.minimig.PAULA1.pi1.intena[14:0];
+`ifdef AP68040
+// (the core's dbg_pc output is zero unless it is built with DEBUG: the PC of
+// the instruction last in its writeback stage)
+reg [31:0] pc040_q = 32'd0;
+always @(posedge dut.cpu_wrapper.cpu_inst_p.clk)
+	if (dut.cpu_wrapper.cpu_inst_p.core.be.wb_v) pc040_q <= dut.cpu_wrapper.cpu_inst_p.core.be.wb_u.pc;
+assign dbg_pc       = pc040_q;
+assign dbg_line     = dut.cpu_wrapper.mem_ack & dut.cpu_wrapper.mem_line;
+assign dbg_line_busy = dut.cpu_wrapper.mem_req & dut.cpu_wrapper.mem_line;
+assign dbg_line_hi  = |dut.cpu_wrapper.mem_addr[31:24];
+assign dbg_req      = dut.cpu_wrapper.mem_req;
+assign dbg_ack      = dut.cpu_wrapper.mem_ack;
+`else
+assign dbg_pc       = fetch_q;
+assign dbg_line_hi  = 1'b0;
+assign dbg_req      = 1'b0;
+assign dbg_ack      = 1'b0;
+assign dbg_line     = 1'b0;
+assign dbg_line_busy = 1'b0;
+`endif
 assign dbg_chip_dout = dut.chip_din;    // the CPU's write data (cpu_wrapper chip_din)
 assign dbg_cpuhlt    = dut.minimig.cpuhlt;
 assign dbg_boot_busy = dut.boot_busy;
@@ -339,6 +392,155 @@ assign dbg_ersy      = dut.minimig.AGNUS1.bc1.ersy;
 assign dbg_dmacon    = dut.minimig.AGNUS1.dmacon;
 assign dbg_cop_addr  = dut.minimig.AGNUS1.cp1.address_out;
 assign dbg_sd_bus    = {sd_cs, sd_ras, sd_cas, sd_we, sd_dqm, sd_ba, sd_a, sd_oe, sd_dout};
+
+`ifdef AP68040
+// +cputrace=<file> [+cputrace_n=<clocks>]: the inputs and the outputs of the
+// AP68040 behind its bridge (ap68040_minimig) as they are before every CPU
+// clock edge, for the netlist test (sim/gls/run_cpu_gls.sh): one line per
+// run of equal clocks, "<clocks> <inputs> <outputs>" (hexadecimal; the
+// signals in the order of sim/gls/cpu_tb.sv). The count of clocks starts
+// when the reset ends (default 2000000).
+integer      ct_f = 0;
+integer      ct_max = 2000000;
+integer      ct_n = 0, ct_run = 0;
+reg          ct_live = 1'b0;
+reg  [200:0] ct_i;
+reg  [301:0] ct_o;
+string       ct_name;
+wire [200:0] ct_in = {dut.cpu_wrapper.cpu_inst_p.ar_on,
+	dut.cpu_wrapper.cpu_inst_p.nreset, dut.cpu_wrapper.cpu_inst_p.chipcode,
+	dut.cpu_wrapper.cpu_inst_p.cw_tgl, dut.cpu_wrapper.cpu_inst_p.cw_line,
+	dut.cpu_wrapper.cpu_inst_p.z2ram_ena,
+	dut.cpu_wrapper.cpu_inst_p.z3ram_base0, dut.cpu_wrapper.cpu_inst_p.z3ram_ena0,
+	dut.cpu_wrapper.cpu_inst_p.z3ram_base1, dut.cpu_wrapper.cpu_inst_p.z3ram_ena1,
+	dut.cpu_wrapper.cpu_inst_p.mem_ack, dut.cpu_wrapper.cpu_inst_p.mem_rdata,
+	dut.cpu_wrapper.cpu_inst_p.mem_rline,
+	dut.cpu_wrapper.cpu_inst_p.mem_berr, dut.cpu_wrapper.cpu_inst_p.ipl_n};
+wire [301:0] ct_out = {dut.cpu_wrapper.cpu_inst_p.mem_req, dut.cpu_wrapper.cpu_inst_p.mem_write,
+	dut.cpu_wrapper.cpu_inst_p.mem_instr, dut.cpu_wrapper.cpu_inst_p.mem_size,
+	dut.cpu_wrapper.cpu_inst_p.mem_addr, dut.cpu_wrapper.cpu_inst_p.mem_wdata,
+	dut.cpu_wrapper.cpu_inst_p.mem_tm, dut.cpu_wrapper.cpu_inst_p.mem_ci,
+	dut.cpu_wrapper.cpu_inst_p.mem_line, dut.cpu_wrapper.cpu_inst_p.mem_wline,
+	dut.cpu_wrapper.cpu_inst_p.nmi_ack_toggle, dut.cpu_wrapper.cpu_inst_p.nresetout,
+	dut.cpu_wrapper.cpu_inst_p.cacr_out, dut.cpu_wrapper.cpu_inst_p.vbr_out,
+	dut.cpu_wrapper.cpu_inst_p.cache_maint_toggle, dut.cpu_wrapper.cpu_inst_p.debug_halted,
+	dut.cpu_wrapper.cpu_inst_p.debug_pc};
+initial if ($value$plusargs("cputrace=%s", ct_name)) begin
+	ct_f = $fopen(ct_name, "w");
+	if ($value$plusargs("cputrace_n=%d", ct_max)) begin end
+	ct_live = 1'b1;
+end
+always @(posedge dut.cpu_wrapper.cpu_inst_p.clk) if (ct_live) begin
+	if (ct_run != 0 && (ct_in != ct_i || ct_out != ct_o)) begin
+		$fwrite(ct_f, "%0d %h %h\n", ct_run, ct_i, ct_o);
+		ct_run <= 1;
+	end
+	else
+		ct_run <= ct_run + 1;
+	ct_i <= ct_in;
+	ct_o <= ct_out;
+	if (ct_in[199]) ct_n <= ct_n + 1;
+	if (ct_n == ct_max) begin
+		// the last line: this clock with the run it belongs to, or (the run
+		// before it written above) on its own
+		if (ct_run != 0 && (ct_in != ct_i || ct_out != ct_o))
+			$fwrite(ct_f, "1 %h %h\n", ct_in, ct_out);
+		else
+			$fwrite(ct_f, "%0d %h %h\n", ct_run + 1, ct_i, ct_o);
+		$fclose(ct_f);
+		ct_live <= 1'b0;
+	end
+end
+// (the run ended before that many clocks: the last run of equal clocks too)
+final if (ct_live) begin
+	$fwrite(ct_f, "%0d %h %h\n", ct_run, ct_i, ct_o);
+	$fclose(ct_f);
+end
+
+`endif
+
+// +busmon=<n>: the CPU's first <n> bus cycles after every reset, as
+// cpu_wrapper completes them (state 0 fetch, 2 read, 3 write): the data, what
+// answered (the RAM port or the chip bus), and whether the chip bus took it
+// as half of a 32-bit access (c32)
+integer bm_max = 0, bm_n = 0;
+initial if ($value$plusargs("busmon=%d", bm_max)) begin end
+always @(posedge dut.cpu_wrapper.clk) begin
+	if (!dut.cpu_wrapper.reset) bm_n <= 0;
+	else if (bm_n < bm_max && dut.cpu_wrapper.clkena_p_throttled && dut.cpu_wrapper.cpu_req) begin
+		bm_n <= bm_n + 1;
+		$display("busmon %0d: state %0d addr %08X %s%s%s din %04X hi %04X | ram %b (chip %b kick %b zram %b) dat_sel %0d ready: chip %b ram %b ram_l %b fastchip %b | long %b cand %b ack %b | chip32_en %b c32 %b ovl %b",
+		         bm_n, dut.cpu_wrapper.cpustate, dut.cpu_wrapper.cpu_addr_m,
+		         dut.cpu_wrapper.wr ? "R" : "W", dut.cpu_wrapper.uds_in ? "-" : "U", dut.cpu_wrapper.lds_in ? "-" : "L",
+		         dut.cpu_wrapper.cpu_din, dut.cpu_wrapper.ramdout_hi_s,
+		         dut.cpu_wrapper.ramsel_i, dut.cpu_wrapper.sel_chipram, dut.cpu_wrapper.sel_kickram, dut.cpu_wrapper.sel_zram,
+		         dut.cpu_wrapper.ramdat_sel, dut.cpu_wrapper.chipready, dut.cpu_wrapper.ramready, dut.cpu_wrapper.ramready_l,
+		         dut.cpu_wrapper.fastchip_ready, dut.cpu_wrapper.longword, dut.cpu_wrapper.long_cand, dut.cpu_wrapper.long_ack,
+		         dut.cpu_wrapper.chip32_en, dut.cpu_wrapper.c32, dut.minimig.ovl);
+	end
+end
+
+longint   rm_t = 0;      // clk_28 cycles since the start (+rstmon, +smcmon)
+
+// +smcmon=<ms>: from then on, the CPU's writes to words it has fetched as
+// code since the core's start (chip RAM and the first 16 MB of a Zorro III
+// board at $40000000): the write, where the CPU was (its last fetch on the
+// bus) and how many fetches ago the word was fetched last. Consecutive
+// writes are printed as one range. (A variable right behind an RTS shows up
+// too: the CPU has fetched that word once.)
+integer    sm_from = -1;
+bit        sm_chip [0:1048575];
+bit        sm_z3   [0:8388607];
+integer    sm_when_chip [0:1048575];
+integer    sm_n = 0, sm_lines = 0, sm_run = 0;
+reg [31:0] sm_pc = 32'd0, sm_a0 = 32'd0, sm_a1 = 32'd0, sm_pc0 = 32'd0;
+integer    sm_age0 = 0;
+initial if ($value$plusargs("smcmon=%d", sm_from)) begin end
+wire [31:0] sm_a = dut.cpu_wrapper.cpu_addr_m;
+wire        sm_inchip = (sm_a[31:21] == 11'd0);
+wire        sm_inz3   = (sm_a[31:24] == 8'h40);
+always @(posedge dut.cpu_wrapper.clk) if (sm_from >= 0 && dut.cpu_wrapper.clkena_p_throttled && dut.cpu_wrapper.cpu_req) begin
+	if (dut.cpu_wrapper.cpustate == 2'd0) begin
+		sm_n  <= sm_n + 1;
+		sm_pc <= sm_a;
+		if (sm_inchip) begin sm_chip[sm_a[20:1]] = 1'b1; sm_when_chip[sm_a[20:1]] = sm_n; end
+		if (sm_inz3)   sm_z3[sm_a[23:1]] = 1'b1;
+	end
+	else if (dut.cpu_wrapper.cpustate == 2'd3 && rm_t >= sm_from * 28375 &&
+	         ((sm_inchip && sm_chip[sm_a[20:1]]) || (sm_inz3 && sm_z3[sm_a[23:1]]))) begin
+		if (sm_run != 0 && sm_a == sm_a1 + 32'd2) begin
+			sm_a1  <= sm_a;
+			sm_run <= sm_run + 1;
+		end
+		else begin
+			if (sm_run != 0 && sm_lines < 20000) begin
+				sm_lines <= sm_lines + 1;
+				$display("smcmon %0d us: %08X..%08X written (%0d words) from %08X, first fetched %0d fetches before", rm_t * 10 / 284,
+				         sm_a0, sm_a1, sm_run, sm_pc0, sm_age0);
+			end
+			sm_a0  <= sm_a;
+			sm_a1  <= sm_a;
+			sm_pc0 <= sm_pc;
+			sm_age0 <= sm_inchip ? sm_n - sm_when_chip[sm_a[20:1]] : -1;
+			sm_run <= 1;
+		end
+	end
+end
+
+// +rstmon: the reset sequence (the menu's Reset action: gb_host's boot
+// request, gb_boot's sequence, the resets it sends through userio)
+reg       rstmon = 1'b0;
+reg [7:0] rm_q = 8'd0;
+wire [7:0] rm_d = {dut.f_idle, dut.hdd_mount_busy, dut.boot_start, dut.boot_busy, dut.minimig.cpuhlt, dut.minimig.cpurst,
+                   dut.minimig.usrrst, dut.cpu_rst};
+initial if ($test$plusargs("rstmon")) rstmon = 1'b1;
+always @(posedge clk_28) begin
+	rm_q <= rm_d;
+	rm_t <= rm_t + 1;
+	if (rstmon && rm_d[6:0] != rm_q[6:0])   // (the floppy server's polls alone are not printed)
+		$display("rstmon %0d us: floppy idle %b, hdd mount busy %b, boot_start %b busy %b, cpuhlt %b cpurst %b usrrst %b, cpu_rst(n) %b",
+		         rm_t * 10 / 284, rm_d[7], rm_d[6], rm_d[5], rm_d[4], rm_d[3], rm_d[2], rm_d[1], rm_d[0]);
+end
 
 // custom register writes as Agnus takes them (copper location, COPJMP1,
 // DMACON), for +regmon

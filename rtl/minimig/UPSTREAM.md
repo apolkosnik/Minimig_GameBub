@@ -87,3 +87,7 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `0005-second-sdram-chip-z3-16mb-cache-drain.patch`
 - `0006-no-share-window.patch`
 - `0007-denise-display-window-out.patch`
+- `0008-long-ram-transfers-rtg-rom-byte-ram.patch`
+- `0009-no-32-bit-chip-read-under-the-overlay.patch`
+- `0010-cartridge-level-7-acknowledge-without-a-bus-cycle.patch`
+- `0011-no-kickstart-mirror-at-a80000-with-a-cartridge.patch`

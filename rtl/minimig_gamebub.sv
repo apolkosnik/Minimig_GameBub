@@ -21,6 +21,8 @@
 //   0x000000 - 0x3FFFFF   Amiga chip / slow RAM / Kickstart (as on MiSTer)
 //   0x400000 - 0x7FFFFF   Zorro II fast RAM (up to 8 MB; DDR3 on MiSTer)
 //   0x800000 - 0x9FFFFF   floppy image slots 0..3, 1 MB each
+//   0xB00000 - 0xB3FFFF   cartridge image (HRTmon or the Action Replay) as
+//                         loaded from the SD card
 //   0xB80000 - 0xBFFFFF   Kickstart image as loaded from the SD card
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -135,6 +137,7 @@ module minimig_gamebub
 localparam [24:1] SLOT_BASE  = 24'h800000;
 localparam [24:1] SLOT_WORDS = 24'h080000;
 localparam [24:1] KICK_STAGE = 24'hB80000;
+localparam [24:1] CART_STAGE = 24'hB00000;
 
 // ===========================================================================
 // Clocks
@@ -172,12 +175,15 @@ always @(posedge clk_114) rst114_sh <= {rst114_sh[0], reset_d};
 // Game Bub host interface
 // ===========================================================================
 wire        core_reset, focus;
-wire        boot_start, boot_reload, boot_busy, boot_done;
+wire        boot_start, boot_reload, boot_busy, boot_own, boot_done;
 wire  [5:0] cfg_chipset;
 wire  [7:0] cfg_cpu, cfg_memory;
 wire  [4:0] cfg_floppy;
 wire  [1:0] cfg_audmix;
 wire [20:0] kick_size;
+wire        cart_loaded, cart_is_ar;   // the cartridge image as staged (gb_host)
+wire [19:0] cart_size;
+wire        cart_on, cart_ar;          // the cartridge as fitted (gb_boot): any, the Action Replay
 wire  [3:0] drv_present, drv_writable;
 wire [11:0] drv_slot;
 wire [31:0] drv_tracks;
@@ -217,7 +223,8 @@ wire [15:0] h_wdata;
 gb_host #(
 	.SLOT_BASE (SLOT_BASE),
 	.SLOT_WORDS(SLOT_WORDS),
-	.KICK_STAGE(KICK_STAGE)
+	.KICK_STAGE(KICK_STAGE),
+	.CART_STAGE(CART_STAGE)
 ) host (
 	.clk              (clk_sys),
 	.reset            (reset_d),
@@ -250,6 +257,9 @@ gb_host #(
 	.cfg_floppy       (cfg_floppy),
 	.cfg_audmix       (cfg_audmix),
 	.kick_size        (kick_size),
+	.cart_loaded      (cart_loaded),
+	.cart_ar          (cart_is_ar),
+	.cart_size        (cart_size),
 	.drv_present      (drv_present),
 	.drv_writable     (drv_writable),
 	.drv_slot         (drv_slot),
@@ -316,9 +326,9 @@ gb_io_master io_master
 (
 	.clk       (clk_sys),
 	.reset     (reset_d),
-	.sel       (boot_busy ? b_sel   : f_sel),
-	.req       (boot_busy ? b_req   : f_req),
-	.wdata     (boot_busy ? b_wdata : f_wdata),
+	.sel       (boot_own ? b_sel   : f_sel),
+	.req       (boot_own ? b_req   : f_req),
+	.wdata     (boot_own ? b_wdata : f_wdata),
 	.ack       (m_ack),
 	.rdata     (m_rdata),
 	.ready     (m_ready),
@@ -333,13 +343,14 @@ gb_io_master io_master
 wire        b_mreq, b_mack;
 wire [24:1] b_maddr;
 
-gb_boot #(.KICK_STAGE(KICK_STAGE)) boot
+gb_boot #(.KICK_STAGE(KICK_STAGE), .CART_STAGE(CART_STAGE)) boot
 (
 	.clk         (clk_sys),
 	.reset       (reset_d | core_reset),
 	.start       (boot_start),
 	.reload_kick (boot_reload),
 	.busy        (boot_busy),
+	.own         (boot_own),
 	.done        (boot_done),
 	.halt        (~focus),
 	.cfg_chipset (cfg_chipset),
@@ -352,11 +363,16 @@ gb_boot #(.KICK_STAGE(KICK_STAGE)) boot
 	// chip bus (bit 5), the fast one of the 68020 path is not built
 	.cfg_hdd     ((hdd_present != 2'b00) ? {3'b100, hdd_present, 1'b1} : 6'd0),
 	.hdd_ready   (~hdd_mount_busy),
+	.cart_loaded (cart_loaded),
+	.cart_is_ar  (cart_is_ar),
+	.cart_size   (cart_size),
+	.cart_on     (cart_on),
+	.cart_ar     (cart_ar),
 	.bus_free    (f_idle),
 	.io_sel      (b_sel),
 	.io_req      (b_req),
 	.io_wdata    (b_wdata),
-	.io_ack      (m_ack & boot_busy),
+	.io_ack      (m_ack & boot_own),
 	.mem_req     (b_mreq),
 	.mem_addr    (b_maddr),
 	.mem_ack     (b_mack),
@@ -383,7 +399,7 @@ gb_floppy #(
 	.io_sel         (f_sel),
 	.io_req         (f_req),
 	.io_wdata       (f_wdata),
-	.io_ack         (m_ack & ~boot_busy),
+	.io_ack         (m_ack & ~boot_own),
 	.io_rdata       (m_rdata),
 	.mem_req        (f_mreq),
 	.mem_we         (f_mwe),
@@ -540,6 +556,10 @@ wire        ram_uds;
 wire [15:0] ram_din;
 wire [15:0] ram_dout;
 wire        ram_ready;
+wire        ram_long1;     // a long word in one RAM transfer (cpu_wrapper ramlong1)
+wire [15:0] ram_din_lo;
+wire [15:0] ram_dout_hi;
+wire        ram_ready_l;
 wire        ar_fetch;
 wire        dcache_sw_en;
 wire        toccata_ena, a2065_ena;
@@ -627,7 +647,7 @@ cpu_wrapper cpu_wrapper
 	.cdtv_din     (16'h0000        ),
 	.cdtv_selack  (1'b0            ),
 
-	.ar_on        (1'b0            ),
+	.ar_on        (cart_on         ),   // a cartridge is fitted (its file, gb_boot): $A80000-$AFFFFF on the chip bus
 	.ar_fetch     (ar_fetch        ),
 
 	.ramsel       (ram_sel         ),
@@ -638,10 +658,10 @@ cpu_wrapper cpu_wrapper
 	.ramdout2     (ram_dout        ),   // fast RAM is in the same SDRAM
 	.ramdin       (ram_din         ),
 	.ramready     (ram_ready       ),
-	.ramlong1     (                ),
-	.ramdin_lo    (                ),
-	.ramdout_hi   (16'h0000        ),
-	.ramready_l   (1'b0            ),
+	.ramlong1     (ram_long1       ),
+	.ramdin_lo    (ram_din_lo      ),
+	.ramdout_hi   (ram_dout_hi     ),
+	.ramready_l   (ram_ready_l     ),
 
 	.cpustate     (cpu_state       ),
 	.cacr         (cpu_cacr        ),
@@ -676,6 +696,11 @@ wire        _ram_oe;       // sram output enable
 // Zorro III board (ramaddr[27] set) at 16 MB.
 wire        z3_sel   = ram_addr[27] & ~ram_addr[28];
 wire        rtg_sel  = (ram_addr[28:23] == 6'b001110);
+// the RTG picture's burst port of the SDRAM controller (gb_rtg below)
+wire [24:4] burst_addr;
+wire        burst_req, burst_urgent, burst_ack, burst_valid;
+wire [15:0] burst_data;
+
 wire        zram_sel = |ram_addr[28:26];
 wire [25:1] cpu_sdram_addr = z3_sel  ? {2'b11, ram_addr[23:1]} :
                              rtg_sel ? {3'b100, ram_addr[22:1]} :
@@ -714,6 +739,13 @@ gb_sdram_ctrl ram1
 	.cpuCS        (ram_cs          ),
 	.cpuRD        (ram_dout        ),
 	.ramready     (ram_ready       ),
+	.cpuLong1     (ram_long1       ),
+	.cpuWR_lo     (ram_din_lo      ),
+	.cpuRD_hi     (ram_dout_hi     ),
+	.ramready_l   (ram_ready_l     ),
+	.cpuLine      (1'b0            ),   // (the AP68040 variant's line reads)
+	.cpuRD_line   (                ),
+	.ramready_line(                ),
 
 	.chipWR       (ram_data        ),
 	.chipAddr     ({1'b0, ram_address}),
@@ -747,10 +779,6 @@ gb_sdram_ctrl ram1
 // RTG: the board's registers and palette (fastchip, as on MiSTer) and its
 // picture from the second SDRAM chip on HDMI (gb_rtg)
 // ===========================================================================
-wire [24:4] burst_addr;
-wire        burst_req, burst_urgent, burst_ack, burst_valid;
-wire [15:0] burst_data;
-
 gb_rtg rtg
 (
 	.clk_sys     (clk_sys              ),
@@ -815,8 +843,9 @@ minimig minimig
 	._cpu_reset_in(cpu_nrst_out     ),
 	.nmi_addr     (cpu_nmi_addr     ),
 	.ovr          (                 ),
-	.cart_ar      (1'b0             ),
+	.cart_ar      (cart_ar          ),
 	.ar_fetch     (ar_fetch         ),
+	.nmi_ack_toggle(1'b0            ),   // (the TG68K and the fx68k make the acknowledge cycle)
 
 	//sram pins
 	.ram_data     (ram_data         ),

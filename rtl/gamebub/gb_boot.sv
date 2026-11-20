@@ -6,6 +6,7 @@
 //   (the hard disk images are looked at first: gb_ide, hdd_ready)
 //   CPU, CHIP, FLP, FLPEX01, FLPEX23           (pre-configuration)
 //   RST(HLT), HDD, MEM, CPU, CHIP, FLP, FLPEX   (CPU halted)
+//   [cartridge] its image upload (UploadActionReplay())
 //   [reload] RST(HLT|CPU), "discard residents", Kickstart upload
 //   RST(HLT|CPU|USR), RST(0 or HLT)
 //   VID, AUD, JOY, USRPORT
@@ -15,6 +16,17 @@
 // memory write command (UIO_MM2_WR) exactly as UploadKickstart() does,
 // including the mirrors for 8 KB, 256 KB, 512 KB and 1 MB images.
 //
+// The cartridge (a file of its own, optional; gb_host stages it and tells
+// its kind) is fitted while its image is there: MEM's bit 6, and its image
+// goes up in every sequence, as Main_MiSTer sends it with every
+// configuration:
+//   HRTmon                      to $A10000, then its configuration block
+//                               (22 bytes at +20, maxchip at +68)
+//   the Action Replay (AR5,     to $A80000: the ROM and the RAM's image, no
+//   DeMoN v2)                   configuration
+// Which of the two it is goes to the core (cart_ar) with MEM, the CPU
+// halted, before the image: the upload needs the cartridge's memory decoded.
+//
 // After the sequence, "halt" requests (pause while the Game Bub menu has
 // focus) are sent as RST(HLT) / RST(0).
 //
@@ -22,7 +34,8 @@
 
 module gb_boot
 #(
-	parameter [24:1] KICK_STAGE = 24'hB80000   // word address of the staged ROM
+	parameter [24:1] KICK_STAGE = 24'hB80000,  // word address of the staged ROM
+	parameter [24:1] CART_STAGE = 24'hB00000   // word address of the staged cartridge image
 )
 (
 	input             clk,
@@ -30,7 +43,8 @@ module gb_boot
 
 	input             start,        // run the sequence (pulse)
 	input             reload_kick,  // with start: upload the Kickstart
-	output            busy,         // owns the IO bus (sequence running)
+	output            busy,         // a sequence is wanted or running: no new floppy poll
+	output            own,          // has the IO bus (the floppy server had finished)
 	output reg        done,         // the sequence has run at least once
 
 	input             halt,         // keep the CPU halted (level)
@@ -44,6 +58,13 @@ module gb_boot
 	input      [20:0] kick_size,    // bytes
 	input       [5:0] cfg_hdd,      // IDE: bit 0 Gayle on, 1 master, 2 slave, 5 not the fast port
 	input             hdd_ready,    // cfg_hdd is valid (the images have been looked at)
+
+	// the cartridge (gb_host: as staged; taken when a sequence starts)
+	input             cart_loaded,  // an image is staged
+	input             cart_is_ar,   // it is the Action Replay, not HRTmon
+	input      [19:0] cart_size,    // bytes
+	output reg        cart_on,      // as sent to the Amiga: a cartridge is fitted ...
+	output reg        cart_ar,      // ... and it is the Action Replay
 
 	input             bus_free,     // the floppy server is idle and stopped
 
@@ -79,11 +100,14 @@ localparam [2:0] SPI_RST_USR = 3'd1, SPI_RST_CPU = 3'd2, SPI_CPU_HLT = 3'd4;
 localparam [1:0] SEL_UIO = 2'b01;
 
 // sequence steps: {kind, command, value}
-localparam K_CMD = 2'd0, K_RESIDENTS = 2'd1, K_KICK = 2'd2, K_END = 2'd3;
+localparam K_CMD = 3'd0, K_RESIDENTS = 3'd1, K_KICK = 3'd2, K_END = 3'd3, K_CART = 3'd4;
+localparam [4:0] STEP_MEM = 5'd7, STEP_RUN = 5'd18;
 
 reg  [4:0] step;
 reg        reload;
-reg  [1:0] k_kind;
+reg        c_on, c_ar;    // the cartridge of this sequence
+reg [19:0] c_size;        // (even)
+reg  [2:0] k_kind;
 reg  [7:0] k_cmd;
 reg [15:0] k_val;
 reg        k_skip;
@@ -102,35 +126,47 @@ always @* begin
 		5'd4:  begin k_cmd = UIO_MM2_FLPEX23; k_val = 16'h0000; end
 		5'd5:  begin k_cmd = UIO_MM2_RST;     k_val = SPI_CPU_HLT; end
 		5'd6:  begin k_cmd = UIO_MM2_HDD;     k_val = {10'd0, cfg_hdd}; end
-		5'd7:  begin k_cmd = UIO_MM2_MEM;     k_val = cfg_memory; end
+		STEP_MEM: begin k_cmd = UIO_MM2_MEM;  k_val = {8'd0, cfg_memory[7], c_on, cfg_memory[5:0]}; end
 		5'd8:  begin k_cmd = UIO_MM2_CPU;     k_val = cfg_cpu; end
 		5'd9:  begin k_cmd = UIO_MM2_CHIP;    k_val = cfg_chipset; end
 		5'd10: begin k_cmd = UIO_MM2_FLP;     k_val = cfg_floppy; end
 		5'd11: begin k_cmd = UIO_MM2_FLPEX01; k_val = 16'h0000; end
 		5'd12: begin k_cmd = UIO_MM2_FLPEX23; k_val = 16'h0000; end
-		5'd13: begin k_cmd = UIO_MM2_RST;     k_val = SPI_RST_CPU | SPI_CPU_HLT; k_skip = !reload; end
-		5'd14: begin k_kind = K_RESIDENTS; k_skip = !reload; end
-		5'd15: begin k_kind = K_KICK;      k_skip = !reload; end
-		5'd16: begin k_cmd = UIO_MM2_RST;     k_val = SPI_RST_USR | SPI_RST_CPU | SPI_CPU_HLT; end
-		5'd17: begin k_cmd = UIO_MM2_RST;     k_val = halt ? SPI_CPU_HLT : 3'd0; end
-		5'd18: begin k_cmd = UIO_MM2_VID;     k_val = 16'h0000; end
-		5'd19: begin k_cmd = UIO_MM2_AUD;     k_val = cfg_audmix; end
-		5'd20: begin k_cmd = UIO_MM2_JOY;     k_val = 16'h0000; end
-		5'd21: begin k_cmd = UIO_MM2_USRPORT; k_val = 16'h0000; end
+		5'd13: begin k_kind = K_CART;      k_skip = !c_on; end
+		5'd14: begin k_cmd = UIO_MM2_RST;     k_val = SPI_RST_CPU | SPI_CPU_HLT; k_skip = !reload; end
+		5'd15: begin k_kind = K_RESIDENTS; k_skip = !reload; end
+		5'd16: begin k_kind = K_KICK;      k_skip = !reload; end
+		5'd17: begin k_cmd = UIO_MM2_RST;     k_val = SPI_RST_USR | SPI_RST_CPU | SPI_CPU_HLT; end
+		STEP_RUN: begin k_cmd = UIO_MM2_RST;  k_val = halt ? SPI_CPU_HLT : 3'd0; end
+		5'd19: begin k_cmd = UIO_MM2_VID;     k_val = 16'h0000; end
+		5'd20: begin k_cmd = UIO_MM2_AUD;     k_val = cfg_audmix; end
+		5'd21: begin k_cmd = UIO_MM2_JOY;     k_val = 16'h0000; end
+		5'd22: begin k_cmd = UIO_MM2_USRPORT; k_val = 16'h0000; end
 		default: k_kind = K_END;
 	endcase
 end
 
 // Kickstart regions: {source byte offset, Amiga address, length in bytes}
-// as in UploadKickstart()
+// as in UploadKickstart(); the cartridge's as in UploadActionReplay(): its
+// image, and for HRTmon its configuration (bytes given here, not staged)
+reg        cart;          // the regions are the cartridge's
 reg  [1:0] region;
 reg  [2:0] nregions;
 reg [20:0] r_src;
 reg [23:0] r_dst;
 reg [20:0] r_len;
+reg        r_lit;
 always @* begin
-	r_src = 21'd0; r_dst = 24'hF80000; r_len = 21'h080000;
-	if (kick_size == 21'h002000) begin            // 8 KB A1000 boot ROM
+	r_src = 21'd0; r_dst = 24'hF80000; r_len = 21'h080000; r_lit = 1'b0;
+	if (cart) begin
+		if (c_ar) begin r_dst = 24'hA80000; r_len = {1'b0, c_size}; end
+		else case (region)
+			2'd0:    begin r_dst = 24'hA10000; r_len = {1'b0, c_size}; end
+			2'd1:    begin r_dst = 24'hA10014; r_len = 21'd22; r_lit = 1'b1; end
+			default: begin r_dst = 24'hA10044; r_len = 21'd4;  r_lit = 1'b1; end
+		endcase
+	end
+	else if (kick_size == 21'h002000) begin       // 8 KB A1000 boot ROM
 		case (region)
 			2'd0: begin r_src = 21'd0; r_dst = 24'hF80000; r_len = 21'h002000; end
 			default: begin r_src = 21'd0; r_dst = 24'hFC0000; r_len = 21'h000000; end  // tag clear, below
@@ -163,17 +199,56 @@ reg        lo_byte;
 reg        in_data;       // streaming ROM data
 reg        tagclear;
 
+// The floppy server finishes the poll it is in while the sequence waits in
+// S_WAITBUS: the bus (and its acknowledge) is taken only after that. Taken
+// with busy, a poll under way never got its acknowledge, the server never
+// became idle and the sequence waited for it for ever.
 assign busy = (state != S_IDLE);
+assign own  = (state != S_IDLE) && (state != S_WAITBUS);
 
 // region parameters are latched with the region header (region already
 // advanced in S_RD at the same edge, so this takes the current one)
 reg [20:0] r_src_q, r_len_q;
+reg        lit_q, blk_q;
 always @(posedge clk) begin
 	if (state == S_RD && region != nregions[1:0]) begin
 		r_src_q <= r_src;
 		r_len_q <= r_len;
+		lit_q   <= r_lit;
+		blk_q   <= region[1];
 	end
 end
+
+// HRTmon's configuration as UploadActionReplay() writes it: the block at
+// +20 (blk 0), byte i, and maxchip at +68 (blk 1)
+function automatic [7:0] hrt_cfg(input blk, input [4:0] i);
+	if (blk) hrt_cfg = (i[1:0] == 2'd1) ? {2'b00, {1'b0, cfg_memory[1:0]} + 3'd1, 3'b000} : 8'h00;  // (memory & 3) + 1 half megabytes
+	else case (i)
+		5'd0:  hrt_cfg = 8'h00;   // mon_size: $00800000
+		5'd1:  hrt_cfg = 8'h80;
+		5'd2:  hrt_cfg = 8'h00;
+		5'd3:  hrt_cfg = 8'h00;
+		5'd4:  hrt_cfg = 8'h00;   // col0h
+		5'd5:  hrt_cfg = 8'h5A;   // col0l
+		5'd6:  hrt_cfg = 8'h0F;   // col1h
+		5'd7:  hrt_cfg = 8'hFF;   // col1l
+		5'd8:  hrt_cfg = 8'hFF;   // right
+		5'd9:  hrt_cfg = 8'h00;   // keyboard
+		5'd10: hrt_cfg = 8'hFF;   // key
+		5'd11: hrt_cfg = cfg_hdd[0] ? 8'hFF : 8'h00;       // ide
+		5'd12: hrt_cfg = 8'hFF;   // a1200
+		5'd13: hrt_cfg = cfg_chipset[4] ? 8'hFF : 8'h00;   // aga
+		5'd14: hrt_cfg = 8'hFF;   // insert
+		5'd15: hrt_cfg = 8'h0F;   // delay
+		5'd16: hrt_cfg = 8'hFF;   // lview
+		5'd17: hrt_cfg = 8'h00;   // cd32
+		5'd18: hrt_cfg = cfg_chipset[1] ? 8'h01 : 8'h00;   // screenmode: NTSC
+		5'd19: hrt_cfg = 8'hFF;   // novbr
+		5'd20: hrt_cfg = 8'h00;   // entered
+		5'd21: hrt_cfg = 8'h01;   // hexmode
+		default: hrt_cfg = 8'h00;
+	endcase
+endfunction
 
 
 always @(posedge clk) begin
@@ -184,6 +259,9 @@ always @(posedge clk) begin
 		mem_req  <= 1'b0;
 		done     <= 1'b0;
 		halt_now <= 1'b0;
+		cart     <= 1'b0;
+		cart_on  <= 1'b0;
+		cart_ar  <= 1'b0;
 	end
 	else case (state)
 	S_IDLE: begin
@@ -191,6 +269,10 @@ always @(posedge clk) begin
 			reload <= reload_kick;
 			step   <= 5'd0;
 			state  <= S_WAITBUS;
+			// the cartridge as it is staged now (an odd byte rounded up)
+			c_on   <= cart_loaded;
+			c_ar   <= cart_is_ar;
+			c_size <= {cart_size[19:1] + {18'd0, cart_size[0]}, 1'b0};
 		end
 		else if (done && halt != halt_now) begin
 			state  <= S_WAITBUS;
@@ -216,7 +298,6 @@ always @(posedge clk) begin
 	S_STEP: begin
 		if (k_kind == K_END) begin
 			done  <= 1'b1;
-			halt_now <= halt;
 			state <= S_IDLE;
 		end
 		else if (k_skip) step <= step + 5'd1;
@@ -232,6 +313,14 @@ always @(posedge clk) begin
 					nwords   <= 4'd2;
 					step     <= step + 5'd1;
 					state    <= S_SEND;
+					// the halt state this step sends (a change after it,
+					// before the end of the sequence, is sent from S_IDLE)
+					if (step == STEP_RUN) halt_now <= halt;
+					// the cartridge's kind with MEM (the CPU is halted)
+					if (step == STEP_MEM) begin
+						cart_on <= c_on;
+						cart_ar <= c_on & c_ar;
+					end
 				end
 				K_RESIDENTS: begin
 					// "discard from possible residents": address 0, 00000000 01010101
@@ -243,7 +332,16 @@ always @(posedge clk) begin
 					step     <= step + 5'd1;
 					state    <= S_SEND;
 				end
+				K_CART: begin
+					cart     <= 1'b1;
+					region   <= 2'd0;
+					tagclear <= 1'b0;
+					nregions <= c_ar ? 3'd1 : 3'd3;
+					state    <= S_RD;
+					io_sel   <= 2'b00;
+				end
 				default: begin // K_KICK
+					cart     <= 1'b0;
 					region   <= 2'd0;
 					tagclear <= 1'b0;
 					nregions <= (kick_size == 21'h002000) ? 3'd2 : 3'd2;
@@ -254,14 +352,14 @@ always @(posedge clk) begin
 		end
 	end
 
-	// ---------------------------------------------- Kickstart region setup
+	// ----------------------------- Kickstart or cartridge region setup
 	S_RD: begin
 		if (region == nregions[1:0]) begin
 			step  <= step + 5'd1;
 			state <= S_STEP;
 		end
 		else begin
-			tagclear  <= (kick_size == 21'h002000) && region == 2'd1;
+			tagclear  <= !cart && (kick_size == 21'h002000) && region == 2'd1;
 			words[0]  <= {8'h00, UIO_MM2_WR};
 			words[1]  <= {8'h00, r_dst[7:0]};
 			words[2]  <= {8'h00, r_dst[15:8]};
@@ -283,10 +381,10 @@ always @(posedge clk) begin
 	S_SEND: begin
 		if (!in_data) begin
 			if (wcnt == {1'b0, nwords}) begin
-				// header sent: ROM data follows for Kickstart regions
+				// header sent: the region's data follows
 				if (next_after == S_RD) begin
 					in_data <= 1'b1;
-					state   <= tagclear ? S_SEND : S_RD_W;
+					state   <= (tagclear || lit_q) ? S_SEND : S_RD_W;
 				end
 				else state <= S_END;
 			end
@@ -307,6 +405,11 @@ always @(posedge clk) begin
 				end
 			end
 			else if (boff == r_len_q) state <= S_END;
+			else if (lit_q) begin
+				io_wdata <= {8'h00, hrt_cfg(blk_q, boff[4:0])};
+				io_req   <= 1'b1;
+				state    <= S_ACK;
+			end
 			else if (!lo_byte) begin
 				io_wdata <= {8'h00, rword[15:8]};
 				io_req   <= 1'b1;
@@ -331,7 +434,7 @@ always @(posedge clk) begin
 				boff    <= boff + 21'd1;
 				lo_byte <= ~lo_byte;
 				// after the low byte the next ROM word is needed
-				state   <= (lo_byte && !tagclear) ? S_RD_W : S_SEND;
+				state   <= (lo_byte && !tagclear && !lit_q) ? S_RD_W : S_SEND;
 			end
 		end
 
@@ -340,7 +443,7 @@ always @(posedge clk) begin
 		if (boff == r_len_q) state <= S_END;
 		else if (!mem_req) begin
 			mem_req  <= 1'b1;
-			mem_addr <= KICK_STAGE + {4'd0, r_src_q[20:1]} + {4'd0, boff[20:1]};
+			mem_addr <= (cart ? CART_STAGE : KICK_STAGE) + {4'd0, r_src_q[20:1]} + {4'd0, boff[20:1]};
 		end
 		else if (mem_ack) begin
 			mem_req <= 1'b0;

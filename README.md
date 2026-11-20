@@ -9,7 +9,7 @@ The chipset (OCS, ECS, AGA), the CIAs, Paula's audio and floppy controller and b
 CPUs (fx68k for the 68000, TG68K for the 68010 and 68EC020) are the MiSTer core's own
 RTL, imported unchanged except for a few small patches (see *Upstream RTL*). What the
 MiSTer's ARM (Main_MiSTer) and its framework do around the core is done here by the
-FPGA itself: configuration, the Kickstart upload, the floppy drive (ADF images
+FPGA itself: configuration, the Kickstart and cartridge upload, the floppy drive (ADF images
 encoded to MFM and decoded back on writes) and the hard disks (the IDE drives of an
 A600 / A1200) are hardware state machines, and the Game Bub's MCU only loads and
 saves the files.
@@ -18,11 +18,14 @@ saves the files.
 
 1. Copy `releases/apolkosnik.Minimig/` to `/cores/apolkosnik.Minimig/` on the Game Bub's
    microSD card.
-2. Put a Kickstart ROM image in that directory as `kick.rom` (256 KB, 512 KB or 1 MB;
-   the 8 KB A1000 boot ROM works too). Kickstart is copyrighted and not included.
+2. Put a Kickstart ROM image on the card, its name ending in `.rom` or `.ROM` (256 KB,
+   512 KB or 1 MB; the 8 KB A1000 boot ROM works too): the core asks for it every time
+   it starts, after the disks (the firmware's file browser, at the last one chosen).
+   Kickstart is copyrighted and not included.
 3. Start the core and choose the images, all optional ("[No Selection]"): Disks 1 to 4
    are floppies (`.adf`, double density, up to 1 MB), Hard disk 1 and 2 are hard disk
-   images (`.hdf`, see *Hard disks*).
+   images (`.hdf`, see *Hard disks*), Cartridge is a freezer cartridge's ROM (HRTmon or
+   the Action Replay, see *Cartridge*).
 
 The default machine is an Amiga 500 (OCS, 68000, 512 KB chip + 512 KB slow RAM, PAL),
 which suits Kickstart 1.3 and most games. For Kickstart 3.x choose AGA, 68EC020 and
@@ -64,6 +67,13 @@ keyboard and a USB or Bluetooth mouse on the dock are the Amiga's:
 Both work only while the core has the focus; keys let go while the menu is open are
 released when the game goes on.
 
+The handheld firmware picks the cores it sends them to by their ID (`core.json`): this
+core's, `apolkosnik.Minimig`, and that ID with letters or digits after it, which is a
+build variant with the same registers (`apolkosnik.Minimig040`, see
+[variants/ap68040](variants/ap68040/README.md)). The fork's builds up to `f4b4556f`
+know only `apolkosnik.Minimig`: with those a variant gets no keyboard and no dock
+mouse.
+
 ### Settings
 
 | Setting | |
@@ -102,6 +112,28 @@ An image can be of any size up to 128 GB; it stays on the microSD card and the c
 reads and writes only the sectors the Amiga asks for (the framework's on-demand file
 commands), so what the Amiga writes is in the file straight away. The firmware flushes
 it a second after the last write and when the core is exited.
+
+### Cartridge
+
+The last file the core asks for is a freezer cartridge, as the MiSTer core has it: choose
+its ROM image (`.rom`) and the cartridge is fitted, choose "[No Selection]" and there is
+none. What kind it is the image says:
+
+* **HRTmon** (`HRTMON.ROM` of the MiSTer's or WinUAE's; it has `HRT!` in its bytes 4 to
+  7): at `$A10000`, with the configuration Main_MiSTer gives it (the chipset, PAL or
+  NTSC, the IDE port, the chip RAM's size);
+* anything else is taken for the **Action Replay** in the
+  [Action Replay V](https://github.com/apolkosnik/ActionReplay5) DeMoN v2 layout
+  (`AR5.ROM`, up to 512 KB): the ROM at `$A80000`, the RAM at `$AC0000`.
+
+**Help freezes** the Amiga and enters the cartridge: Insert or F12 on a USB keyboard on
+the dock, or a button of the handheld set to Help (*X / Y / Start / Select button key*
+in the settings). The key still reaches the Amiga as Help. The cartridge's image goes up
+again with every **Reset (apply)**, and when the core starts.
+
+On the 68040 variant the freeze works while the vector base register is 0, where
+AmigaOS leaves it (a program that moves it takes the cartridge's entry away until it is
+0 again).
 
 ### Saving
 
@@ -167,8 +199,8 @@ unselected ones quietly.
   submodule.
 * PAL runs at 50 Hz on the 60 Hz panel.
 * Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
-  (rev 4) with a floppy image; hard disks, the dock keyboard and mouse are tested in
-  simulation (see *Simulation*) and by the firmware's unit tests.
+  (rev 4) with a floppy image; hard disks, the dock keyboard and mouse and the cartridge
+  are tested in simulation (see *Simulation*) and by the firmware's unit tests.
 
 ## How it works
 
@@ -192,7 +224,7 @@ unselected ones quietly.
 |---|---|
 | PLL 114 / 28 MHz | MMCM: 113.54 MHz SDRAM, 28.385 MHz Amiga (PAL 28.375 MHz +0.04 %), 181.7 MHz SPI, display clock |
 | sdram_ctrl + ddram_ctrl (DDR3) | sdram_ctrl only, with a third "host" port; Zorro II fast RAM in the same SDRAM |
-| Main_MiSTer ApplyConfiguration(), UploadKickstart() | `gb_boot`: replays the same userio commands, uploads the ROM from SDRAM |
+| Main_MiSTer ApplyConfiguration(), UploadKickstart(), UploadActionReplay() | `gb_boot`: replays the same userio commands, uploads the ROM and the cartridge (with HRTmon's configuration) from SDRAM |
 | Main_MiSTer minimig_fdd.cpp | `gb_floppy`: the same track encoding, sync word handling, header and data checks in hardware |
 | Main_MiSTer ide.cpp | `gb_ide`: the same commands, geometry rules and virtual RDB in hardware, on the management port of the unchanged `ide.sv`; sectors through the framework's on-demand file commands |
 | hps_io / hps_ext | `gb_io_master`: drives the same IO_UIO / IO_FPGA / IO_STROBE bus |
@@ -207,6 +239,7 @@ SDRAM (32 MB, 16 bit words):
 | 0x000000 - 0x3FFFFF | Amiga chip RAM, slow RAM, Kickstart (as on MiSTer) |
 | 0x400000 - 0x7FFFFF | Zorro II fast RAM (up to 8 MB) |
 | 0x800000 - 0x9FFFFF | disk images 1 to 4, 1 MB each |
+| 0xB00000 - 0xB3FFFF | cartridge image as loaded from the microSD card |
 | 0xB80000 - 0xBFFFFF | Kickstart image as loaded from the microSD card |
 
 Host (MCU) memory map:
@@ -220,6 +253,7 @@ Host (MCU) memory map:
 | 0x0000_1040 - 107C | settings |
 | 0x1000_0000 + n * 1 MB | disk image n (files 0 to 3) |
 | 0x2000_0000 | Kickstart (file 4) |
+| 0x2010_0000 | cartridge (file 7), up to 512 KB |
 | 0x3000_0000 - 3FFF | sector buffer of the hard disks (files 5 and 6, on demand): 32 sectors |
 | 0xF000_1000 - 1014 | core -> host command: `FileGetSize`, `FileRead`, `FileWrite`, `FileFlush` and their parameters; the results are written back here |
 
@@ -257,6 +291,28 @@ are inlined, and the patches in `patches/minimig/` are applied:
   rest of the SDRAM's burst in `cpu_cache_new`.
 * `0006`: no `$DD4000-$DD5FFF` window. On MiSTer it is shared memory in DDR3 through
   which Main_MiSTer serves the SHARE: device; nothing serves it here.
+* `0007`: Denise's display window (`window_del`) out to the top level, for `gb_video`'s
+  centring of the 720 pixels.
+* `0008`: the 68030's long words in one RAM transfer (the TG68K's `long_cand` /
+  `ramready_l`, which MiSTer uses for its DDR3 fast RAM) also for the RTG memory (bytes
+  swapped) and the Kickstart ROM's fetches; `cpu_cache_new`'s 256 x 16 byte-write RAM
+  (its 64-bit lines, `LINE_TAKE`) as one block RAM. `gb_sdram_ctrl` takes the long word:
+  a write is one entry of its write buffer and both words go to the SDRAM in one slot; a
+  read is answered whole where the cache has the line. `cpu_cache_new` also gets the
+  ports of the AP68040 variant's cache (a line answered whole, the next line read
+  ahead), tied off: `gb_sdram_ctrl` has one cache instance for both builds (its
+  `CPU_LINE16` and `WQN` options are the variant's; the standard core builds them as
+  before).
+
+* `0009`: no 32-bit chip bus access while the Kickstart overlays chip RAM: the SDRAM has
+  no second word for the ROM there, and a CPU that reads its start address as one long
+  word (the 68040 of the AP68040 variant) took a stale low half after a reset.
+* `0010`: the cartridge takes the level 7 acknowledge also as an event
+  (`nmi_ack_toggle`), for a CPU whose bus bridge answers the acknowledge itself (the
+  AP68040 variant); tied off in the standard core.
+* `0011`: no Kickstart mirror at `$A80000` while a cartridge is fitted. The mirror
+  (upstream's, for the CD32) answered HRTmon's reads of its copy of the custom
+  registers at `$A9F000` too, and the ROM's words were ORed into them.
 
 `rtl/gamebub/compat/` holds portable replacements for the two Altera RAM primitives the
 MiSTer tree uses.
@@ -278,6 +334,10 @@ Vivado 2018.3 also builds the core: `tools/build_vivado2018.sh` runs the framewo
 flow, removes the two `xpm_fifo_async` parameters that the 2018.3 XPM library does not
 have, sets timing-driven implementation directives and fails if timing is not met.
 
+`tools/build_variant.sh ap68040` builds a second core, `apolkosnik.Minimig040`, with the
+[AP68040](https://github.com/apolkosnik/AP68040) (a 68040 with its MMU, caches and FPU)
+in place of the TG68K and the fx68k: see [variants/ap68040/README.md](variants/ap68040/README.md).
+
 ## Simulation
 
 `sim/build.sh` builds a Verilator simulation of the whole core (`minimig_gamebub` with
@@ -287,6 +347,9 @@ bench (`sim/tb/sim_main.cpp`) that plays the Game Bub around it:
 * the release firmware's load sequence (files in `files.json` order, settings,
   `SetupComplete`, `CoreRun`, focus) and its exit sequence (`CoreHalt`, then each
   writable file read back);
+* the menu over the running Amiga, where a test asks for it: `--focus` (the focus taken
+  as the menu opens, given back as it closes) and `--hwrite` (a setting, or the Reset
+  action, written meanwhile);
 * the firmware's worker loop serving core requests (the command words read, busy, the
   on-demand file commands with the data moved in pieces of 16 KB, results, done);
 * the framework's SPI receiver as it drives the HostV0 memory interface (enable held
@@ -308,11 +371,23 @@ needed; `sim/build.sh` first):
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
 | colour | `coltest.s` gives every line its own background colour (256 colours a frame): a still picture is exact in every pixel; twelve steps of 64 new colours, seven frames apart, are exact from their first frame (the palette has room); then 256 new colours every frame until the palette runs out, and no entry may change while a frame using it can still be shown |
 | ide_part, ide_rdb, ide_slave | `idetest.s` drives the IDE port like `scsi.device`: identify, read / write sectors and multiple by LBA and CHS, set multiple, 256 sector reads, device parameters, the end of the image, an unknown command. Every byte read, the task file and the image afterwards are checked against what Main_MiSTer's rules give; with a partition image (virtual RDB), an image with an RDB (4 heads, 17 sectors) and the slave drive |
+| sdram_ctrl | `sim/sdr`: `gb_sdram_ctrl` on its own with two SDRAM chip models, every port at once at random (chipset slots, CPU words, long words and lines, the host port, the RTG bursts), every word read checked against what was written, with and without the cache. In the AP68040 variant's tree also its code fetches from chip RAM under the chipset's writes: a line must never be answered as it was before a write that had ended |
+| vector | `vectest.s` with the AGA chipset, where the chip bus reads a long word of chip RAM in one 32-bit access: the CPU takes its start address from the ROM, at the core's start and after the menu's Reset, whatever long word it read from chip RAM last (the ROM overlaid at 0 after a reset gets no such access: the SDRAM has the second word only for chip RAM) |
+| smc | `smctest.s`: a routine in chip RAM run with the instruction cache on, changed (by the CPU: a word in each half of its 16-byte line, a byte, a long word; by the blitter; copied over) and run again seven instructions later: the new code every time. The cache in front of the SDRAM follows every write, and so does the AP68040's own instruction cache in the variant |
+| smcstress | `smcstress.s`: sixteen routines in chip RAM, eight of them in one set of the 68040's instruction cache; 3000 rounds of calling one at random or changing it first (a byte write and another routine's call; a byte write and a NOP; the blitter) |
+| cart_hrt, cart_ar (and `_c`, `_o`) | `carttest.s` with a cartridge image in the core's Cartridge file: `hrtstub.s` (as HRTmon: the signature, the entry, the configuration block) or `arstub.s` (the Action Replay's layout). The stub counts its entries and copies to chip RAM what it sees. Checked: the upload and HRTmon's configuration (AGA and OCS, PAL and NTSC, with and without a hard disk), the freeze by Help from a USB key and from a button, the level 7 vector given by the cartridge (none taken through the vector in RAM), the cartridge's RAM and its copy of the custom registers, HRTmon hidden until its first entry, and the Action Replay's freezes by the first word written to chip RAM, a read of CIA-A PRA and a write of CIA-B PRB, each with its cause, and its hiding after every entry. `_c`: the instruction cache on and the test in chip RAM; `_o`: the standard machine. `HRTMON=` and `AR5=` (the ROMs, not included) add `ks31_hrtmon` and `ks31_ar5`: Kickstart 3.1 frozen by Help into the real monitor, left with `x`, and frozen again |
+| menu_1..4 | the menu opens over a running `z3test.s`, its Reset action, the menu closes, at four moments of the floppy server's poll: the CPU is halted while the menu is open, reset once, runs again when the menu closes, and the ROM passes from its start once more (the boot sequencer waits for the floppy server's poll to end before it takes the IO bus they share) |
 | z3_030, z3_020 | `z3test.s`: the 68030 (PMOVE) or the 68020 (F-line), autoconfig of the Zorro III and RTG boards, patterns over the 16 MB board and the RTG memory in the second SDRAM chip, byte and word lanes |
+| ram_z3, ram_z2 | `ramtest.s` on the 68030, the Zorro III RAM (or the Zorro II RAM) and the RTG memory: longs, words and bytes written and read back in every combination, a mixed sequence of every size at every alignment (reads of what was just written carried into later writes, MOVEM blocks) compared with the same sequence in chip RAM. The bench counts the long words moved in one transfer and the SDRAM slots with both words of a long written. 16 KB written / read / copied in 14 / 18 / 22 raster lines in Zorro III RAM (19 / 22 / 32 with every long word as two transfers) |
 | mmu | `mmutest.s` on the 68030: the MMU with 1 KB pages (as AmigaOS 3.2's mmu.library) maps 120 pages scattered over chip RAM. Reads and writes in scattered orders, reads whose base register is in another page, U and M set in the descriptors, a write protected page faulting after a read (memory unchanged), a remap taking effect after PFLUSHA, code in translated pages and across a page end. Also times four pages of Zorro III RAM through the MMU: 68 raster lines against 67 with the MMU off (85 before upstream's four-entry micro-TLB) |
 | rtg | `rtgtest.s` on the 68030: the RTG board's ID at `$B80100` and in its autoconfigured window, the palette written as longs and read back, nine modes (8 bit palette 640 x 480, R5G6B5PC 320 x 240 from an unaligned base, B8G8R8 333 x 111 with odd base and stride, R8G8B8A8 640 x 480, 15 bit 1024 x 768 scaled down, 1100 x 300, 1280 x 720 one to one, 1920 x 1080 scaled down, 2100 x 150 cut at 2048). For each the bench (which plays the framework's HDMI side in `tb_top`) checks every pixel of a whole 1280 x 720 frame against the board's memory in the SDRAM model, and that no line was shown before it was fetched |
 | ks31_hdf, ks31_rdb | with `KICK31` and `HDF31`, `HDFRDB31` set (`sim/make_hdf.sh` makes both images from the files of an ADF, with amitools): Kickstart 3.1 booting from a partition image and from an image with an RDB |
 | ks13_nodisk, ks13_boot, ks31_aga | with `KICK13`, `KICK31`, `ADF13`, `ADF31` set: Kickstart 1.3 to the insert disk picture, Kickstart 1.3 booting a disk to the CLI, Kickstart 3.1 on AGA with the 68EC020 booting a disk |
+
+`sim/bench.sh` times the loops of `sim/asm/membench.s` (Zorro III RAM read, written and
+copied long by long, MOVE16 copies, computing loops, two loops run from chip RAM) on the
+tree's CPU, as passes per
+100 ms of the simulation; the AP68040 variant's README compares the two CPUs.
 
 `sim/hdmi720/run_hdmi720.sh` (branch `hdmi-720p`: 1280x720 HDMI from the dock, framework
 patch `0002-hdmi-720p.patch`, after the 3DO core's 720p test) runs the generated
@@ -332,6 +407,17 @@ then a still picture; every clock must match and the still frames must need no f
 colours. Run it after any change to `gb_palette`: v0.6 to v0.6.3 passed every Verilator
 test while Vivado had dropped the palette RAM's address choice, and on the FPGA no colour
 was found again (dithering and flicker in palette mode).
+
+`sim/gls/run_cpu_gls.sh` does the same for the AP68040 variant's CPU (see
+`variants/ap68040/README.md`): the netlist of the CPU replayed against traces of the RTL
+simulation, every output at every CPU clock. Vivado 2018.3 had made separate nets of
+signals used in generate blocks before their declaration, and the CPU failed on the FPGA
+when its instruction cache was switched on, with every simulation passing.
+`tools/decl_before_use.py --check <files>` lists such signals.
+
+`sim/gls/run_sdr_gls.sh [<tree>]` synthesizes `gb_sdram_ctrl` with the tree's CPU cache
+and runs the unit test of `sim/sdr` on the netlist (in the AP68040 variant's tree with its
+code cache for chip RAM and the chipset writing into the lines it holds).
 
 Results of the last run (Kickstart 1.3 rev 34.5, 3.1 rev 40.68 A1200, WhichAmiga 1.4):
 all fifteen pass. Kickstart 1.3 shows its insert disk picture, boots WhichAmiga's OFS disk
@@ -353,6 +439,20 @@ sim/obj_dir/Vtb_top --kick kick31.rom --hdf 0 disk.hdf --set 1044=2 --set 1048=2
 
 `--frames-dir` writes the frames as PPM files; see the head of `sim/tb/sim_main.cpp` for
 the other options.
+
+`+rstmon` prints the steps of a reset as they happen (the boot request, the sequencer
+taking the IO bus, the halt and resets sent through userio, the CPU's reset), and
+`+busmon=<n>` the CPU's first n bus cycles after every reset with what answered them.
+
+For a program that hangs or crawls: `--pc-prof <ms>` samples the CPU's PC every `clk_sys`
+period and prints, with every status line, the interrupt state and the 256-byte blocks
+the PC was in most (at the end the addresses, from the given time on); `--watch <addr>`
+adds a chip RAM word to the status lines; `--save-ram <ms>:<prefix>` writes both SDRAM
+chips to files at that time, to disassemble what is running; `+smcmon=<ms>` lists the
+CPU's writes to words it has fetched as code. `--check-pc <ms1>:<ms2>:<lo>:<hi>:<min>:<max>` is the same as a check: the share of the
+time the PC was at `lo`..`hi` between the two times must lie within the two percentages
+(the real cartridge tests: in the monitor after the freeze, in Kickstart again after it
+is left). `--cart <file>` loads a cartridge image as the core's Cartridge file.
 
 ## License
 
