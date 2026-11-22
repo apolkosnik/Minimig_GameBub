@@ -1,5 +1,5 @@
 ; 68030 MMU test ROM (256 KB at $FC0000) for the Game Bub Minimig bench.
-; Run with the 68030 and the "2M + 16M Z3 fast" memory preset. The TG68K's MMU translates with
+; Run with the 68030 and the "2M + 32M Z3 fast" memory preset. The TG68K's MMU translates with
 ; 1 KB pages (as AmigaOS 3.2's mmu.library sets it up): TC $80A87700, IS 8,
 ; TIA 7, TIB 7. Table A ($10000) maps every 128 KB one to one with early
 ; termination page descriptors, except $200000-$21FFFF (LOG): table B
@@ -34,7 +34,7 @@
 ;      in chip RAM (LOG pages 0..3); $10C 8192 rounds in Zorro III RAM
 ;      through the MMU (LOG2, $220000: table C ($10400) maps its pages to
 ;      Z3 + j * 1024; checked first: each page's first long), $10E the same
-;      with the MMU off. Needs the "2M + 16M Z3 fast" memory preset.
+;      with the MMU off. Needs the "2M + 32M Z3 fast" memory preset.
 ;
 ;   $100  step being run, $600D when everything is done
 ;   $102  the step that failed, 0 when none did ($8000 | step: an
@@ -137,6 +137,7 @@ start:
 .tc:	move.l	d0,(a1)+
 	add.l	#1024,d0
 	dbra	d6,.tc
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#(Z3>>16),$E80044	; autoconfig: the Zorro III board at Z3
 	lea	Z3,a0			; first long of pages 0..3: $7E00000j
 	move.l	#$7E000000,(a0)

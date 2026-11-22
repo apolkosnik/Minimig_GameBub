@@ -3,7 +3,7 @@
 ; reboot of the system (exec's ColdReboot) pushes the data cache and runs
 ; RESET at once; RESET resets the chipset and takes the Zorro boards'
 ; configuration away, and the last writes before it must be in the RAM all
-; the same. Run with the "2M + 16M Z3 fast" memory preset.
+; the same. Run with the "2M + 32M Z3 fast" memory preset.
 ;
 ; The ROM starts again after each RESET and goes on from the phase noted in
 ; chip RAM ($110 a mark, $114 the phase):
@@ -42,6 +42,7 @@ start:
 	moveq	#0,d0			; the caches off (RESET leaves them as
 	movec	d0,cacr			; they were) and empty
 	cinva	bc
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#$4000,$E80044		; Zorro III RAM board at $40000000
 	move.w	#$5000,$E80044		; RTG board
 	moveq	#0,d0

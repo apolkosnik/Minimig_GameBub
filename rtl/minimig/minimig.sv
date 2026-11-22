@@ -318,18 +318,16 @@ module minimig
 	output   [2:0] mister_floppy_status,
 	output   [8:0] drive_snd,
 
-	// A2065 register file + doorbell
-	// A2065 memory port — goes to ddram_ctrl alongside the fast RAM
-	input         a2065_clk_ddr,
-	output [28:0] a2065_mem_address,
-	output [7:0]  a2065_mem_burstcount,
-	output        a2065_mem_read,
-	input  [63:0] a2065_mem_readdata,
-	input         a2065_mem_readdatavalid,
-	output [63:0] a2065_mem_writedata,
-	output [7:0]  a2065_mem_byteenable,
-	output        a2065_mem_write,
-	input         a2065_mem_waitrequest
+	// Game Bub port: the A2065's place on the chip bus, for the board in
+	// rtl/gamebub (gb_a2065: the LANCE and its RAM in the FPGA)
+	output        a2065_sel,        // the board's 64 KB are addressed
+	output [23:1] a2065_addr,
+	output [15:0] a2065_wdata,
+	output        a2065_rw,         // 1: read
+	output        a2065_uds_n,
+	output        a2065_lds_n,
+	input  [15:0] a2065_rdata,      // 0 unless the board is read
+	input         a2065_irq         // level 2
 );
 
 
@@ -1042,24 +1040,40 @@ always @(posedge clk) begin
 	end
 end
 
-// Game Bub port: the Toccata sound card, the A2065 Ethernet card and the
-// CDTV bridge/NVRAM need the MiSTer HPS or DDR3 and are not built. Their
-// outputs are held inactive; cpu_wrapper does not autoconfigure the cards.
+// Game Bub port: the A2065 Ethernet card and the CDTV bridge/NVRAM need
+// the MiSTer HPS or DDR3 and are not built (the A2065 is the port's own,
+// rtl/gamebub). Their outputs are held inactive; cpu_wrapper does not
+// autoconfigure the CDTV.
 
-assign      toccata_out = 16'h0000;
-assign      int6_toccata = 1'b0;
-assign      toccata_aud_left  = 16'h0000;
-assign      toccata_aud_right = 16'h0000;
+// Toccata soundcard (the system clock is 28.37516 MHz)
 
-assign      a2065_dout = 16'h0000;
+toccata #(
+  .CLK_FREQUENCY(28_375_160)
+) toccata_board (
+	.clk(clk),
+	.rst(reset),
+	.hsync(_hsync),
+	.data_in(cpu_data_out),
+	.data_out(toccata_out),
+	.addr(cpu_address_out[15:1]),
+	.rd(cpu_rd),
+	.hwr(cpu_hwr),
+	.lwr(cpu_lwr),
+	.sel(sel_toccata),
+	.toc_int(int6_toccata),
+	.out_left(toccata_aud_left),
+	.out_right(toccata_aud_right)
+);
+
+assign      a2065_sel   = sel_a2065;
+assign      a2065_addr  = cpu_address_out[23:1];
+assign      a2065_wdata = cpu_data_out;
+assign      a2065_rw    = cpu_r_w;
+assign      a2065_uds_n = _cpu_uds;
+assign      a2065_lds_n = _cpu_lds;
+assign      a2065_dout = a2065_rdata;
 assign      a2065_nrdy = 1'b0;
-assign      a2065_int2_sync = 1'b0;
-assign      a2065_mem_address    = 29'd0;
-assign      a2065_mem_burstcount = 8'd0;
-assign      a2065_mem_read       = 1'b0;
-assign      a2065_mem_writedata  = 64'd0;
-assign      a2065_mem_byteenable = 8'd0;
-assign      a2065_mem_write      = 1'b0;
+assign      a2065_int2_sync = a2065_irq;
 
 assign cdtv_bridge_dout       = 16'h0000;
 assign cdtv_bridge_selack     = 1'b0;

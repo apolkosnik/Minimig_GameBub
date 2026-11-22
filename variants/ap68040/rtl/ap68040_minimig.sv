@@ -207,7 +207,7 @@ module ap68040_minimig
 	// the cacheable window: the configured Zorro II/III fast RAM (from the
 	// wrapper's autoconfig; changes only while the machine configures)
 	input  logic        z2ram_ena,
-	input  logic  [7:0] z3ram_base0,    // 16 MB block (Game Bub port)
+	input  logic  [7:0] z3ram_base0,    // 32 MB board, base in 16 MB units (Game Bub port)
 	input  logic        z3ram_ena0,
 	input  logic  [3:0] z3ram_base1,    // 256 MB block
 	input  logic        z3ram_ena1,
@@ -345,11 +345,11 @@ logic       err_ack;    // the acknowledge being driven is TEA
 logic       cach;       // the transfer's address is in the cacheable window
 
 // the configured fast RAM (as cpu_wrapper decodes it for the RAM port)
-// Game Bub port: the Zorro III board's base in 16 MB units; the Kickstart
-// ROM cacheable too
+// Game Bub port: the 32 MB Zorro III board's base in 16 MB units (bit 0 is
+// not compared); the Kickstart ROM cacheable too
 function automatic logic fastram(input logic [31:0] a, input logic z2, input logic [7:0] b0,
                                  input logic e0, input logic [3:0] b1, input logic e1);
-	fastram = ((a[31:24] == b0) && e0) || ((a[31:28] == b1) && e1) ||
+	fastram = ((a[31:25] == b0[7:1]) && e0) || ((a[31:28] == b1) && e1) ||
 	          ((a[31:24] == 8'd0) && (a[23] ^ |a[22:21]) && z2) ||
 	          ((a[31:24] == 8'd0) && ((a[23:19] == 5'b11111) || (a[23:19] == 5'b11100)));
 endfunction

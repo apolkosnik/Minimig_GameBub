@@ -15,7 +15,8 @@ module tb_top
 	input         clk_114,
 	input         clk_28,
 	input         clk_57,            // CLKOUT5: 2 x clk_28 (the AP68040 variant's CPU clock)
-	input         clk_av,            // HDMI pixel clock (the framework's clock_av)
+	input         clk_av,            // the pixel clock of the screen shown (the framework's clock_av)
+	input         hdmi,              // HDMI is shown, not the handheld's panel (steady)
 	input         mmcm_locked,
 	input         reset,
 
@@ -44,18 +45,30 @@ module tb_top
 	input  [47:0] sticks,
 
 	// VideoV0 / AudioV0
-	output  [2:0] video_r,
-	output  [2:0] video_g,
-	output  [2:0] video_b,
+	output [17:0] video_data,        // the pixel sent (gb_video): 6 + 6 + 6 bits
 	output        video_de,
 	output        video_hblank,
 	output        video_vblank,
 	output        video_fit,
-	output        video_pal_on,
-	output [23:0] dbg_pixel_color,   // the colour of the pixel sent (gb_palette), with video_de
-	output        video_pal_we,
-	output  [8:0] video_pal_index,
-	output [23:0] video_pal_color,
+	output [23:0] dbg_pixel_color,   // the chipset's colour of the pixel sent, with video_de
+
+	// the screen (sim/rtl/fw_video_sim.sv: the framework's side, every
+	// pixel shown compared with the frames written) and the SRAM
+	// (sim/rtl/sram_sim.sv: the pins' timing)
+	output [31:0] disp_errors,
+	output [63:0] disp_pixels,
+	output [31:0] disp_screens,
+	output [63:0] disp_old,
+	output [31:0] disp_frames,
+	output [31:0] disp_dropped,
+	output [31:0] sram_errors,
+	output [31:0] sram_writes,
+	output [31:0] sram_reads,
+	output [31:0] store_errors,      // pixels handed to the core's memory or found in it that are not as sent
+	output [31:0] dbg_hdd_ahead,     // hard disk sectors that came out of the buffer read ahead
+	output [15:0] fb_lines,
+	output [15:0] fb_late,
+	output        fb_overflow,
 	output [15:0] audio_left,
 	output [15:0] audio_right,
 
@@ -116,26 +129,110 @@ module tb_top
 	output [13:0] rtg_stride
 );
 
-// The framework's HDMI side (patches/framework 0003, HandheldTop): the
-// 1650 x 750 frame of 720p (cx, cy), videoX / videoY as the framework makes
-// them (from cx = 1280 on, the next line, x counting up to wrap at 2048),
-// and external.x / .y = RegNext(videoX + externalLatency), RegNext(videoY).
-// The colour of that pixel must come 12 clocks (externalLatency) later:
-// the coordinates are delayed by as much for the bench.
+// The framework's video side (sim/rtl/fw_video_sim.sv): the frames'
+// bookkeeping, the screen shown (the panel, or with `hdmi` the 1650 x 750
+// frame of 720p) and the external picture's inputs made from it, as
+// HandheldTop does with patches/framework. The colour of the pixel named
+// must come 12 clocks (externalLatency) later: for the RTG check the
+// coordinates are delayed by as much (HDMI).
 localparam EXT_LATENCY = 12;
-reg  [10:0] cx = 11'd0;
-reg   [9:0] cy = 10'd0;
-wire [10:0] video_x = (cx >= 11'd1280) ? cx + 11'd398 : cx;
-wire  [9:0] video_y = (cx >= 11'd1280) ? ((cy == 10'd749) ? 10'd0 : cy + 1'd1) : cy;
-reg  [10:0] ext_x = 11'd0;
-reg   [9:0] ext_y = 10'd0;
+wire        fw_frame, fw_drop;
+wire        ext_hdmi, ext_sync, ext_frame;
+wire [10:0] ext_x;
+wire  [9:0] ext_y;
+fw_video_sim fw
+(
+	.clk_sys        (clk_28),
+	.reset          (reset),
+	.hdmi           (hdmi),
+	.de             (video_de),
+	.hblank         (video_hblank),
+	.vblank         (video_vblank),
+	.data           (video_data),
+	.fit            (video_fit),
+	.wr_frame       (fw_frame),
+	.wr_drop        (fw_drop),
+	.clk_av         (clk_av),
+	.ext_hdmi       (ext_hdmi),
+	.ext_x          (ext_x),
+	.ext_y          (ext_y),
+	.ext_sync       (ext_sync),
+	.ext_frame      (ext_frame),
+	.ext_color      (rtg_color),
+	// once both frames have a picture; not the RTG board's picture
+	.check          (disp_frames >= 32'd3 && !(rtg_enable && hdmi)),
+	.errors         (disp_errors),
+	.pixels         (disp_pixels),
+	.screens        (disp_screens),
+	.frames_done    (disp_frames),
+	.frames_dropped (disp_dropped),
+	.old_pixels     (disp_old)
+);
+// The frames in the core's memory against the frames as the framework's
+// side has them: every pixel of a frame, a few lines after its last pixel
+// (the write queue empty by then).
+reg  [31:0] st_errors = 32'd0, ck_errors = 32'd0;
+assign store_errors = st_errors + ck_errors;
+reg         st_vb_d = 1'b1;
+reg   [9:0] st_wait = 10'd0;
+reg         st_idx = 1'b0;
+reg         st_kept = 1'b0;
+always @(posedge clk_28) begin
+	st_vb_d <= video_vblank;
+	if (video_vblank && !st_vb_d) begin
+		st_wait <= 10'd1000;
+		st_idx  <= fw.writeIndex;
+		st_kept <= !fw.dropReg && fw.frameStarted && (disp_frames >= 32'd2);
+	end
+	else if (st_wait != 10'd0) begin
+		st_wait <= st_wait - 1'd1;
+		if (st_wait == 10'd1 && st_kept && !reset) begin
+			int bad;
+			bad = 0;
+			// (the lines sent: 256 with fit, else 240)
+			for (int i = 0; i < 720 * (video_fit ? 256 : 240); i++) begin
+				int q;
+				reg [17:0] have;
+				q = (st_idx ? 720 * 256 : 0) + i;
+				if (q < 262144) have = {sram.mem[q], dut.fb.bx[q]};
+				else if (q < 262144 + 65536) have = dut.fb.bh0[q - 262144];
+				else if (q < 262144 + 98304) have = dut.fb.bh1[q - 262144 - 65536];
+				else have = dut.fb.bh2[q - 262144 - 98304];
+				if (have !== fw.mem[q]) begin
+					bad++;
+					if (st_errors < 8 && bad <= 4)
+						$display("[store] ERROR at %0t: frame %0d (the core's %0d), line %0d, pixel %0d: the memory has %05x, sent %05x",
+						         $time, st_idx, disp_frames, i / 720, i % 720, have, fw.mem[q]);
+				end
+			end
+			if (bad != 0) st_errors <= st_errors + bad;
+		end
+	end
+end
+
+// Every pixel as the core hands it to its memory against the framework's
+// side: the same place, the same value
+reg        ck_v = 1'b0;
+reg [18:0] ck_a;
+reg [17:0] ck_d;
+reg        ck_tgl = 1'b0;
+integer    ck_bad = 0;
+always @(posedge clk_28) begin
+	ck_v <= video_de && !fw_drop && !reset && fw.fx < 720 && fw.fy < 256;
+	ck_a <= fw.waddr;
+	ck_d <= video_data;
+	ck_tgl <= dut.fb.w_tgl;
+	if (ck_v && (dut.fb.w_tgl == ck_tgl || dut.fb.w_q != ck_a || dut.fb.w_d != ck_d)) ck_errors <= ck_errors + 1'd1;
+	if (ck_v && (dut.fb.w_tgl == ck_tgl || dut.fb.w_q != ck_a || dut.fb.w_d != ck_d) && ck_bad < 12) begin
+		ck_bad = ck_bad + 1;
+		$display("[store] ERROR pixel handed over wrongly at %0t: framework %05x = %05x, core %05x = %05x (handed %0d); line %0d pixel %0d, hblank %b vblank %b, core row %05x",
+		         $time, ck_a, ck_d, dut.fb.w_q, dut.fb.w_d, dut.fb.w_tgl != ck_tgl, fw.fy, fw.fx, video_hblank, video_vblank, dut.fb.w_row);
+	end
+end
+
 reg  [10:0] dly_x [0:EXT_LATENCY-1];
 reg   [9:0] dly_y [0:EXT_LATENCY-1];
 always @(posedge clk_av) begin
-	cx <= (cx == 11'd1649) ? 11'd0 : cx + 1'd1;
-	if (cx == 11'd1649) cy <= (cy == 10'd749) ? 10'd0 : cy + 1'd1;
-	ext_x <= video_x + EXT_LATENCY[10:0];
-	ext_y <= video_y;
 	dly_x[0] <= ext_x;
 	dly_y[0] <= ext_y;
 	for (int i = 1; i < EXT_LATENCY; i++) begin
@@ -162,6 +259,26 @@ wire        mdl_oe;
 wire [15:0] mdl1_dout;
 wire        mdl1_oe;
 
+wire        sram_ce, sram_we, sram_oe, sram_dir;
+wire  [1:0] sram_mask;
+wire [17:0] sram_a;
+wire [15:0] sram_q, sram_d;
+sram_sim sram
+(
+	.clk    (clk_114),
+	.ce_n   (sram_ce),
+	.we_n   (sram_we),
+	.oe_n   (sram_oe),
+	.mask_n (sram_mask),
+	.a      (sram_a),
+	.din    (sram_d),
+	.dir    (sram_dir),
+	.dout   (sram_q),
+	.errors (sram_errors),
+	.writes (sram_writes),
+	.reads  (sram_reads)
+);
+
 minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 (
 	.clock                   (clk_28),
@@ -171,23 +288,32 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.clocks_clockOutDisplay  (),
 	.clocks_clockOutSpi      (),
 	.clocks_locked           (),
-	.video_data_r            (video_r),
-	.video_data_g            (video_g),
-	.video_data_b            (video_b),
+	.video_data_r            (),
+	.video_data_g            (),
+	.video_data_b            (),
 	.video_dataEnable        (video_de),
 	.video_vblank            (video_vblank),
 	.video_hblank            (video_hblank),
 	.video_fit               (video_fit),
-	.video_palette_enable    (video_pal_on),
-	.video_palette_write     (video_pal_we),
-	.video_palette_index     (video_pal_index),
-	.video_palette_color     (video_pal_color),
 	.video_external_clock    (clk_av),
 	.video_external_active   (1'b1),
+	.video_external_hdmi     (ext_hdmi),
 	.video_external_x        (ext_x),
 	.video_external_y        (ext_y),
+	.video_external_sync     (ext_sync),
+	.video_external_frame    (ext_frame),
 	.video_external_color    (rtg_color),
-	.video_external_enable   (rtg_enable),
+	.video_external_enable   (),
+	.video_frames_write      (fw_frame),
+	.video_frames_drop       (fw_drop),
+	.sram_ceN                (sram_ce),
+	.sram_weN                (sram_we),
+	.sram_oeN                (sram_oe),
+	.sram_writeMaskN         (sram_mask),
+	.sram_address            (sram_a),
+	.sram_dataIn             (sram_q),
+	.sram_dataOut            (sram_d),
+	.sram_dataDir            (sram_dir),
 	.audio_left              (audio_left),
 	.audio_right             (audio_right),
 	.host_mem_enable         (host_mem_enable),
@@ -336,7 +462,13 @@ always @(posedge dut.clk_sys)
 `endif
 
 assign dbg_cpu_rst   = dut.cpu_rst;
-assign dbg_pixel_color = dut.video.palette.c2;
+assign dbg_pixel_color = dut.video.dbg_color;
+assign video_data    = dut.video_data;
+assign rtg_enable    = dut.rtg_on;
+assign fb_lines      = dut.fb_lines;
+assign dbg_hdd_ahead = dut.ide_server.dbg_ahead;
+assign fb_late       = dut.fb_late;
+assign fb_overflow   = dut.fb_overflow;
 assign dbg_chip_addr = dut.chip_addr;
 assign dbg_chip_as   = dut.chip_as;
 assign dbg_chip_rw   = dut.chip_rw;
@@ -558,5 +690,38 @@ always @(posedge clk_28) if (regmon && dut.clk7_en && dut.minimig.AGNUS1.cp1.sof
 	         {dut.minimig.AGNUS1.cp1.cop1lch, dut.minimig.AGNUS1.cp1.cop1lcl, 1'b0},
 	         {dut.minimig.AGNUS1.cp1.address_out, 1'b0}, dut.minimig.AGNUS1.cp1.copper_state,
 	         dut.minimig.AGNUS1.cp1.strobe1, dut.minimig.AGNUS1.cp1.dma_ack);
+
+// +toctrace: every access of the CPU to the Toccata sound card (the
+// address in the board, what was written or what the board gave), its
+// interrupt's edges and its select's, each with the system clock's count
+reg         toc_tr = 1'b0;
+reg         toc_p = 1'b0, toc_w = 1'b0, toc_i = 1'b0, toc_s = 1'b0;
+reg  [39:0] toc_n = 40'd0;
+reg  [15:0] toc_a, toc_d, toc_q;
+reg   [1:0] toc_be;
+initial toc_tr = $test$plusargs("toctrace") != 0;
+always @(posedge dut.clk_sys) if (toc_tr) begin : toc_trace
+	reg act;
+	toc_n <= toc_n + 40'd1;
+	toc_s <= dut.minimig.sel_toccata;
+	if (toc_s != dut.minimig.sel_toccata) $display("TOC %0d select %b", toc_n, dut.minimig.sel_toccata);
+	act = dut.minimig.sel_toccata & (dut.minimig.cpu_rd | dut.minimig.cpu_hwr | dut.minimig.cpu_lwr);
+	if (act) begin
+		toc_a  <= {dut.minimig.cpu_address_out[15:1], 1'b0};
+		toc_w  <= ~dut.minimig.cpu_rd;
+		toc_d  <= dut.minimig.cpu_data_out;
+		toc_be <= {dut.minimig.cpu_hwr, dut.minimig.cpu_lwr};
+		if (dut.minimig.toccata_out != 16'h0000) toc_q <= dut.minimig.toccata_out;
+	end
+	else toc_q <= dut.minimig.toccata_out;
+	if (toc_p && !act) begin
+		if (toc_w) $display("TOC %0d W %04X %04X hl%b", toc_n, toc_a, toc_d, toc_be);
+		else       $display("TOC %0d R %04X %04X", toc_n, toc_a, toc_q);
+	end
+	if (!toc_p && act) toc_q <= dut.minimig.toccata_out;
+	toc_p <= act;
+	toc_i <= dut.minimig.int6_toccata;
+	if (toc_i != dut.minimig.int6_toccata) $display("TOC %0d interrupt %b", toc_n, dut.minimig.int6_toccata);
+end
 
 endmodule

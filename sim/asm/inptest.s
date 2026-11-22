@@ -6,6 +6,10 @@
 ;   $106  POTGOR (right mouse button: bit 10 low when pressed)
 ;   $108  the last key: keycode | $80 when released (decoded from CIA-A SDR)
 ;   $10A  count of keyboard bytes received
+;   $10C  the mouse wheel's sum ($DFF1F0, as MiSTer's minimig has it)
+;   $110  the same read as a long word ($DFF1F0 and $DFF1F2), which is how
+;         MiSTer's WheelDriver reads it: the sum in the low byte of the
+;         high word, the low word zero
 ; The keyboard bytes are acknowledged (SP output low for ~100 us) as the
 ; Amiga's keyboard.device does.
 ; SPDX-License-Identifier: GPL-3.0-or-later
@@ -33,6 +37,8 @@ start:
 	move.b	$BFE001,d0
 	move.w	d0,$104
 	move.w	$16(a6),$106		; POTGOR
+	move.w	$1F0(a6),$10C		; the wheel
+	move.l	$1F0(a6),$110		; and as MiSTer's WheelDriver reads it: a long
 	move.b	$BFED01,d1		; CIA-A ICR (clears it)
 	btst	#3,d1			; SP: a keyboard byte
 	beq.s	.loop

@@ -22,3 +22,4 @@ Change `patches/import/*.patch` and re-run the import instead.
 - `0004-bridge-line-burst-posted.patch`
 - `0005-chip-ram-code-in-the-instruction-cache.patch`
 - `0006-cartridge-code-in-the-instruction-cache.patch`
+- `0007-zorro-iii-board-of-32-mb.patch`

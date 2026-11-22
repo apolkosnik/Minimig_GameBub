@@ -1,10 +1,13 @@
-// Game Bub Minimig: Paula output -> AudioV0.
+// Game Bub Minimig: Paula and Toccata output -> AudioV0.
 //
 // Paula's 15 bit signed mix is optionally passed through a first order low
 // pass at about 4.4 kHz, the fixed output filter of the Amiga 500
 // (y += (x - y) / 256 at the 7.09 MHz clock enable: fc = 7.09 MHz / (2 pi 256)),
 // then the channels are mixed into each other as MiSTer's audio_out does
 // (aud_mix_top): 0 none, 1 1/8, 2 1/4 of the other channel, 3 mono.
+// The Toccata sound card's two channels (16 bit signed, already at their
+// volume) are added to that as they are, the sum limited to 16 bits, as
+// MiSTer adds them.
 // The framework samples the output at 48 kHz.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -19,6 +22,8 @@ module gb_audio
 	input                    mute,
 	input             [14:0] ldata,
 	input             [14:0] rdata,
+	input      signed [15:0] toc_left,
+	input      signed [15:0] toc_right,
 	output reg signed [15:0] left,
 	output reg signed [15:0] right
 );
@@ -62,14 +67,26 @@ function automatic signed [15:0] mixed(input signed [15:0] own, input signed [15
 	end
 endfunction
 
+// the sum of two 16 bit channels, limited
+function automatic signed [15:0] added(input signed [15:0] a, input signed [15:0] b);
+	reg signed [16:0] s;
+	begin
+		s = {a[15], a} + {b[15], b};
+		added = (s > 17'sd32767) ? 16'sd32767 : (s < -17'sd32768) ? -16'sd32768 : s[15:0];
+	end
+endfunction
+
+reg signed [15:0] ml, mr;
 always @(posedge clk) begin
+	ml <= mixed(fl, fr, mix);
+	mr <= mixed(fr, fl, mix);
 	if (mute) begin
 		left  <= 16'sd0;
 		right <= 16'sd0;
 	end
 	else begin
-		left  <= mixed(fl, fr, mix);
-		right <= mixed(fr, fl, mix);
+		left  <= added(ml, toc_left);
+		right <= added(mr, toc_right);
 	end
 end
 

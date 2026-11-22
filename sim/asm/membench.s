@@ -1,5 +1,5 @@
 ; Speed benchmark ROM (256 KB at $FC0000) for the Game Bub Minimig bench: one
-; loop, its passes counted in chip RAM ($200, a word), run with the "2M + 16M
+; loop, its passes counted in chip RAM ($200, a word), run with the "2M + 32M
 ; Z3 fast" memory preset. sim/bench.sh runs the loops on the tree's CPU and
 ; prints passes per 100 ms of the simulation (the count at 600 ms less the
 ; count at 500 ms, well after the start).
@@ -44,6 +44,7 @@ start:
 	move.b	#2,$BFE001		; OVL off: chip RAM at 0
 	lea	$7FFF0,sp
 	clr.w	$200
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#$4000,$E80044		; Zorro III RAM board at $40000000
 	move.w	#$5000,$E80044		; RTG board at $50000000
 

@@ -42,7 +42,7 @@ A=$R/rtl/ap68040
 CPUSRC="$(ls $A/*.sv $A/*.v)"   # the core in one file, its packages first
 CPUDEF=-DAP68040                 # tb_top: the bridge's line requests counted
 fi
-SRC="$R/rtl/minimig_gamebub.sv $(ls $R/rtl/gamebub/*.sv $R/rtl/gamebub/compat/*.sv $R/rtl/minimig/*.sv) $CPUSRC"
+SRC="$R/rtl/minimig_gamebub.sv $(ls $R/rtl/gamebub/*.sv $R/rtl/gamebub/compat/*.sv $R/rtl/minimig/*.sv $R/rtl/minimig/fpga-toccata/*.sv) $CPUSRC"
 verilator --cc --exe --build --no-timing --no-assert-case -j ${JOBS:-16} -O3 --x-assign fast --x-initial fast \
 	-Wno-fatal -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-PINMISSING -Wno-TIMESCALEMOD -Wno-MULTIDRIVEN \
 	-Wno-UNOPTFLAT -Wno-BLKANDNBLK -Wno-LATCH -Wno-COMBDLY -Wno-IMPLICIT -Wno-PINCONNECTEMPTY \
@@ -50,5 +50,5 @@ verilator --cc --exe --build --no-timing --no-assert-case -j ${JOBS:-16} -O3 --x
 	--top-module tb_top -Mdir ${OBJ:-obj_dir} ${CPUDEF:-} \
 	-CFLAGS "-O2 -march=native" \
 	-I$R/rtl/minimig -I$R/rtl/minimig/fx68k \
-	rtl/xilinx_sim.sv rtl/sdram_sim.sv $SRC tb/tb_top.sv tb/sim_main.cpp "$@"
+	rtl/xilinx_sim.sv rtl/sdram_sim.sv rtl/sram_sim.sv rtl/fw_video_sim.sv $SRC tb/tb_top.sv tb/sim_main.cpp "$@"
 echo "built ${OBJ:-obj_dir}/Vtb_top"

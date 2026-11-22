@@ -1,0 +1,64 @@
+--- a/rtl/minimig/memory_router.sv
++++ b/rtl/minimig/memory_router.sv
+@@ -13,7 +13,7 @@
+ 	input         ar_on,
+ 
+ 	input         z2ram_ena,
+-	input   [7:0] z3ram_base0,   // Game Bub port: a 16 MB board
++	input   [7:0] z3ram_base0,   // Game Bub port: a 32 MB board (its base in 16 MB units)
+ 	input         z3ram_ena0,
+ 	input   [3:0] z3ram_base1,
+ 	input         z3ram_ena1,
+@@ -32,7 +32,7 @@
+ 	output [28:1] ramaddr
+ );
+ 
+-assign sel_z3ram0   = (cpu_addr[31:24] == z3ram_base0) && z3ram_ena0;
++assign sel_z3ram0   = (cpu_addr[31:25] == z3ram_base0[7:1]) && z3ram_ena0;
+ assign sel_z3ram1   = (cpu_addr[31:28] == z3ram_base1) && z3ram_ena1;
+ assign sel_z2ram    = !cpu_addr[31:24] && (cpu_addr[23] ^ |cpu_addr[22:21]) && z2ram_ena; // addr[23:21] = 1..4
+ assign sel_zram     = sel_z3ram0 | sel_z3ram1 | sel_z2ram;
+@@ -59,7 +59,8 @@
+ 
+ assign ramaddr[28]    = sel_z2ram | sel_z3ram1;
+ assign ramaddr[27]    = sel_z3ram0 | (sel_z3ram1 & cpu_addr[27]);
+-assign ramaddr[26:23] = (sel_z3ram0 | sel_z3ram1) ? cpu_addr[26:23] : (sel_rtg ? 4'b1110 : 4'b0000);
++// (Game Bub port: the 32 MB board's own 25 address bits)
++assign ramaddr[26:23] = sel_z3ram0 ? {2'b00, cpu_addr[24:23]} : sel_z3ram1 ? cpu_addr[26:23] : (sel_rtg ? 4'b1110 : 4'b0000);
+ assign ramaddr[22:19] = cpu_addr[22:19];
+ assign ramaddr[18]    = (sel_kicklower & bootrom) | cpu_addr[18];
+ assign ramaddr[17:16] = cpu_addr[17:16];
+--- a/rtl/minimig/cpu_wrapper.sv
++++ b/rtl/minimig/cpu_wrapper.sv
+@@ -91,7 +91,7 @@
+ 	output reg [31:0] nmi_addr,
+ 
+ 	output reg        z2ram_ena,
+-	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units
++	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units (a 32 MB board: bit 0 is not compared)
+ 	output reg        z3ram_ena0,
+ 	output reg  [3:0] z3ram_base1,
+ 	output reg        z3ram_ena1,
+@@ -776,9 +776,10 @@
+ 	else if(ac_memcard[2]) begin
+ 		case (chip_addr[6:1])
+ 			6'b000000: autocfg_data = 4'b1010;	// Zorro-III card, add mem, no ROM
+-			// Game Bub port: the 128 MB board is a 16 MB board (in the
+-			// second SDRAM chip), extended size code 000
+-			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0000 : 4'b0100; // 16MB or 256MB, extended
++			// Game Bub port: the 128 MB board is a 32 MB board (24 MB of
++			// the second SDRAM chip and 8 MB of the first), extended size
++			// code 001
++			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0001 : 4'b0100; // 32MB or 256MB, extended
+ 			6'b000010: autocfg_data = 4'b1110;	// ProductID=0x10 (only setting upper nibble)
+ 			6'b000100: autocfg_data = 4'b0000;	// Memory card, not silenceable, Extended size, reserved.
+ 			6'b000101: autocfg_data = 4'b1111;	// 0000 - logical size matches physical size TODO change this to 0001, so it is autosized by the OS, WHEN it will be 24MB.
+@@ -863,7 +864,7 @@
+ 					ac_memcard <= {ac_memcard[0], ac_memcard[0], 1'b0};
+ 				end
+ 				else begin
+-					z3ram_base0 <= cpu_dout[15:8]; //16MB chunk (Game Bub port)
++					z3ram_base0 <= cpu_dout[15:8]; //16MB units; the board is 32 MB (Game Bub port)
+ 					z3ram_ena0 <= 1;
+ 					ac_memcard <= 0;
+ 				end

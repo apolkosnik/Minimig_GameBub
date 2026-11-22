@@ -1,0 +1,85 @@
+--- a/rtl/minimig/cpu_wrapper.sv
++++ b/rtl/minimig/cpu_wrapper.sv
+@@ -688,6 +688,7 @@
+ ///////////////////// AUTOCONFIG ////////////////////////////
+ 
+ reg       ac_toccata;
++reg       toccata_cfg = 1'b0; // Game Bub port: the Toccata has its base
+ reg       ac_a2065;
+ reg       a2065_cfg = 1'b0;   // Game Bub port: the A2065 has its base
+ reg       ac_cdtv;
+@@ -827,10 +828,11 @@
+ 
+ 	if (~reset | ~reset_out) begin
+ 		ac_memcard  <= (cpucfg[1] & ~ec020) ? fastramcfg : fastramcfg[2] ? 3'd3 : {1'b0, fastramcfg[1:0]};
+-		// Game Bub port: Toccata and CDTV are not built, so they are not
+-		// offered in the autoconfig chain; the A2065 (rtl/gamebub) is while
+-		// a2065_on.
+-		ac_toccata  <= 1'b0;
++		// Game Bub port: the CDTV is not built, so it is not offered in the
++		// autoconfig chain; the Toccata is, as on MiSTer, and the A2065
++		// (rtl/gamebub) while a2065_on.
++		ac_toccata  <= 1'b1;
++		toccata_cfg <= 1'b0;
+ 		ac_a2065    <= a2065_on;
+ 		a2065_cfg   <= 1'b0;
+ 		ac_cdtv     <= 1'b0;
+@@ -863,6 +865,7 @@
+ 			if (chip_addr[6:1] == 6'b100100) begin // Register 0x48 - config, Toccata card in ZII io space ($E90000)
+ 				toccata_base <= cpu_dout[7:0];
+ 				ac_toccata<=0;
++				toccata_cfg <= 1'b1;
+ 			end
+ 		end
+ 		else if(ac_a2065) begin
+@@ -896,8 +899,8 @@
+ 	end
+ end
+ 
+-// Game Bub port: the cards are absent, so they are never enabled in gary
+-assign toccata_ena = 1'b0;
++// Game Bub port: a card is enabled in gary once it has its base
++assign toccata_ena = toccata_cfg;
+ assign a2065_ena   = a2065_cfg;
+ 
+ endmodule
+--- a/rtl/minimig/minimig.sv
++++ b/rtl/minimig/minimig.sv
+@@ -1040,14 +1040,30 @@
+ 	end
+ end
+ 
+-// Game Bub port: the Toccata sound card, the A2065 Ethernet card and the
+-// CDTV bridge/NVRAM need the MiSTer HPS or DDR3 and are not built. Their
+-// outputs are held inactive; cpu_wrapper does not autoconfigure the cards.
++// Game Bub port: the A2065 Ethernet card and the CDTV bridge/NVRAM need
++// the MiSTer HPS or DDR3 and are not built (the A2065 is the port's own,
++// rtl/gamebub). Their outputs are held inactive; cpu_wrapper does not
++// autoconfigure the CDTV.
+ 
+-assign      toccata_out = 16'h0000;
+-assign      int6_toccata = 1'b0;
+-assign      toccata_aud_left  = 16'h0000;
+-assign      toccata_aud_right = 16'h0000;
++// Toccata soundcard (the system clock is 28.37516 MHz)
++
++toccata #(
++  .CLK_FREQUENCY(28_375_160)
++) toccata_board (
++	.clk(clk),
++	.rst(reset),
++	.hsync(_hsync),
++	.data_in(cpu_data_out),
++	.data_out(toccata_out),
++	.addr(cpu_address_out[15:1]),
++	.rd(cpu_rd),
++	.hwr(cpu_hwr),
++	.lwr(cpu_lwr),
++	.sel(sel_toccata),
++	.toc_int(int6_toccata),
++	.out_left(toccata_aud_left),
++	.out_right(toccata_aud_right)
++);
+ 
+ assign      a2065_sel   = sel_a2065;
+ assign      a2065_addr  = cpu_address_out[23:1];

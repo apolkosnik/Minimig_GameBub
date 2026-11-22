@@ -52,6 +52,7 @@
 //   --fw-latency-us N    time the firmware takes to notice a core request
 //   --ide-test           check what sim/asm/idetest.rom read and wrote
 //   --expect-hdd-read N  at least N hard disk sectors read
+//   --expect-hdd-ahead N at least N of them out of the buffer read ahead
 //   --save-hdf DIR       write the hard disk images as left at the end
 //   --exit               do the firmware's exit sequence at the end and
 //                        compare the saved images with the SDRAM contents
@@ -59,6 +60,10 @@
 //   --expect-sectors N   fail unless at least N floppy sectors were read
 //   --expect-written N   fail unless at least N floppy sectors were written
 //   --expect-boot-frame  fail unless a non-blank frame was seen
+//   --net-test           the A2065: take the frames sent, bring frames as
+//                        sim/asm/a2065test.s asks for them, check both
+//   --hdmi               the screen shown is HDMI (docked), not the handheld's
+//                        panel: what the core shows there is compared
 //   --random-ram SEED    fill both SDRAM chips with noise first, as at power-on
 //   --pc-prof MS         sample the CPU's PC every clk_sys period: with every
 //                        status line the interrupt state and the 256-byte
@@ -109,38 +114,29 @@ static void rtg_sample();   // RTG picture check, at every rising clk_av edge
 // -------------------------------------------------------------- video
 static const int VW = 720, VH = 256;   // the frame buffer
 static std::vector<uint32_t> fb(VW * VH);        // the last whole frame, as colours
-static std::vector<uint16_t> fbi(VW * VH);       // the frame being written: palette indices
+static std::vector<uint32_t> fbi(VW * VH);       // the frame being written: 6 + 6 + 6 bits as sent
 static std::vector<uint32_t> fbt(VW * VH);       // the colours the chipset produced for them
-static uint64_t pixels_wrong = 0, pixels_fixed_far = 0, pixels_checked = 0;
-// The framework's palette (patches/framework): written by the core, looked
-// up when a frame buffer is shown. The two frame buffers the framework
-// keeps are checked against it: an entry must not change while a frame
-// that uses it can still be on screen.
-static uint32_t palette[512];
-static std::vector<uint16_t> shown_i[2] = { std::vector<uint16_t>(VW * VH), std::vector<uint16_t>(VW * VH) };
-static bool shown_pal[2] = { false, false };   // the frame was palette indices
-// a frame buffer value as the framework shows it: a palette index, or with
-// the palette off a 3 + 3 + 3 bit colour, the bits repeated to 8
-static uint32_t direct_color(uint32_t v) {
-	uint32_t r = (v >> 6) & 7, g = (v >> 3) & 7, b = v & 7;
-	return ((r << 5 | r << 2 | r >> 1) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b << 5 | b << 2 | b >> 1);
+// Every pixel sent is checked against the chipset's colour (gb_video's
+// dither): a component that is one of the 64 values a 6 bit one is shown as
+// ({k, k[5:4]}) must be that one; any other must be the value below it or
+// the one above. And where the four pixels of a 2 x 2 block have the same
+// chipset colour, each component's mean over them must be the chipset's
+// within 1 of 255 (each of the dither's four thresholds once).
+static uint64_t pixels_wrong = 0, pixels_checked = 0, pixels_exact = 0;
+static uint64_t blocks_checked = 0, blocks_wrong = 0;
+static inline uint32_t show6(uint32_t k) { return (k << 2) | (k >> 4); }
+static uint32_t shown_color(uint32_t v) {   // gb_fb: 6 bits to 8
+	return (show6((v >> 12) & 63) << 16) | (show6((v >> 6) & 63) << 8) | show6(v & 63);
 }
-static std::vector<uint32_t> shown_c[2] = { std::vector<uint32_t>(VW * VH), std::vector<uint32_t>(VW * VH) };
-static int shown_n = 0;
-static uint64_t palette_writes = 0, palette_stale = 0;
-// sim/asm/coltest.s: its F (chip RAM $100) and the pixels in fixed colours
-// of every frame
-static std::vector<std::pair<uint32_t, uint32_t>> frame_fixed;
+static bool dither_ok(uint32_t shown, uint32_t want) {   // one component, 8 bits each
+	uint32_t k = want >> 2;
+	if (show6(k) > want) k--;
+	if (show6(k) == want) return shown == want;
+	return shown == show6(k) || shown == show6(k + 1);
+}
 static uint32_t sdram_peek16_fwd(uint32_t waddr);
 // sim/asm/coltest.s: line L's colour is (L * 17 + O(F)) & 0xFFF
 static uint32_t coltest_offset(uint32_t f) { return f <= 12 ? f * 1088 : 12 * 1088 + (f - 12) * 2731; }
-static uint32_t palette_color(uint32_t index) {
-	if (index >= 384) {   // the fixed colours: 2 + 3 + 2 bits, each repeated to 8
-		uint32_t r = (index >> 5) & 3, g = (index >> 2) & 7, b = index & 3;
-		return ((r * 0x55) << 16) | ((g << 5 | g << 2 | g >> 1) << 8) | (b * 0x55);
-	}
-	return palette[index];
-}
 static int fb_x = 0, fb_y = 0;
 static bool prev_hblank = true, prev_vblank = true;
 static int frames = 0;
@@ -152,6 +148,7 @@ static bool check_lace = false;
 static int lace_frames = 0, lace_short = 0, lace_on = 0;
 static uint64_t lace_vs_first = 0, lace_vs_last = 0;
 static int nonblank_frames = 0;
+static bool hdmi_screen = false;   // --hdmi: the screen shown is HDMI, not the panel
 static std::string frames_dir;
 static int shot_every = 1;
 static uint32_t last_frame_hash = 0;
@@ -179,75 +176,39 @@ static void video_sample() {
 	bool vb_edge = vb && !prev_vblank;
 	bool hb_edge = hb && !prev_hblank;
 
-	if (top->video_pal_we) {
-		palette[top->video_pal_index & 511] = top->video_pal_color;
-		palette_writes++;
-		{
-			static std::map<uint32_t, int> written;
-			int &n = written[top->video_pal_color];
-			n++;
-			if (std::getenv("PALLOG")) std::fprintf(stderr, "palwrite frame %d line %d x %d: entry %u = %06X\n", frames, fb_y, fb_x, top->video_pal_index, top->video_pal_color);
-			if (n == 2 && std::getenv("PALDEBUG")) std::fprintf(stderr, "palette: colour %06X given a second entry (frame %d, line %d, x %d)\n", top->video_pal_color, frames, fb_y, fb_x);
-		}
-	}
 	if (de && fb_x < VW && fb_y < VH) {
-		// the pixel is a palette index: r, g, b are its top, middle and low bits
-		uint32_t r = top->video_r, g = top->video_g, b = top->video_b;
-		fbi[fb_y * VW + fb_x] = uint16_t((r << 6) | (g << 3) | b);
+		fbi[fb_y * VW + fb_x] = top->video_data;
 		fbt[fb_y * VW + fb_x] = top->dbg_pixel_color;
 	}
 	if (vb_edge) {
-		// a frame completed: its colours as the framework would show it now
-		const bool pal_on = top->video_pal_on;
-		for (int i = 0; i < VW * VH; i++) fb[i] = pal_on ? palette_color(fbi[i]) : direct_color(fbi[i]);
-		// palette mode: every pixel shown must be the colour the chipset
-		// produced, from a palette entry exactly, or in the fixed colours
-		// the nearest of them (the dither moves a component one level)
-		if (pal_on && frames >= 2) {
-			const int lines = top->video_fit ? VH : 240;
+		// a frame completed: its colours as the core shows them
+		for (int i = 0; i < VW * VH; i++) fb[i] = shown_color(fbi[i]);
+		const int lines = top->video_fit ? VH : 240;
+		if (frames >= 2) {
 			for (int i = 0; i < VW * lines; i++) {
-				uint32_t t = fbt[i], p = fb[i];
+				uint32_t t = fbt[i], q = fb[i];
 				pixels_checked++;
-				if (fbi[i] < 384) {
-					if (p != t && pixels_wrong++ < 5)
-						std::fprintf(stderr, "pixel (%d,%d) frame %d: index %u shows %06X, the chipset's colour %06X\n", i % VW, i / VW, frames, fbi[i], p, t);
-				} else {
-					int dr = std::abs(int(p >> 16) - int(t >> 16)), dg = std::abs(int((p >> 8) & 255) - int((t >> 8) & 255)), db = std::abs(int(p & 255) - int(t & 255));
-					if ((dr > 85 || dg > 37 || db > 85) && pixels_fixed_far++ < 5)
-						std::fprintf(stderr, "pixel (%d,%d) frame %d: fixed colour %06X for the chipset's %06X\n", i % VW, i / VW, frames, p, t);
+				if (q == t) pixels_exact++;
+				if (!(dither_ok(q >> 16, t >> 16) && dither_ok((q >> 8) & 255, (t >> 8) & 255) && dither_ok(q & 255, t & 255)) &&
+				    pixels_wrong++ < 5)
+					std::fprintf(stderr, "pixel (%d,%d) frame %d: shown %06X, the chipset's colour %06X\n", i % VW, i / VW, frames, q, t);
+			}
+			for (int y = 0; y + 1 < lines; y += 2) for (int x = 0; x + 1 < VW; x += 2) {
+				const int i = y * VW + x;
+				const uint32_t t = fbt[i];
+				if (fbt[i + 1] != t || fbt[i + VW] != t || fbt[i + VW + 1] != t) continue;
+				blocks_checked++;
+				bool ok = true;
+				for (int sh = 0; sh < 24; sh += 8) {
+					int sum = 0;
+					for (int k : { i, i + 1, i + VW, i + VW + 1 }) sum += (fb[k] >> sh) & 255;
+					if (std::abs(sum - 4 * int((t >> sh) & 255)) > 4) ok = false;
 				}
+				if (!ok && blocks_wrong++ < 5)
+					std::fprintf(stderr, "block (%d,%d) frame %d: %06X %06X %06X %06X for the chipset's colour %06X\n",
+					             x, y, frames, fb[i], fb[i + 1], fb[i + VW], fb[i + VW + 1], t);
 			}
 		}
-		{
-			uint32_t fixed = 0;
-			const int lines = top->video_fit ? VH : 240;
-			if (pal_on) for (int i = 0; i < VW * lines; i++) if (fbi[i] >= 384) fixed++;
-			frame_fixed.push_back({sdram_peek16_fwd(0x100 >> 1), fixed});
-		}
-		// the two frames before it may still be on screen: their indices
-		// must still give the colours they had
-		// (the lines the framework shows: all 256 with fit, else the first 240)
-		const int shown_lines = top->video_fit ? VH : 240;
-		for (int k = 0; k < 2 && k < shown_n; k++) if (shown_pal[k] && pal_on)
-			for (int i = 0; i < VW * shown_lines; i++)
-				if (palette_color(shown_i[k][i]) != shown_c[k][i]) palette_stale++;
-		shown_i[1].swap(shown_i[0]); shown_c[1].swap(shown_c[0]);
-		shown_pal[1] = shown_pal[0];
-		shown_i[0] = fbi; shown_c[0] = fb; shown_pal[0] = pal_on;
-		if (std::getenv("FBTDUMP")) {
-			std::map<uint32_t, int> n;
-			for (int i = 0; i < VW * VH; i++) n[fbt[i]]++;
-			std::fprintf(stderr, "frame %d: %zu chipset colours\n", frames, n.size());
-			if (n.size() > 256 && n.size() < 2000) {
-				// the pixels with colours seen fewer than 40 times, and their neighbours
-				int shown = 0;
-				for (int i = 1; i + 1 < VW * VH && shown < 8; i++) if (n[fbt[i]] < 40) {
-					std::fprintf(stderr, "  (%d,%d): %06X %06X [%06X] %06X %06X\n", i % VW, i / VW, fbt[i-2 < 0 ? 0 : i-2], fbt[i-1], fbt[i], fbt[i+1], fbt[i+2 < VW*VH ? i+2 : i]);
-					shown++;
-				}
-			}
-		}
-		if (shown_n < 2) shown_n++;
 		// from the third frame completed with the chipset in interlace (the
 		// test program has set COLOR00 by the field by then)
 		if (check_lace && top->dbg_lace) lace_on++;
@@ -281,8 +242,10 @@ static void video_sample() {
 }
 
 // -------------------------------------------------------------- audio
+static unsigned fw_file_reads = 0;   // FileRead requests of the core (the hard disks' sectors)
 static int64_t audio_abs_sum = 0;
 static int64_t audio_abs_l = 0, audio_abs_r = 0;   // sums of |left| and |right|
+static int audio_peak_l = 0, audio_peak_r = 0;     // the largest |left| and |right|
 static uint64_t audio_samples = 0;
 
 // -------------------------------------------------------------- host side
@@ -362,6 +325,8 @@ static void cycle28() {
 	audio_abs_sum += std::abs((int16_t)top->audio_left) + std::abs((int16_t)top->audio_right);
 	audio_abs_l += std::abs((int16_t)top->audio_left);
 	audio_abs_r += std::abs((int16_t)top->audio_right);
+	audio_peak_l = std::max(audio_peak_l, std::abs((int)(int16_t)top->audio_left));
+	audio_peak_r = std::max(audio_peak_r, std::abs((int)(int16_t)top->audio_right));
 	audio_samples++;
 
 	{
@@ -389,20 +354,35 @@ static void cycle28() {
 		prev_as = as;
 	}
 
-	// clk_av (HDMI pixel clock): two periods every three clk_114 periods,
-	// rising every third clk_114 half period
-	static uint32_t av_half = 0;
+	// clk_av, the pixel clock of the screen shown, moving at clk_114's half
+	// periods: HDMI (74.2 MHz) two periods every three clk_114 periods; the
+	// panel (25.95 MHz, the MMCM's VCO / 35) one every 35 / 8, as periods of
+	// nine, nine, nine and eight half periods
+	static uint32_t av_half = 0, av_acc = 0, av_high = 0;
+	auto av_step = [&]() -> bool {
+		bool rise;
+		if (hdmi_screen) {
+			rise = (av_half % 3) == 0;
+			top->clk_av = (av_half % 3) != 2;
+			av_half++;
+		} else {
+			av_acc += 4;
+			rise = av_acc >= 35;
+			if (rise) { av_acc -= 35; av_high = 4; }
+			top->clk_av = av_high != 0;
+			if (av_high) av_high--;
+		}
+		return rise;
+	};
 	for (int p = 0; p < 4; p++) {
 		top->clk_114 = 1;
 		if (p == 0) top->clk_28 = 1;
 		if (p == 2) top->clk_28 = 0;
 		top->clk_57 = (p == 0 || p == 2);   // high for clk_114 periods 0 and 2 (CLKOUT5, /16)
-		bool av_rise = (av_half % 3) == 0;
-		top->clk_av = (av_half % 3) != 2;
-		av_half++;
+		bool av_rise = av_step();
 		top->eval();
 		sdram_pin_check();
-		if (av_rise) rtg_sample();
+		if (av_rise && hdmi_screen) rtg_sample();
 		if (top->dbg_sd_state == 8) {
 			// both chips' slots of the window decided (chip 0 at 0, chip 1 at 4)
 			if (top->dbg_sd_c0 == 2) sd_rd[0]++;
@@ -411,12 +391,10 @@ static void cycle28() {
 			if (top->dbg_sd_c1 == 3) { sd_wr[1]++; if (top->dbg_sd_c1_l2) sd_wr2[1]++; }
 		}
 		top->clk_114 = 0;
-		av_rise = (av_half % 3) == 0;
-		top->clk_av = (av_half % 3) != 2;
-		av_half++;
+		av_rise = av_step();
 		top->eval();
 		sdram_pin_check();
-		if (av_rise) rtg_sample();
+		if (av_rise && hdmi_screen) rtg_sample();
 	}
 	cyc28++;
 	if (pc_prof) {   // where the CPU is, once per clk_sys period
@@ -573,6 +551,7 @@ static void core_service() {
 		f->data.resize((uint64_t(w[3]) << 32) | w[2]);
 	}
 	else if (cmd == 0x0402) {                              // FileRead
+		fw_file_reads++;
 		uint32_t address = w[2];
 		uint64_t offset = (uint64_t(w[4]) << 32) | w[3];
 		size_t length = w[5], transferred = 0;
@@ -885,6 +864,236 @@ static std::vector<uint16_t> mfm_track(int track) {
 }
 
 static uint32_t chip16(uint32_t addr) { return sdram_peek16(addr >> 1); }
+
+// ------------------------------------------------------------ network
+// --net-test (sim/asm/a2065test.s): the bench as the Game Bub's MCU for
+// the A2065's frames (gb_host 0x50..0x5C, 0x4000_0000): it takes the frames
+// the Amiga sends, and brings frames as the test ROM asks for them (chip RAM
+// $10A counts its requests: for each, the frame it must receive, and before
+// some a frame it must not), and one more when the ROM has left the LANCE
+// no descriptor (step 8).
+static bool net_test = false;
+static std::vector<std::vector<uint8_t>> net_sent;     // frames taken
+static int net_brought = 0, net_requests_done = 0;
+static bool net_miss_brought = false;
+static const uint8_t NET_MAC[6] = { 0x00, 0x80, 0x10, 0x47, 0x42, 0x01 };   // gb_host's default serial
+static uint32_t net_crc_reg(const uint8_t *d, int n) {   // the CRC register (not complemented)
+	uint32_t c = 0xFFFFFFFF;
+	for (int i = 0; i < n; i++) {
+		c ^= d[i];
+		for (int j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+	}
+	return c;
+}
+// a multicast address 01:00:5E:00:00:xx whose hash is (or is not) 5, the
+// bit the test ROM sets in the logical address filter
+static void net_group(uint8_t *a, bool in_filter) {
+	for (int x = 1; x < 256; x++) {
+		uint8_t m[6] = { 0x01, 0x00, 0x5E, 0x00, 0x00, uint8_t(x) };
+		if (((net_crc_reg(m, 6) >> 26) == 5) == in_filter) { std::memcpy(a, m, 6); return; }
+	}
+}
+static std::vector<uint8_t> net_frame(const uint8_t *dst, int len, uint8_t seed) {
+	std::vector<uint8_t> f(len);
+	static const uint8_t src[6] = { 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE };
+	std::memcpy(&f[0], dst, 6);
+	std::memcpy(&f[6], src, 6);
+	f[12] = 0x08; f[13] = 0x00;
+	for (int i = 14; i < len; i++) f[i] = uint8_t(seed + 7 * (i - 14));
+	return f;
+}
+static void net_bring(const std::vector<uint8_t> &f) {
+	// (the frame before it has been taken or dropped)
+	for (int i = 0; i < 4000 && (hread(0x50) & 0x8000); i++) cycle28();
+	if (hread(0x50) & 0x8000) { FAIL("net: the frame brought before is still not taken"); return; }
+	std::vector<uint32_t> w((f.size() + 3) / 4, 0);
+	for (size_t i = 0; i < f.size(); i++) w[i / 4] |= uint32_t(f[i]) << (8 * (i & 3));
+	hwrite_block(0x40001000, w);
+	hwrite(0x58, uint32_t(f.size()));
+	net_brought++;
+}
+// --net-drv: the real a2065.device under Kickstart (sim/asm/netdrv.s on a
+// boot disk): the frames it sends are printed and kept, and a frame for the
+// station is brought when the program asks for one (word $100 = 5, and 9
+// after the device has been offline and online again)
+static bool net_drv = false, net_drv_done = false;
+// --net-down: asm/netdown.s: no network until the program is at step 5
+// (the bench then says the link is up), and its frame at step 6
+static bool net_down = false, net_down_up = false;
+static int net_drv_step = -1;
+static void net_drv_service() {
+	uint32_t st = hread(0x50);
+	if (st & 0x800) {
+		const size_t len = st & 0x7FF;
+		std::vector<uint32_t> w = hread_block(0x40000000, (len + 3) / 4);
+		std::vector<uint8_t> f(len);
+		for (size_t i = 0; i < len; i++) f[i] = uint8_t(w[i / 4] >> (8 * (i & 3)));
+		std::printf("net: frame %zu from the Amiga, %zu bytes:", net_sent.size(), len);
+		for (size_t i = 0; i < len && i < 64; i++) std::printf(" %02X", f[i]);
+		std::printf("\n");
+		net_sent.push_back(f);
+		hwrite(0x50, 1);
+	}
+	const uint32_t magic = chip16(0x120), step = chip16(0x100);
+	if (magic != 0x4E44) return;         // "ND": the program has started
+	// (the read request has to be with the driver first: 20 ms after the
+	// step, and again every 200 ms while the program still waits)
+	static int read_polls = 0, read_brought = 0;
+	if (int(step) != net_drv_step) {
+		net_drv_step = int(step);
+		read_polls = read_brought = 0;
+		std::printf("net: the program is at step %04X\n", step);
+	}
+	if (net_down) {
+		if (step == 5 && !net_down_up) {
+			net_down_up = true;
+			std::printf("net: the link is up now; %zu frames taken before\n", net_sent.size());
+			if (!net_sent.empty()) FAIL("net: %zu frames reached the MCU without a network", net_sent.size());
+			hwrite(0x50, 0xF0000);
+		}
+		if (step == 6) {
+			read_polls++;
+			if (read_polls == 286 || (read_polls > 286 && (read_polls - 286) % 2857 == 0 && read_brought < 5)) {
+				std::printf("net: frame %d brought for the driver\n", net_brought);
+				read_brought++;
+				net_bring(net_frame(NET_MAC, 100, 1));
+			}
+		}
+	}
+	else if (step == 5 || step == 9) {
+		read_polls++;
+		if (read_polls == 286 || (read_polls > 286 && (read_polls - 286) % 2857 == 0 && read_brought < 5)) {
+			std::printf("net: frame %d brought for the driver\n", net_brought);
+			read_brought++;
+			if (step == 5) net_bring(net_frame(NET_MAC, 100, 1));
+			else net_bring(net_frame(NET_MAC, 120, 2));
+		}
+	}
+	if (step == 0x600D || (step & 0xFF00) == 0xBA00 || (step & 0xFF00) == 0xFA00) net_drv_done = true;
+}
+static void net_service() {
+	if (net_drv) { net_drv_service(); return; }
+	uint32_t st = hread(0x50);
+	if (st & 0x800) {
+		const size_t len = st & 0x7FF;
+		std::vector<uint32_t> w = hread_block(0x40000000, (len + 3) / 4);
+		std::vector<uint8_t> f(len);
+		for (size_t i = 0; i < len; i++) f[i] = uint8_t(w[i / 4] >> (8 * (i & 3)));
+		net_sent.push_back(f);
+		hwrite(0x50, 1);
+	}
+	const uint32_t step = chip16(0x100), req = chip16(0x10A);
+	static const uint8_t other[6] = { 0x00, 0x80, 0x10, 0x99, 0x99, 0x99 }, bcast[6] = { 255, 255, 255, 255, 255, 255 };
+	uint8_t g_in[6], g_out[6];
+	net_group(g_in, true);
+	net_group(g_out, false);
+	if (step == 6 && int(req) > net_requests_done) {
+		switch (++net_requests_done) {
+			case 1: net_bring(net_frame(NET_MAC, 100, 1)); break;
+			case 2: net_bring(net_frame(other, 80, 2)); net_bring(net_frame(bcast, 60, 3)); break;
+			case 3: net_bring(net_frame(g_out, 64, 4)); net_bring(net_frame(g_in, 64, 5)); break;
+			case 4: net_bring(net_frame(NET_MAC, 600, 6)); break;
+			default: FAIL("net: the test ROM asks for a frame %d", net_requests_done); break;
+		}
+	}
+	if (step == 8 && !net_miss_brought) {
+		net_miss_brought = true;
+		net_bring(net_frame(NET_MAC, 90, 9));
+	}
+}
+static void net_down_report() {
+	std::printf("net (down): step %04X; results at $102:", chip16(0x100));
+	for (uint32_t a = 0x102; a < 0x11A; a += 2) std::printf(" %04X", chip16(a));
+	const uint32_t c = hread(0x58), d = hread(0x5C);
+	std::printf("\nnet (down): %zu frames taken from the Amiga, %d brought; the board counts %u sent, %u received, %u not received\n",
+	            net_sent.size(), net_brought, c & 0xFFFF, c >> 16, d & 0xFFFF);
+	if (chip16(0x100) != 0x600D) FAIL("net: the test without a network ended at step %04X", chip16(0x100));
+	// open, address, configure: as with a network
+	for (uint32_t a = 0x102; a < 0x108; a += 2) if (chip16(a) != 0) FAIL("net: request %u failed: error %04X", (a - 0x102) / 2, chip16(a));
+	// without a network: the offline event, and a broadcast after it refused
+	// (the first one's request the driver ends before it sees the error)
+	if (chip16(0x108) == 0 || chip16(0x108) == 0xFFFF) FAIL("net: the second broadcast without a network was not refused (%04X)", chip16(0x108));
+	if (chip16(0x114) != 1) FAIL("net: the driver did not say it went offline");
+	if (!net_down_up) FAIL("net: the program never came to the step at which the network comes");
+	// with the network: sent, and a frame read
+	if (chip16(0x10A) != 0) FAIL("net: the broadcast with the network failed: error %04X", chip16(0x10A));
+	if (chip16(0x10C) != 0) FAIL("net: the read failed: error %04X", chip16(0x10C));
+	if (net_sent.size() != 1) FAIL("net: %zu frames from the driver, expected 1 (the one sent with the network)", net_sent.size());
+	else {
+		const std::vector<uint8_t> &f = net_sent[0];
+		bool ok = f.size() == 60;
+		for (int i = 0; ok && i < 6; i++) ok = f[i] == 0xFF && f[6 + i] == NET_MAC[i];
+		ok = ok && f[12] == 0x08 && f[13] == 0x06;
+		for (int i = 0; ok && i < 46; i++) ok = f[14 + i] == uint8_t(0x51 + 5 * i);
+		if (!ok) FAIL("net: the driver's frame is not the broadcast of 46 bytes the program sent");
+	}
+	if (chip16(0x10E) != 86) FAIL("net: the driver read %u bytes of data, expected 86", chip16(0x10E));
+	for (int i = 0; i < 48; i += 2) {
+		const uint32_t want = (uint32_t(uint8_t(1 + 7 * i)) << 8) | uint8_t(1 + 7 * (i + 1));
+		if (chip16(0x130 + i) != want) { FAIL("net: the data the driver read differs at byte %d", i); break; }
+	}
+}
+static void net_drv_report() {
+	if (net_down) { net_down_report(); return; }
+	std::printf("net (driver): step %04X; results at $102:", chip16(0x100));
+	for (uint32_t a = 0x102; a < 0x12C; a += 2) std::printf(" %04X", chip16(a));
+	std::printf("\nnet (driver): received at $130:");
+	for (uint32_t a = 0x130; a < 0x160; a += 2) std::printf(" %04X", chip16(a));
+	std::printf("\nnet (driver): received at $160:");
+	for (uint32_t a = 0x160; a < 0x190; a += 2) std::printf(" %04X", chip16(a));
+	const uint32_t c = hread(0x58), d = hread(0x5C);
+	std::printf("\nnet (driver): %zu frames taken from the Amiga, %d brought; the board counts %u sent, %u received, %u not received\n",
+	            net_sent.size(), net_brought, c & 0xFFFF, c >> 16, d & 0xFFFF);
+	if (chip16(0x100) != 0x600D) FAIL("net: the driver test ended at step %04X", chip16(0x100));
+	for (uint32_t a = 0x102; a < 0x10E; a += 2) if (chip16(a) != 0) FAIL("net: request %u of the driver test failed: error %04X", (a - 0x102) / 2, chip16(a));
+	// the station address the driver gives: 00:80:10 and the board's serial number
+	if (chip16(0x110) != 0x0080 || chip16(0x112) != 0x1047 || chip16(0x114) != 0x4201) FAIL("net: the driver's station address is not 00:80:10:47:42:01");
+	// offline, online, and the second send and read
+	for (uint32_t a = 0x122; a < 0x12A; a += 2) if (chip16(a) != 0) FAIL("net: request %u of the driver test (after the read) failed: error %04X", (a - 0x122) / 2, chip16(a));
+	if (net_sent.size() != 2) FAIL("net: %zu frames from the driver, expected 2", net_sent.size());
+	else {
+		// 46 bytes of $51 + 5i, and after offline and online 50 bytes of $33 + 3i
+		static const int n[2] = { 46, 50 }, first[2] = { 0x51, 0x33 }, add[2] = { 5, 3 };
+		for (int k = 0; k < 2; k++) {
+			const std::vector<uint8_t> &f = net_sent[k];
+			bool ok = int(f.size()) == (14 + n[k] < 60 ? 60 : 14 + n[k]);
+			for (int i = 0; ok && i < 6; i++) ok = f[i] == 0xFF && f[6 + i] == NET_MAC[i];
+			ok = ok && f[12] == 0x08 && f[13] == 0x06;
+			for (int i = 0; ok && i < n[k]; i++) ok = f[14 + i] == uint8_t(first[k] + add[k] * i);
+			if (!ok) FAIL("net: frame %d of the driver is not the broadcast of %d bytes the program sent", k, n[k]);
+		}
+	}
+	// the frames brought (net_frame(NET_MAC, 100, 1) and (NET_MAC, 120, 2)):
+	// 86 and 106 bytes of data
+	if (net_brought != 2) FAIL("net: the driver took the two frames only when %d were brought", net_brought);
+	if (chip16(0x10E) != 86) FAIL("net: the driver read %u bytes of data, expected 86", chip16(0x10E));
+	if (chip16(0x12A) != 106) FAIL("net: the driver read %u bytes of data after offline and online, expected 106", chip16(0x12A));
+	for (int k = 0; k < 2; k++) for (int i = 0; i < 48; i += 2) {
+		const uint32_t want = (uint32_t(uint8_t(1 + k + 7 * i)) << 8) | uint8_t(1 + k + 7 * (i + 1));
+		if (chip16(0x130 + 0x30 * k + i) != want) { FAIL("net: the data the driver read (%d) differs at byte %d", k, i); break; }
+	}
+}
+static void net_report() {
+	if (net_drv) { net_drv_report(); return; }
+	std::vector<uint8_t> a(64), b(60, 0);
+	static const uint8_t da[6] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
+	std::memcpy(&a[0], da, 6);
+	std::memcpy(&a[6], NET_MAC, 6);
+	a[12] = 0x08; a[13] = 0x00;
+	for (int i = 14; i < 64; i++) a[i] = uint8_t(0xA1 + 3 * (i - 14));
+	for (int i = 0; i < 20; i++) b[i] = uint8_t(0x3C + 7 * i);
+	const uint32_t c = hread(0x58), d = hread(0x5C);
+	std::printf("net: %zu frames taken from the Amiga, %d brought; the board counts %u sent, %u received, %u not received\n",
+	            net_sent.size(), net_brought, c & 0xFFFF, c >> 16, d & 0xFFFF);
+	if (net_sent.size() != 2) FAIL("net: %zu frames from the Amiga, expected 2", net_sent.size());
+	else {
+		if (net_sent[0] != a) FAIL("net: the first frame from the Amiga (%zu bytes) is not the 64 bytes of its two buffers", net_sent[0].size());
+		if (net_sent[1] != b) FAIL("net: the second frame from the Amiga (%zu bytes) is not its 20 bytes and 40 of padding", net_sent[1].size());
+	}
+	if (net_brought != 7) FAIL("net: %d frames brought, expected 7", net_brought);
+	if ((c & 0xFFFF) != 2 || (c >> 16) != 4 || (d & 0xFFFF) != 3)
+		FAIL("net: the board's counts are %u sent, %u received, %u not received; expected 2, 4, 3", c & 0xFFFF, c >> 16, d & 0xFFFF);
+}
 static uint32_t sdram_peek16_fwd(uint32_t waddr) { return sdram_peek16(waddr); }
 
 // -------------------------------------------------------------- main
@@ -909,6 +1118,10 @@ int main(int argc, char **argv) {
 	std::vector<Swap> swaps;
 	struct CheckWord { double ms; uint32_t addr, mask, value; bool done; };
 	std::vector<CheckWord> checks;
+	// --check-rate: how much a chip RAM word grows between two times
+	struct CheckRate { double ms1, ms2; uint32_t addr; int lo, hi; uint32_t before; int stage; };
+	std::vector<CheckRate> rchecks;
+	int expect_peak_l = -1, expect_peak_r = -1;   // --expect-audio-peak
 	struct CheckMouse { double ms1, ms2; int dx, dy, tol; uint32_t before; int stage; };
 	std::vector<CheckMouse> mchecks;
 	struct HWrite { double ms; uint32_t addr, value; bool done; };
@@ -933,10 +1146,10 @@ int main(int argc, char **argv) {
 	int vidtest_data_x = 40;
 	bool floppy_write_test = false;
 	bool ide_test = false;
-	bool expect_no_fixed = false;
 	double coltest_ms = -1;       // when to check the still picture of sim/asm/coltest.s
 	bool coltest_done = false, coltest_end = false;
 	long expect_hdd_read = -1;
+	long expect_hdd_ahead = -1;   // --expect-hdd-ahead: sectors served without a request
 	std::string save_hdf;
 	double expect_lr = -1;   // expected mean |right| / mean |left|
 	std::vector<std::pair<uint32_t, uint32_t>> dumps;   // SDRAM word address, words
@@ -960,6 +1173,8 @@ int main(int argc, char **argv) {
 		else if (a == "--mouse") { Mouse m; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d", &m.ms, &m.dx, &m.dy); mice.push_back(m); }
 		else if (a == "--swap") { Swap s; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &s.ms, &s.slot); swaps.push_back(s); }
 		else if (a == "--check-word") { CheckWord c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x:%x", &c.ms, &c.addr, &c.mask, &c.value); checks.push_back(c); }
+		else if (a == "--check-rate") { CheckRate c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%x:%d:%d", &c.ms1, &c.ms2, &c.addr, &c.lo, &c.hi); rchecks.push_back(c); }
+		else if (a == "--expect-audio-peak") { std::string v = next(); std::sscanf(v.c_str(), "%d:%d", &expect_peak_l, &expect_peak_r); }
 		else if (a == "--check-mouse") { CheckMouse c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy, &c.tol); mchecks.push_back(c); }
 		else if (a == "--hwrite") { HWrite h{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x", &h.ms, &h.addr, &h.value); hwrites.push_back(h); }
 		else if (a == "--focus") { Focus f{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &f.ms, &f.value); focuses.push_back(f); }
@@ -974,12 +1189,16 @@ int main(int argc, char **argv) {
 		else if (a == "--fw-latency-us") fw_latency = uint64_t(std::atof(next().c_str()) * 28.375);
 		else if (a == "--fw-verbose") fw_verbose = true;
 		else if (a == "--ide-test") ide_test = true;
-		else if (a == "--expect-no-fixed") expect_no_fixed = true;
+		else if (a == "--hdmi") hdmi_screen = true;
 		else if (a == "--check-coltest") { coltest_ms = std::atof(next().c_str()); coltest_end = true; }
 		else if (a == "--expect-hdd-read") expect_hdd_read = std::atol(next().c_str());
+		else if (a == "--expect-hdd-ahead") expect_hdd_ahead = std::atol(next().c_str());
 		else if (a == "--save-hdf") save_hdf = next();
 		else if (a == "--exit") do_exit = true;
 		else if (a == "--rtg-check") rtg_check = true;
+		else if (a == "--net-test") net_test = true;
+		else if (a == "--net-drv") net_test = net_drv = true;
+		else if (a == "--net-down") net_test = net_drv = net_down = true;
 		else if (a == "--rtg-modes") rtg_modes_expected = std::atoi(next().c_str());
 		else if (a == "--save-dir") save_dir = next();
 		else if (a == "--expect-sectors") expect_sectors = std::atol(next().c_str());
@@ -1005,6 +1224,7 @@ int main(int argc, char **argv) {
 
 	// power on: MMCM not locked, framework reset
 	top->clk_114 = 0; top->clk_28 = 0; top->clk_57 = 0; top->mmcm_locked = 0; top->reset = 1;
+	top->hdmi = hdmi_screen;
 	top->host_mem_enable = 0; top->host_cmd_request = 0; top->buttons = 0;
 	top->buttons1 = 0; top->slot1_active = 0; top->sticks = 0;
 	top->host_core_busy = 0; top->host_core_done = 0; top->host_core_error = 0;
@@ -1180,6 +1400,9 @@ int main(int argc, char **argv) {
 		// a CPU reset: _cpu_reset going low after the CPU had run
 		if (cpu_rst_q && !top->dbg_cpu_rst) { cpu_resets++; std::printf("%.1f ms: CPU reset\n", ms); }
 		cpu_rst_q = top->dbg_cpu_rst;
+		// the network: every 2000 clocks (70 us)
+		if (net_test && (cyc28 % 2000) == 0) net_service();
+		if (net_drv_done) { std::printf("%.1f ms: the driver test has ended\n", ms); break; }
 		// RTG: the ROM shows mode n (word $100 = $0100 + n) and waits for $102 = n
 		if (rtg_check) {
 			uint32_t w = chip16(0x100);
@@ -1210,6 +1433,15 @@ int main(int argc, char **argv) {
 			if ((w & c.mask) != c.value) FAIL("%.0f ms: chip word %06X = %04X, & %04X expected %04X", ms, c.addr, w, c.mask, c.value);
 			else std::printf("%.0f ms: chip word %06X = %04X as expected\n", ms, c.addr, w);
 		}
+		for (auto &c : rchecks) {
+			if (c.stage == 0 && ms >= c.ms1) { c.before = sdram_peek16(c.addr >> 1); c.stage = 1; }
+			if (c.stage == 1 && ms >= c.ms2) {
+				c.stage = 2;
+				const int d = int(uint16_t(sdram_peek16(c.addr >> 1) - c.before));
+				if (d < c.lo || d > c.hi) FAIL("%.0f to %.0f ms: chip word %06X grew by %d, expected %d to %d", c.ms1, c.ms2, c.addr, d, c.lo, c.hi);
+				else std::printf("%.0f to %.0f ms: chip word %06X grew by %d as expected\n", c.ms1, c.ms2, c.addr, d);
+			}
+		}
 		for (auto &c : mchecks) {
 			if (c.stage == 0 && ms >= c.ms1) { c.before = sdram_peek16(0x102 >> 1); c.stage = 1; }
 			if (c.stage == 1 && ms >= c.ms2) {
@@ -1229,13 +1461,14 @@ int main(int argc, char **argv) {
 			for (int y = 0; y < VH; y++) {
 				uint32_t c = uint32_t(y * 17) & 0xFFF;
 				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
-				for (int x = 0; x < VW; x++)
-					if (fb[y * VW + x] != e && bad++ < 5) FAIL("coltest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);
+				for (int x = 0; x < VW; x++) {
+					uint32_t q = fb[y * VW + x];
+					if (!(dither_ok(q >> 16, e >> 16) && dither_ok((q >> 8) & 255, (e >> 8) & 255) && dither_ok(q & 255, e & 255)) && bad++ < 5)
+						FAIL("coltest pixel (%d,%d) is %06X, its line's colour %06X", x, y, q, e);
+				}
 			}
-			uint32_t fixed = hread(0x40);
-			if (fixed) FAIL("coltest: %u pixels of the still picture found no palette entry", fixed);
 			if (chip16(0x100) != 0) FAIL("coltest: the picture is already moving (F = %u)", chip16(0x100));
-			if (!bad) std::printf("%.0f ms: coltest still picture: 256 colours, all %d pixels exact\n", ms, VW * VH);
+			if (!bad) std::printf("%.0f ms: coltest still picture: 256 colours, all %d pixels their line's colour\n", ms, VW * VH);
 		}
 		if (!boot_seen && top->dbg_boot_done) { boot_seen = true; boot_done_at = cyc28; }
 		core_service();
@@ -1282,6 +1515,7 @@ int main(int argc, char **argv) {
 	}
 	if (!boot_seen) FAIL("the configuration sequence never finished");
 	if (expect_resets >= 0 && cpu_resets != expect_resets) FAIL("%ld CPU resets after the first start, expected %ld", cpu_resets, expect_resets);
+	if (net_test) net_report();
 	if (rtg_check) {
 		std::printf("RTG: %d modes checked, %llu pixels wrong\n", rtg_modes_done, (unsigned long long)rtg_bad_total);
 		if (rtg_modes_done != rtg_modes_expected) FAIL("RTG: %d modes checked, expected %d", rtg_modes_done, rtg_modes_expected);
@@ -1293,60 +1527,33 @@ int main(int argc, char **argv) {
 	std::printf("floppy: %u sectors read, %u written, last error %u\n", sec_rd, sec_wr, ferr);
 	std::printf("video: %d frames, %d not blank, %d changes\n", frames, nonblank_frames, frames_changed);
 	{
-		uint32_t fixed = hread(0x40);
-		std::printf("palette: %llu entries written, %u pixels of the last frame in fixed colours, %llu pixels of earlier frames changed colour\n",
-		            (unsigned long long)palette_writes, fixed, (unsigned long long)palette_stale);
-		std::printf("pixels: %llu checked in palette mode, %llu with a wrong palette colour, %llu with a fixed colour not the nearest\n",
-		            (unsigned long long)pixels_checked, (unsigned long long)pixels_wrong, (unsigned long long)pixels_fixed_far);
-		if (pixels_wrong) FAIL("%llu pixels shown in the wrong palette colour", (unsigned long long)pixels_wrong);
-		if (pixels_fixed_far) FAIL("%llu pixels shown in a fixed colour that is not the nearest", (unsigned long long)pixels_fixed_far);
-		if (palette_stale) FAIL("palette entries changed while frames that use them could be on screen (%llu pixels)", (unsigned long long)palette_stale);
-		if (expect_no_fixed && fixed) FAIL("%u pixels of the last frame found no palette entry", fixed);
+		std::printf("pixels: %llu checked against the chipset's colour, %llu the same, %llu wrong; %llu flat 2 x 2 blocks, %llu with a wrong mean\n",
+		            (unsigned long long)pixels_checked, (unsigned long long)pixels_exact, (unsigned long long)pixels_wrong,
+		            (unsigned long long)blocks_checked, (unsigned long long)blocks_wrong);
+		if (pixels_wrong) FAIL("%llu pixels sent in a colour that is not the chipset's dithered", (unsigned long long)pixels_wrong);
+		if (blocks_wrong) FAIL("%llu flat 2 x 2 blocks whose mean is not the chipset's colour", (unsigned long long)blocks_wrong);
+		// the screen: what the core shows (gb_fb) against the frames written
+		uint32_t fbs = hread(0x40);
+		std::printf("screen (%s): %u frames, %llu pixels compared, %u wrong, %llu as before their last write; frames written %u, dropped %u\n",
+		            top->hdmi ? "HDMI" : "panel", top->disp_screens, (unsigned long long)top->disp_pixels, top->disp_errors,
+		            (unsigned long long)top->disp_old, top->disp_frames, top->disp_dropped);
+		std::printf("SRAM: %u words written, %u read, %u timing errors; scan lines read %u, late %u%s (register 0x40: %08X)\n",
+		            top->sram_writes, top->sram_reads, top->sram_errors, top->fb_lines, top->fb_late,
+		            top->fb_overflow ? ", write queue OVERFLOWED" : "", fbs);
+		if (top->disp_errors) FAIL("%u pixels on the screen that are not the frame's", top->disp_errors);
+		if (top->store_errors) FAIL("%u pixels in the core's frames that are not as sent", top->store_errors);
+		if (top->sram_errors) FAIL("%u SRAM timing errors", top->sram_errors);
+		if (top->fb_late) FAIL("%u scan lines shown before they were read", top->fb_late);
+		if (top->fb_overflow) FAIL("the frame store's write queue overflowed");
+		if (!top->hdmi && top->disp_old) FAIL("%llu pixels of a frame written while the panel showed it", (unsigned long long)top->disp_old);
+		if (frames >= 8 && !rtg_check && top->disp_screens == 0) FAIL("no frame of the screen was compared");
+		if ((fbs >> 31) != uint32_t(top->fb_overflow) || ((fbs >> 16) & 0x7FFF) != (top->fb_late & 0x7FFFu))
+			FAIL("register 0x40 is %08X, the frame store's state: late %u, overflow %d", fbs, top->fb_late, int(top->fb_overflow));
 		if (coltest_end) {
-			// sim/asm/coltest.s at the end: 256 new colours a frame. Every
-			// pixel is its line's colour exactly or, where the palette had
-			// no entry free, the fixed colour nearest below or above it.
 			if (!coltest_done) FAIL("coltest: the still picture was not checked");
-			// the twelve steps of seven frames: the palette has room, so
-			// no pixel of those frames may be in a fixed colour
-			{
-				int frames_checked = 0, frames_bad = 0;
-				for (auto &ff : frame_fixed) if (ff.first >= 1 && ff.first <= 12) {
-					frames_checked++;
-					if (ff.second && frames_bad++ < 5) FAIL("coltest: %u pixels in fixed colours in a frame of step %u, with room in the palette", ff.second, ff.first);
-				}
-				std::printf("coltest steps: %d frames of 12 colour changes, %d with pixels in fixed colours\n", frames_checked, frames_bad);
-				if (frames_checked < 70) FAIL("coltest: only %d frames of the twelve steps seen", frames_checked);
-			}
 			uint32_t f = chip16(0x100);
 			if (f < 32) FAIL("coltest: only %u steps", f);
-			int bad = 0, exact = 0, fixedpx = 0, tried = 0;
-			// the frame captured is one of the last few: find its F
-			for (uint32_t ff = f; ff + 6 > f && !tried; ff--) {
-				int ok = 0;
-				for (int y = 0; y < VH; y += 37) {
-					uint32_t c = (uint32_t(y) * 17 + coltest_offset(ff)) & 0xFFF;
-					uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
-					uint32_t p = fb[y * VW + 320];
-					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
-					if (dr <= 85 && dg <= 37 && db <= 85) ok++;
-				}
-				if (ok == 7) { tried = 1; f = ff; }
-			}
-			if (!tried) FAIL("coltest: the last frame matches none of the last frames' colours");
-			else for (int y = 0; y < VH; y++) {
-				uint32_t c = (uint32_t(y) * 17 + coltest_offset(f)) & 0xFFF;
-				uint32_t e = ((c >> 8) * 0x11) << 16 | (((c >> 4) & 15) * 0x11) << 8 | ((c & 15) * 0x11);
-				for (int x = 0; x < VW; x++) {
-					uint32_t p = fb[y * VW + x];
-					if (p == e) { exact++; continue; }
-					int dr = std::abs(int(p >> 16) - int(e >> 16)), dg = std::abs(int((p >> 8) & 255) - int((e >> 8) & 255)), db = std::abs(int(p & 255) - int(e & 255));
-					if (dr <= 85 && dg <= 37 && db <= 85) fixedpx++;
-					else if (bad++ < 5) FAIL("coltest moving pixel (%d,%d) is %06X, its colour %06X", x, y, p, e);
-				}
-			}
-			std::printf("coltest moving picture (F = %u): %d pixels exact, %d in fixed colours, %d wrong\n", f, exact, fixedpx, bad);
-			if (fixedpx == 0) FAIL("coltest: the palette never ran out, the fixed colours were not used");
+			else std::printf("coltest: %u steps of new colours, every frame's pixels checked\n", f);
 		}
 	}
 	std::printf("audio: mean |sample| %.1f (left %.1f, right %.1f)\n",
@@ -1363,6 +1570,10 @@ int main(int argc, char **argv) {
 	uint32_t hdd_rd = hread(0x28), hdd_wr = hread(0x2C), hdd_state = hread(0x24);
 	std::printf("hard disks: state %08X, %u sectors read, %u written; requests not known to the firmware: %u\n",
 	            hdd_state, hdd_rd, hdd_wr, core_bad_requests);
+	std::printf("hard disks: %u read requests to the firmware, %u sectors out of the buffer read ahead\n",
+	            fw_file_reads, unsigned(top->dbg_hdd_ahead));
+	if (expect_hdd_ahead >= 0 && long(top->dbg_hdd_ahead) < expect_hdd_ahead)
+		FAIL("%u hard disk sectors out of the buffer read ahead, expected at least %ld", unsigned(top->dbg_hdd_ahead), expect_hdd_ahead);
 	if (core_bad_requests) FAIL("the core sent requests the firmware does not know");
 	if (top->host_core_request) std::printf("hard disks: a core request is pending at the end\n");
 	for (int n = 0; n < 2; n++) {
@@ -1509,6 +1720,12 @@ int main(int argc, char **argv) {
 	if (expect_frame && nonblank_frames == 0) FAIL("no picture");
 	for (auto &c : checks) if (!c.done) FAIL("check at %.0f ms not reached", c.ms);
 	for (auto &c : mchecks) if (c.stage != 2) FAIL("mouse check not reached");
+	for (auto &c : rchecks) if (c.stage != 2) FAIL("rate check not reached");
+	if (expect_peak_l >= 0) {
+		std::printf("audio peaks: left %d, right %d\n", audio_peak_l, audio_peak_r);
+		if (audio_peak_l != expect_peak_l || audio_peak_r != expect_peak_r)
+			FAIL("audio peaks %d / %d, expected %d / %d", audio_peak_l, audio_peak_r, expect_peak_l, expect_peak_r);
+	}
 
 	// sim/asm/wrtest.s: track 0 of the image in slot 0 holds the sectors
 	if (floppy_write_test) {

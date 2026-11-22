@@ -79,7 +79,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  	input             ntsc,
  	input       [2:0] fastramcfg,
  	input       [2:0] cachecfg,
-@@ -82,6 +83,8 @@
+@@ -87,6 +88,8 @@
  
  	input             ar_on,         // the Action Replay is fitted ($A80000-$AFFFFF through the chip bus)
  	output reg        ar_fetch = 0,  // an instruction fetch outside $A80000-$AFFFFF (one clock)
@@ -88,7 +88,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  
  	input      [15:0] cdtv_din,
  	input             cdtv_selack,
-@@ -104,11 +107,22 @@
+@@ -109,11 +112,22 @@
  	output     [15:0] ramdin_lo,
  	input      [15:0] ramdout_hi,
  	input             ramready_l,
@@ -111,7 +111,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  wire        ec020      = (cpucfg[1:0] == 2'b11) & cpucfg[2];
  wire        ec030      = (cpucfg[1:0] == 2'b10) & cpucfg[2];
  wire        z3cpu      = cpucfg[1] & ~ec020;
-@@ -251,110 +265,157 @@
+@@ -256,110 +270,157 @@
  wire [15:0] cpu_dout_lo_p;
  wire        long_ack;
  wire [15:0] ramdout_hi_s;
@@ -355,7 +355,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  reg turbokick_d;
  reg ic_ena;
  always @(posedge clk) begin
-@@ -376,28 +437,8 @@
+@@ -381,28 +442,8 @@
  (* keep *) wire clkena_p_rest;
  wire skip_rd       = skipfetch & (cpustate_p == 2) & ~ramsel_i & ~fastchip_selack;
  
@@ -386,7 +386,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  
  // the Action Replay hides at the first instruction fetched from outside it:
  // a fetch the CPU takes (TG68K: busstate 0 acknowledged; the 68000: AS with
-@@ -420,7 +461,8 @@
+@@ -425,7 +466,8 @@
  wire req_gate = cyc_hold & ~inflight;
  assign clkena_p_thr  = cpu_req ? ~req_gate : ~cyc_hold;
  assign clkena_p_rest = (~cpu_req | chipready | fastchip_ready) & clkena_p_thr;
@@ -396,7 +396,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  
  // Game Bub port: the long word in one RAM transfer (ramready_l) also for the
  // RTG board's memory (its bytes swapped as ramdin's and ramdout2's are) and
-@@ -431,6 +473,16 @@
+@@ -436,6 +478,16 @@
  assign ramdout_hi_s = sel_rtg ? {ramdout_hi[7:0], ramdout_hi[15:8]} : ramdout_hi;
  assign long_ack  = ramlong1 & ramready_l;
  
@@ -413,7 +413,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
  reg       chipreq;
  reg [2:0] cpu_ipl;
  always @(posedge clk) begin
-@@ -541,6 +593,19 @@
+@@ -546,6 +598,19 @@
  		ic_clre <= 0;
  		ic_nq <= 0;
  	end
@@ -436,7 +436,7 @@ diff --git a/rtl/minimig/cpu_wrapper.sv b/rtl/minimig/cpu_wrapper.sv
 diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
 --- a/rtl/minimig_gamebub.sv
 +++ b/rtl/minimig_gamebub.sv
-@@ -142,7 +142,7 @@
+@@ -154,7 +154,7 @@
  // ===========================================================================
  // Clocks
  // ===========================================================================
@@ -445,7 +445,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  
  gb_clocks #(.DISPLAY_DIVIDER(DISPLAY_DIVIDER)) clocks
  (
-@@ -150,6 +150,7 @@
+@@ -162,6 +162,7 @@
  	.clk_114      (clk_114),
  	.clk_sys      (clk_sys),
  	.clk_sdram    (clk_sdram),
@@ -453,7 +453,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  	.clk_display  (clocks_clockOutDisplay),
  	.clk_spi      (clocks_clockOutSpi),
  	.locked       (locked)
-@@ -520,7 +521,12 @@
+@@ -557,7 +558,12 @@
  // 68000, 68010, 68EC020, 68020 and 68030 (with its MMU). The 68020 and
  // 68030 address 32 bits: Zorro III RAM and the RTG board's memory are in
  // the second SDRAM chip (see the SDRAM section).
@@ -467,7 +467,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  
  wire cpu_type = cpucfg_m[1];
  reg  cpu_ph1;
-@@ -557,9 +563,15 @@
+@@ -594,9 +600,15 @@
  wire [15:0] ram_dout;
  wire        ram_ready;
  wire        ram_long1;     // a long word in one RAM transfer (cpu_wrapper ramlong1)
@@ -483,7 +483,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  wire        ar_fetch;
  wire        dcache_sw_en;
  wire        toccata_ena, a2065_ena;
-@@ -605,6 +617,7 @@
+@@ -642,6 +654,7 @@
  	.reset_out    (cpu_nrst_out    ),
  
  	.clk          (clk_sys         ),
@@ -491,7 +491,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  	.ph1          (cpu_ph1         ),
  	.ph2          (cpu_ph2         ),
  
-@@ -631,7 +644,7 @@
+@@ -668,7 +681,7 @@
  	.fastchip_ready  (fastchip_ready),
  	.fastchip_lw     (             ),
  
@@ -500,7 +500,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  	.ntsc         (ntsc            ),
  	.cachecfg     (cachecfg        ),
  	.fastramcfg   (memcfg[6:4]     ),   // 0-3 Zorro II RAM, 6: Zorro III 16 MB (8 MB Zorro II on a 24 bit CPU)
-@@ -649,6 +662,7 @@
+@@ -688,6 +701,7 @@
  
  	.ar_on        (cart_on         ),   // a cartridge is fitted (its file, gb_boot): $A80000-$AFFFFF on the chip bus
  	.ar_fetch     (ar_fetch        ),
@@ -508,7 +508,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  
  	.ramsel       (ram_sel         ),
  	.ramaddr      (ram_addr        ),
-@@ -662,6 +676,11 @@
+@@ -701,6 +715,11 @@
  	.ramdin_lo    (ram_din_lo      ),
  	.ramdout_hi   (ram_dout_hi     ),
  	.ramready_l   (ram_ready_l     ),
@@ -520,7 +520,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  
  	.cpustate     (cpu_state       ),
  	.cacr         (cpu_cacr        ),
-@@ -706,7 +725,12 @@
+@@ -751,7 +770,12 @@
                               rtg_sel ? {3'b100, ram_addr[22:1]} :
                                         {2'b00, zram_sel, ram_addr[22:1]};
  
@@ -534,7 +534,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  (
  	.sysclk       (clk_114         ),
  	.sdclk        (clk_sdram       ),
-@@ -743,9 +767,11 @@
+@@ -788,9 +812,11 @@
  	.cpuWR_lo     (ram_din_lo      ),
  	.cpuRD_hi     (ram_dout_hi     ),
  	.ramready_l   (ram_ready_l     ),
@@ -549,7 +549,7 @@ diff --git a/rtl/minimig_gamebub.sv b/rtl/minimig_gamebub.sv
  
  	.chipWR       (ram_data        ),
  	.chipAddr     ({1'b0, ram_address}),
-@@ -845,7 +871,7 @@
+@@ -892,7 +918,7 @@
  	.ovr          (                 ),
  	.cart_ar      (cart_ar          ),
  	.ar_fetch     (ar_fetch         ),

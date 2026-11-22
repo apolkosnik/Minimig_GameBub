@@ -74,7 +74,7 @@ verilator --binary --timing -j "$(nproc)" -O2 --top-module tb_hdmi720 --Mdir "$B
 	-I"$BUILD" -I"$ROOT/rtl/minimig" -I"$ROOT/rtl/minimig/fx68k" \
 	"$XPM/xpm_cdc/hdl/xpm_cdc.sv" "$XPM/xpm_memory/hdl/xpm_memory.sv" "$XPM/xpm_fifo/hdl/xpm_fifo.sv" \
 	"${GENFILES[@]}" "${HDMI[@]}" "$FW/handheld/pll_reset_generator.sv" \
-	"$SIM/gen/tg68k.v" "$SIM/rtl/xilinx_sim.sv" "${CORE[@]}" "$HERE/tb_hdmi720.sv" \
+	"$SIM/gen/tg68k.v" "$SIM/rtl/xilinx_sim.sv" "$SIM/rtl/sram_sim.sv" "${CORE[@]}" "$HERE/tb_hdmi720.sv" \
 	> "$BUILD/build.log" 2>&1 || { grep -m20 -E "%Error" "$BUILD/build.log"; tail -5 "$BUILD/build.log"; exit 1; }
 "$BUILD/obj/tb_hdmi720" "$@" | tee "$BUILD/run.log"
 grep -q '^PASS' "$BUILD/run.log"

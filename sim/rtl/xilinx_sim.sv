@@ -66,7 +66,12 @@ module BUFG (input I, output O);
 endmodule
 
 // output DDR register: D1 after the rising edge of C, D2 after the falling
-// edge (gb_sdram_ctrl forwards the SDRAM clock with D1 = 0, D2 = 1)
+// edge. OPPOSITE_EDGE (gb_sdram_ctrl forwards the SDRAM clock with D1 = 0,
+// D2 = 1, constants): the clock itself selects. SAME_EDGE (gb_fb's SRAM
+// write enable): both inputs are taken at the rising edge, D1 is out from
+// it and D2 from the falling edge after it, as a register that changes at
+// both edges (so that a model sampling the pin at an edge sees the half
+// period that ends there).
 module ODDR #(
 	parameter DDR_CLK_EDGE = "OPPOSITE_EDGE",
 	parameter INIT = 1'b0,
@@ -74,5 +79,20 @@ module ODDR #(
 ) (
 	output Q, input C, input CE, input D1, input D2, input R, input S
 );
-	assign Q = C ? D1 : D2;
+	generate
+		if (DDR_CLK_EDGE == "SAME_EDGE") begin : same
+			reg q = INIT, d2 = INIT;
+			always @(posedge C or negedge C) begin
+				if (C) begin
+					q  <= D1;
+					d2 <= D2;
+				end
+				else q <= d2;
+			end
+			assign Q = q;
+		end
+		else begin : opp
+			assign Q = C ? D1 : D2;
+		end
+	endgenerate
 endmodule

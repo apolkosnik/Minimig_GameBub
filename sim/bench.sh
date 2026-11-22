@@ -1,6 +1,6 @@
 #!/bin/bash
 # Speed benchmark (sim/asm/membench.s): each loop on this tree's CPU (the
-# 68030, or the AP68040 in a build variant's tree) with the "2M + 16M Z3
+# 68030, or the AP68040 in a build variant's tree) with the "2M + 32M Z3
 # fast" memory preset; prints the loop's passes per 100 ms of the
 # simulation (the count at 600 ms less the count at 500 ms). Needs the
 # simulation built (sim/build.sh). Higher is faster; loops that run on both

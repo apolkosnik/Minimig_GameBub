@@ -13,13 +13,16 @@
 //                              gb_ide (hard disk images on the Gayle IDE
 //                              port, on-demand file commands)
 //                              gb_host (Game Bub MCU: files, settings)
-//   video_mixer / scaler       gb_video (720 x 256 into the framework)
+//   video_mixer / scaler       gb_video, gb_fb (720 x 256 in 18 bits, two
+//                              frames in the SRAM and block RAM)
 //   audio filters              gb_audio
 //   joysticks, PS/2            gb_input (Game Bub controllers, InputExtendedV0)
 //
 // SDRAM (32 MB, word addresses [24:1]):
 //   0x000000 - 0x3FFFFF   Amiga chip / slow RAM / Kickstart (as on MiSTer)
 //   0x400000 - 0x7FFFFF   Zorro II fast RAM (up to 8 MB; DDR3 on MiSTer)
+//   0xC00000 - 0xFFFFFF   the last 8 MB of the 32 MB Zorro III board (its
+//                         first 24 MB are in the second SDRAM chip)
 //   0x800000 - 0x9FFFFF   floppy image slots 0..3, 1 MB each
 //   0xB00000 - 0xB3FFFF   cartridge image (HRTmon or the Action Replay) as
 //                         loaded from the SD card
@@ -39,23 +42,24 @@ module minimig_gamebub
 	output logic        clocks_clockOutDisplay,
 	output logic        clocks_clockOutSpi,
 	output logic        clocks_locked,
-	output logic [2:0]  video_data_r,
-	output logic [2:0]  video_data_g,
-	output logic [2:0]  video_data_b,
+	output logic        video_data_r,
+	output logic        video_data_g,
+	output logic        video_data_b,
 	output logic        video_dataEnable,
 	output logic        video_vblank,
 	output logic        video_hblank,
 	output logic        video_fit,
-	output logic        video_palette_enable,
-	output logic        video_palette_write,
-	output logic [8:0]  video_palette_index,
-	output logic [23:0] video_palette_color,
 	input  logic        video_external_clock,
 	input  logic        video_external_active,
+	input  logic        video_external_hdmi,
 	input  logic [10:0] video_external_x,
 	input  logic [9:0]  video_external_y,
+	input  logic        video_external_sync,
+	input  logic        video_external_frame,
 	output logic [23:0] video_external_color,
 	output logic        video_external_enable,
+	input  logic        video_frames_write,
+	input  logic        video_frames_drop,
 	output logic [15:0] audio_left,
 	output logic [15:0] audio_right,
 	input  logic        host_mem_enable,
@@ -131,7 +135,15 @@ module minimig_gamebub
 	output logic [12:0] sdram_address,
 	input  logic [15:0] sdram_dataIn,
 	output logic [15:0] sdram_dataOut,
-	output logic        sdram_dataDir
+	output logic        sdram_dataDir,
+	output logic        sram_ceN,
+	output logic        sram_weN,
+	output logic        sram_oeN,
+	output logic [1:0]  sram_writeMaskN,
+	output logic [17:0] sram_address,
+	input  logic [15:0] sram_dataIn,
+	output logic [15:0] sram_dataOut,
+	output logic        sram_dataDir
 );
 
 localparam [24:1] SLOT_BASE  = 24'h800000;
@@ -190,13 +202,27 @@ wire [31:0] drv_tracks;
 wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
 wire  [4:0] video_vpos;
-wire        video_fit_set, video_palette_set, video_palette_test;
-wire [19:0] video_fixed_pixels;
+wire        video_fit_set;
+wire [15:0] fb_lines, fb_late;
+// the A2065's frames (gb_host <-> gb_a2065)
+wire        net_board, net_up, net_tx_valid, net_tx_taken, net_rx_we, net_rx_commit, net_rx_busy;
+wire [23:0] net_serial;
+wire [10:0] net_tx_len, net_rx_len;
+wire  [8:0] net_tx_raddr, net_rx_waddr;
+wire [31:0] net_tx_rdata, net_rx_wdata;
+wire [15:0] net_sent, net_received, net_dropped;
+// its place on the chip bus (minimig.sv)
+wire        a2065_sel, a2065_rw, a2065_uds_n, a2065_lds_n, a2065_irq;
+wire [23:1] a2065_addr;
+wire [15:0] a2065_wdata, a2065_rdata;
+wire        fb_overflow;
 wire  [7:0] fdd_error;
 wire [15:0] fdd_sectors_read, fdd_sectors_written;
 wire        hmouse_valid;
 wire [15:0] hmouse_dx, hmouse_dy;
 wire  [2:0] hmouse_btn;
+wire        hwheel_valid;
+wire  [7:0] hwheel;
 wire        hkey_valid, hkey_down;
 wire  [7:0] hkey_usage;
 wire        f_idle, f_committing;
@@ -271,12 +297,12 @@ gb_host #(
 	.key_select       (key_select),
 	.video_vpos       (video_vpos),
 	.video_fit        (video_fit_set),
-	.video_palette    (video_palette_set),
-	.video_palette_test (video_palette_test),
 	.hmouse_valid     (hmouse_valid),
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
 	.hmouse_btn       (hmouse_btn),
+	.hwheel_valid     (hwheel_valid),
+	.hwheel           (hwheel),
 	.hkey_valid       (hkey_valid),
 	.hkey_usage       (hkey_usage),
 	.hkey_down        (hkey_down),
@@ -305,7 +331,22 @@ gb_host #(
 	.ide_chs1         (ide_chs1),
 	.ide_total0       (ide_total0),
 	.ide_total1       (ide_total1),
-	.video_fixed_pixels (video_fixed_pixels)
+	.fb_state         ({fb_overflow, fb_late[14:0], fb_lines}),
+	.net_board        (net_board),
+	.net_up           (net_up),
+	.net_serial       (net_serial),
+	.net_tx_valid     (net_tx_valid),
+	.net_tx_len       (net_tx_len),
+	.net_tx_taken     (net_tx_taken),
+	.net_tx_raddr     (net_tx_raddr),
+	.net_tx_rdata     (net_tx_rdata),
+	.net_rx_we        (net_rx_we),
+	.net_rx_waddr     (net_rx_waddr),
+	.net_rx_wdata     (net_rx_wdata),
+	.net_rx_commit    (net_rx_commit),
+	.net_rx_len       (net_rx_len),
+	.net_rx_busy      (net_rx_busy),
+	.net_counts       ({net_dropped, net_received, net_sent})
 );
 
 // ===========================================================================
@@ -640,6 +681,8 @@ cpu_wrapper cpu_wrapper
 	.toccata_ena  (toccata_ena     ),
 	.a2065_ena    (a2065_ena       ),
 	.a2065_base   (a2065_base      ),
+	.a2065_on     (net_board       ),
+	.a2065_serial (net_serial      ),
 	.toccata_base (toccata_base    ),
 	.cdtv_base    (cdtv_base       ),
 	.cdtv_mode    (1'b0            ),
@@ -692,8 +735,12 @@ wire        _ram_oe;       // sram output enable
 
 // CPU RAM. Chip 0: main memory as on MiSTer, Zorro II RAM ($200000-$9FFFFF,
 // ramaddr[28] set) in the next 8 MB. Chip 1 (cpu_sdram_addr[25]): the RTG
-// board's 8 MB of video memory (ramaddr[28:23] = 001110) at 0, the 16 MB
-// Zorro III board (ramaddr[27] set) at 16 MB.
+// board's 8 MB of video memory (ramaddr[28:23] = 001110) at 0. The 32 MB
+// Zorro III board (ramaddr[27] set, ramaddr[24:1] its own address): its
+// first 16 MB at chip 1's 16 MB, the next 8 MB at chip 1's 8 MB, and its
+// last 8 MB in the top 8 MB of chip 0, which shares its slots with the
+// chipset (the slower part, at the board's top: exec fills a memory
+// region from the bottom).
 wire        z3_sel   = ram_addr[27] & ~ram_addr[28];
 wire        rtg_sel  = (ram_addr[28:23] == 6'b001110);
 // the RTG picture's burst port of the SDRAM controller (gb_rtg below)
@@ -702,7 +749,9 @@ wire        burst_req, burst_urgent, burst_ack, burst_valid;
 wire [15:0] burst_data;
 
 wire        zram_sel = |ram_addr[28:26];
-wire [25:1] cpu_sdram_addr = z3_sel  ? {2'b11, ram_addr[23:1]} :
+wire [25:1] cpu_sdram_addr = z3_sel  ? (!ram_addr[24]             ? {2'b11,  ram_addr[23:1]} :
+                                        !ram_addr[23]             ? {3'b101, ram_addr[22:1]} :
+                                                                    {3'b011, ram_addr[22:1]}) :
                              rtg_sel ? {3'b100, ram_addr[22:1]} :
                                        {2'b00, zram_sel, ram_addr[22:1]};
 
@@ -779,6 +828,8 @@ gb_sdram_ctrl ram1
 // RTG: the board's registers and palette (fastchip, as on MiSTer) and its
 // picture from the second SDRAM chip on HDMI (gb_rtg)
 // ===========================================================================
+wire        rtg_on;
+wire [23:0] rtg_color;
 gb_rtg rtg
 (
 	.clk_sys     (clk_sys              ),
@@ -793,7 +844,7 @@ gb_rtg rtg
 	.sel_ack     (fastchip_selack      ),
 	.ready       (fastchip_ready       ),
 	.dout        (fastchip_dout        ),
-	.enable      (video_external_enable),
+	.enable      (rtg_on               ),
 
 	.clk_114     (clk_114              ),
 	.burstAddr   (burst_addr           ),
@@ -806,7 +857,7 @@ gb_rtg rtg
 	.clk_av      (video_external_clock ),
 	.av_x        (video_external_x     ),
 	.av_y        (video_external_y     ),
-	.av_color    (video_external_color ),
+	.av_color    (rtg_color            ),
 	.dbg_lines   (rtg_lines            ),
 	.dbg_late    (rtg_late             )
 );
@@ -823,6 +874,7 @@ wire  [7:0] red, green, blue;
 wire        hs, vs, hblank, vbl, lace, field1, diw;
 wire  [1:0] res;
 wire [14:0] ldata, rdata;
+wire [15:0] toc_left, toc_right;   // the Toccata sound card's output
 
 minimig minimig
 (
@@ -931,8 +983,8 @@ minimig minimig
 	.toccata_ena  (toccata_ena      ),
 	.toccata_base (toccata_base     ),
 	.cdtv_base    (cdtv_base        ),
-	.toccata_aud_left (             ),
-	.toccata_aud_right(             ),
+	.toccata_aud_left (toc_left     ),
+	.toccata_aud_right(toc_right    ),
 	.a2065_ena    (a2065_ena        ),
 	.a2065_base   (a2065_base       ),
 	.cdtv_mode    (                 ),
@@ -980,16 +1032,14 @@ minimig minimig
 	.ide_read     (ide_read         ),
 	.ide_readdata (ide_readdata     ),
 
-	.a2065_clk_ddr(clk_114          ),
-	.a2065_mem_address    (         ),
-	.a2065_mem_burstcount (         ),
-	.a2065_mem_read       (         ),
-	.a2065_mem_readdata   (64'd0    ),
-	.a2065_mem_readdatavalid(1'b0   ),
-	.a2065_mem_writedata  (         ),
-	.a2065_mem_byteenable (         ),
-	.a2065_mem_write      (         ),
-	.a2065_mem_waitrequest(1'b0     ),
+	.a2065_sel    (a2065_sel        ),
+	.a2065_addr   (a2065_addr       ),
+	.a2065_wdata  (a2065_wdata      ),
+	.a2065_rw     (a2065_rw         ),
+	.a2065_uds_n  (a2065_uds_n      ),
+	.a2065_lds_n  (a2065_lds_n      ),
+	.a2065_rdata  (a2065_rdata      ),
+	.a2065_irq    (a2065_irq        ),
 
 	.USER_IN      (7'h7F            ),
 	.USER_OUT     (                 ),
@@ -1001,8 +1051,42 @@ minimig minimig
 );
 
 // ===========================================================================
+// The A2065 Ethernet board: the LANCE and its RAM (gb_a2065); its frames go
+// to the MCU and come from it through gb_host
+// ===========================================================================
+gb_a2065 a2065
+(
+	.clk       (clk_sys),
+	.reset     (~cpu_rst),
+	.sel       (a2065_sel),
+	.addr      (a2065_addr),
+	.wdata     (a2065_wdata),
+	.rw        (a2065_rw),
+	.uds_n     (a2065_uds_n),
+	.lds_n     (a2065_lds_n),
+	.rdata     (a2065_rdata),
+	.irq       (a2065_irq),
+	.net_up    (net_up),
+	.tx_valid  (net_tx_valid),
+	.tx_len    (net_tx_len),
+	.tx_taken  (net_tx_taken),
+	.tx_raddr  (net_tx_raddr),
+	.tx_rdata  (net_tx_rdata),
+	.rx_we     (net_rx_we),
+	.rx_waddr  (net_rx_waddr),
+	.rx_wdata  (net_rx_wdata),
+	.rx_commit (net_rx_commit),
+	.rx_len    (net_rx_len),
+	.rx_busy   (net_rx_busy),
+	.dbg_tx    (net_sent),
+	.dbg_rx    (net_received),
+	.dbg_drop  (net_dropped)
+);
+
+// ===========================================================================
 // Video, audio, input
 // ===========================================================================
+wire [17:0] video_data;
 gb_video video
 (
 	.clk     (clk_sys),
@@ -1013,23 +1097,64 @@ gb_video video
 	.drop_field (field1),
 	.fit_height (video_fit_set),
 	.fit     (video_fit),
-	.palette_mode (video_palette_set),
-	.palette_test (video_palette_test),
-	.palette_on   (video_palette_enable),
 	.r_in    (red),
 	.g_in    (green),
 	.b_in    (blue),
 	.hsync_n (hs),
 	.vsync_n (vs),
-	.index   ({video_data_r, video_data_g, video_data_b}),
+	.data    (video_data),
 	.de      (video_dataEnable),
-	.pal_we    (video_palette_write),
-	.pal_index (video_palette_index),
-	.pal_color (video_palette_color),
-	.fixed_pixels (video_fixed_pixels),
 	.hblank  (video_hblank),
-	.vblank  (video_vblank)
+	.vblank  (video_vblank),
+	.dbg_color ()
 );
+// (the framework's own frame buffers are not built: VideoV0.ownFrames)
+assign {video_data_r, video_data_g, video_data_b} = 3'b000;
+
+// The two frames (the SRAM and block RAM) and the picture on the screen
+// shown: the handheld's panel, or HDMI, where the RTG board's picture
+// takes its place while it is on.
+wire [23:0] fb_color;
+gb_fb fb
+(
+	.clk_sys         (clk_sys),
+	.reset           (reset_d),
+	.px_de           (video_dataEnable),
+	.px_data         (video_data),
+	.px_hblank       (video_hblank),
+	.px_vblank       (video_vblank),
+	.fit             (video_fit),
+	.wr_frame        (video_frames_write),
+	.wr_drop         (video_frames_drop),
+
+	.clk_114         (clk_114),
+	.reset_114       (reset_114),
+	.sram_ceN        (sram_ceN),
+	.sram_weN        (sram_weN),
+	.sram_oeN        (sram_oeN),
+	.sram_writeMaskN (sram_writeMaskN),
+	.sram_address    (sram_address),
+	.sram_dataIn     (sram_dataIn),
+	.sram_dataOut    (sram_dataOut),
+	.sram_dataDir    (sram_dataDir),
+
+	.clk_av          (video_external_clock),
+	.av_hdmi         (video_external_hdmi),
+	.av_sync         (video_external_sync),
+	.av_frame        (video_external_frame),
+	.av_x            (video_external_x),
+	.av_y            (video_external_y),
+	.av_color        (fb_color),
+
+	.dbg_lines       (fb_lines),
+	.dbg_late        (fb_late),
+	.dbg_overflow    (fb_overflow)
+);
+
+(* ASYNC_REG = "TRUE" *) reg [1:0] rtg_on_av = 2'b00;
+always @(posedge video_external_clock) rtg_on_av <= {rtg_on_av[0], rtg_on};
+assign video_external_enable = 1'b1;
+assign video_external_color  = (rtg_on_av[1] && video_external_hdmi) ? rtg_color : fb_color;
 
 gb_audio audio
 (
@@ -1041,6 +1166,8 @@ gb_audio audio
 	.mute      (~focus | core_reset),
 	.ldata     (ldata),
 	.rdata     (rdata),
+	.toc_left  (toc_left),
+	.toc_right (toc_right),
 	.left      (audio_left),
 	.right     (audio_right)
 );
@@ -1082,6 +1209,8 @@ gb_input input_map
 	.hmouse_dx  (hmouse_dx),
 	.hmouse_dy  (hmouse_dy),
 	.hmouse_btn (hmouse_btn),
+	.hwheel_valid(hwheel_valid),
+	.hwheel     (hwheel),
 	.hkey_valid (hkey_valid),
 	.hkey_usage (hkey_usage),
 	.hkey_down  (hkey_down),

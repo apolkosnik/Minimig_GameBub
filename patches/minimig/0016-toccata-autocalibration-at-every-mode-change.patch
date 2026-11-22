@@ -1,0 +1,17 @@
+--- a/rtl/minimig/fpga-toccata/toccata.sv
++++ b/rtl/minimig/fpga-toccata/toccata.sv
+@@ -446,6 +446,14 @@
+                     end
+                     CODEC_REG_1: begin // 'h60xx - Index register
+                         if (lwr == 1'b1) begin
++                            // Game Bub port: as the AD1848 does, autocalibration
++                            // begins whenever the mode change bit (MCE, bit 6)
++                            // is taken away while ACAL is set, not only when
++                            // ACAL is first set: toccata.library waits for it
++                            // every time it is loaded, with interrupts off
++                            if (ad1848_index[6] && !data_in[6] && ad1848_regs[9][3]) begin
++                                auto_callibration <= 50;
++                            end
+                             ad1848_index <= data_in[7:0]; // mod 16
+                             `ifdef DEBUG
+                             $display("Set index: %1h", data_in[3:0]);

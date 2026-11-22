@@ -6,6 +6,11 @@ It is its own core on the card, `apolkosnik.Minimig040`, next to the standard on
 The built core is in `releases/apolkosnik.Minimig040/`: copy it to
 `/cores/apolkosnik.Minimig040/`.
 
+The picture is the standard core's: 18 bits a pixel, its two frames in the board's SRAM
+and block RAM (`gb_fb`, see the main README). That takes 17 block RAMs fewer than the
+two 9 bit frames the framework kept, which this build, at 131 of the FPGA's 135 with
+them, had no room to spare for.
+
 The dock's keyboard and mouse come from the handheld firmware fork, which picks the
 cores it sends them to by their ID: it has to know the Minimig core's build variants
 (see *Keyboard and mouse on the dock* in the main README). A firmware build that knows
@@ -82,6 +87,8 @@ pinned commit, and the bus bridge of the AP68040 port of Minimig-AGA_MiSTer
   the tags' true dual port RAM (both ports written in one process) were built from
   registers: 55,000 LUTs. Their 64-word arrays are now LUT RAM (a 128-bit line in block
   RAM takes two 512-word RAMs for 64 words): 32,000 LUTs and 11 block RAM tiles.
+* `0007`: the Zorro III board is 32 MB (the main README's patch `0012`): the bridge
+  compares its base in 32 MB when it decides what is fast RAM.
 * `0002-bridge-gamebub.patch`: the Zorro III board's base in this port's 16 MB units,
   the Kickstart ROM cacheable (read only to the CPU, loaded before it starts), and
   AP68040 main's top level (no VBR / CACR / cache maintenance outputs: the NMI vector
