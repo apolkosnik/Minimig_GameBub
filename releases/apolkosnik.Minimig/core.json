@@ -1,10 +1,11 @@
 {
+	"min_firmware": "1.1.0-beta5",
 	"metadata": {
 		"id": "apolkosnik.Minimig",
 		"name": "Minimig (Amiga)",
 		"author": "Minimig team, apolkosnik",
-		"version": "0.8.0",
-		"release_date": "2026-11-20",
+		"version": "0.9.0",
+		"release_date": "2026-11-22",
 		"url": "https://github.com/apolkosnik/Minimig_GameBub",
 		"license": "GPL-3.0-or-later"
 	},

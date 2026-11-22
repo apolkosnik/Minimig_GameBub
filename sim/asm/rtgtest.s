@@ -1,6 +1,6 @@
 ; RTG test ROM (256 KB at $FC0000) for the Game Bub Minimig bench: the
 ; MiSTer RTG board (rtg.sv registers through fastchip, gb_rtg's picture on
-; the framework's external picture). Run with the 68030 and the "2M + 16M
+; the framework's external picture). Run with the 68030 and the "2M + 32M
 ; Z3 fast" memory preset and --rtg-check.
 ;
 ;   1  autoconfig: the Zorro III memory board at $40000000, the RTG board at
@@ -58,6 +58,7 @@ start:
 
 	; ---- 1: autoconfig
 	move.w	#1,d7
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#(Z3BASE>>16),$E80044	; Zorro III memory board: base
 	move.w	#(RTGBASE>>16),$E80044	; RTG board: base
 

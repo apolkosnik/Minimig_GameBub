@@ -4,7 +4,7 @@
 ; ramlong1 / ramready_l) and, on the AP68040 variant, the data cache's line
 ; pushes and fills. Assembled four ways (sim/asm/build.sh):
 ;
-;   ramtest       68030, "2M + 16M Z3 fast": the Zorro III RAM and the RTG
+;   ramtest       68030, "2M + 32M Z3 fast": the Zorro III RAM and the RTG
 ;                 board's memory (SDRAM chip 1)
 ;   ramtest_z2    68030, "2M + 8M fast": the Zorro II RAM (SDRAM chip 0)
 ;                 and the RTG board's memory
@@ -84,8 +84,10 @@ start:
 	; ---- 1: autoconfig
 	move.w	#1,$100
 	ifd	ZTWO
-	move.w	#$2000,$E80048		; Zorro II RAM board ($200000)
-	else
+	move.w	#$2000,$E80048		; Zorro II RAM board ($200000): the first in the chain
+	endc
+	move.b	#$E9,$E80048		; the Toccata sound card, next in the chain: $E90000
+	ifnd	ZTWO
 	move.w	#(Z3BASE>>16),$E80044	; Zorro III RAM board
 	endc
 	move.w	#(RTGBASE>>16),$E80044	; RTG board

@@ -1,5 +1,5 @@
 ; 68040 MMU and data cache test ROM (256 KB at $FC0000) for the Game Bub
-; Minimig bench: the AP68040 variant (variants/ap68040), memory "2M + 16M Z3
+; Minimig bench: the AP68040 variant (variants/ap68040), memory "2M + 32M Z3
 ; fast". 4 KB pages (TC $8000), supervisor root pointer SRP = $10000:
 ;   - DTT0 / ITT0 ($0000C040) map $00000000-$00FFFFFF one to one, not
 ;     cached (chip RAM, the chips, the ROM: everything the program uses
@@ -125,6 +125,7 @@ start:
 .tc:	move.l	d0,(a1)+
 	add.l	#4096,d0
 	dbra	d6,.tc
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#(Z3>>16),$E80044	; autoconfig: the Zorro III board at Z3
 	lea	Z3,a0			; its first 16 KB: $FFFFFFFF
 	move.w	#4095,d0

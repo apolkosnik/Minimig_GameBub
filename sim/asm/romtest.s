@@ -2,7 +2,7 @@
 ; (the AP68040 variant): the ROM checksummed as data, the ways Kickstart and
 ; programs read it. sim/asm/build.sh sets the long at $FFFFF8 so that the
 ; 64K longs of the ROM add up to zero (with carries dropped). Run with the
-; "2M + 16M Z3 fast" memory preset (method 5).
+; "2M + 32M Z3 fast" memory preset (method 5).
 ;
 ; Each method runs eight times; the first that does not add up to zero
 ; shows as COLOR00 and the test stops:
@@ -38,6 +38,7 @@ start:
 	lea	$7FFF0,sp
 	move.w	#$0FF0,$180(a6)		; yellow: running
 	clr.w	$102
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#$4000,$E80044		; Zorro III RAM board at $40000000
 	move.w	#$5000,$E80044		; RTG board
 	move.l	#$0000C040,d0		; DTT0: $00xxxxxx noncacheable ...

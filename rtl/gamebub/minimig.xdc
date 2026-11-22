@@ -82,3 +82,35 @@ set_false_path -to [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */rtg/m_t
 # is constrained by the clock it goes to; q_line is also read in clk_av.)
 set_false_path -from [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */rtg/q_line_reg* || NAME =~ */rtg/q_buf_reg* || NAME =~ */rtg/q_base_reg* || NAME =~ */rtg/q_stride_reg* || NAME =~ */rtg/q_hs_reg* || NAME =~ */rtg/q_bpp_reg*)}] \
     -to [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clocks/mmcm/CLKOUT0}]]
+
+########################################
+# The picture's frames (gb_fb): the SRAM
+########################################
+# Every SRAM pin comes from a register in its I/O block and WE from an ODDR,
+# so the pins change together (as in the Game Bub 3DO core, whose SRAM
+# controller found on the board that placement-dependent fabric delays
+# between them corrupted writes). The read data goes into I/O block
+# registers. The data bus direction is one fabric register for all 16 pins
+# (the framework has a single direction bit); the bus only turns around
+# with an idle clock in between.
+set_property IOB TRUE [get_cells -hier -filter {(NAME =~ */fb/o_addr_reg* || NAME =~ */fb/o_data_reg* || NAME =~ */fb/o_mask_reg* || NAME =~ */fb/o_oe_n_reg* || NAME =~ */fb/i_data_reg*) && IS_SEQUENTIAL}]
+# The SRAM is asynchronous. gb_fb takes read data three clk_114 clocks after
+# the edge that puts the address out, and the next address goes out at that
+# edge. Read data: the address's clock-to-pad delay (at most 5 ns), the
+# traces (0.5 ns each way) and a 10 ns part's access time; it holds for the
+# address's minimum clock-to-pad delay (1.5 ns) plus the part's output hold
+# (2.5 ns) after the next address goes out.
+set fb_clk_114 [get_clocks -of_objects [get_pins -hier -filter {NAME =~ */clocks/mmcm/CLKOUT0}]]
+set_input_delay -clock $fb_clk_114 -max 16.0 [get_ports sram_io[*]]
+set_input_delay -clock $fb_clk_114 -min  4.0 [get_ports sram_io[*]]
+set_multicycle_path -setup 3 -from [get_ports sram_io[*]]
+set_multicycle_path -hold 2 -from [get_ports sram_io[*]]
+
+# gb_fb between its clocks. The screen's request (q_*, clk_av) is held from
+# a scan line's start to the next and taken by clk_114 after its toggle went
+# through r_ts; `fit` (clk_sys) changes between frames and goes through two
+# registers to clk_av; the RTG board's enable likewise (rtg_on_av). The line
+# buffers are block RAM written in clk_114 and read in clk_av.
+set_false_path -to [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */fb/r_ts_reg[0]* || NAME =~ */fb/fit_s_reg[0]* || NAME =~ */rtg_on_av_reg[0]*)}]
+set_false_path -from [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */fb/q_new_reg* || NAME =~ */fb/q_hdmi_reg* || NAME =~ */fb/q_frame_reg* || NAME =~ */fb/q_need_reg*)}] \
+    -to $fb_clk_114

@@ -28,7 +28,9 @@
 // on MiSTer: kbd_mouse_type 0 = X delta, 1 = Y delta, 2 = Amiga key code
 // (bit 7 = key up), each event toggles kbd_mouse_level. Mouse motion is
 // always sent as an X event followed by a Y event (either may be 0), as
-// Main_MiSTer does: userio takes a second Y event in a row as the wheel.
+// Main_MiSTer does: userio takes a second Y event in a row as the wheel,
+// and so the host mouse's wheel is sent, after an X and a Y event (of no
+// motion when the mouse stands still).
 //
 // joy_port2 is the joystick in the Amiga's port 2 (the game port); minimig
 // takes it on _joy1 (MiSTer's first joystick), port 1 on _joy2.
@@ -63,6 +65,8 @@ module gb_input
 	input      [15:0] hmouse_dx,     // signed, right positive
 	input      [15:0] hmouse_dy,     // signed, down positive
 	input       [2:0] hmouse_btn,    // {middle, right, left}
+	input             hwheel_valid,  // one clock per host wheel report
+	input       [7:0] hwheel,        // signed, away from the user positive
 
 	input             hkey_valid,    // one clock per host key event
 	input       [7:0] hkey_usage,    // USB HID keyboard usage
@@ -106,6 +110,8 @@ reg [$clog2(MOUSE_TICK+1)-1:0] mtick;
 reg  [7:0] held;             // ticks the D-pad has been held (acceleration)
 reg signed [15:0] acc_x, acc_y;   // motion not yet sent to the Amiga
 reg        y_next;                // the X half of a motion was sent, Y follows
+reg signed [7:0] acc_w;           // wheel clicks not yet sent
+reg        z_next;                // X and Y were sent, the wheel follows
 
 // signed saturation to 16 bits
 function automatic signed [15:0] sat16(input signed [17:0] v);
@@ -114,6 +120,11 @@ endfunction
 // the part of an accumulated motion sent in one event (-127..127)
 function automatic signed [7:0] chunk(input signed [15:0] v);
 	chunk = (v > 16'sd127) ? 8'sd127 : (v < -16'sd127) ? -8'sd127 : v[7:0];
+endfunction
+
+// signed saturation to -127..127
+function automatic signed [7:0] sat8(input signed [8:0] v);
+	sat8 = (v > 9'sd127) ? 8'sd127 : (v < -9'sd127) ? -8'sd127 : v[7:0];
 endfunction
 
 wire       any_dir = btn_up | btn_down | btn_left | btn_right;
@@ -273,6 +284,8 @@ always @(posedge clk) begin
 		acc_x           <= 16'sd0;
 		acc_y           <= 16'sd0;
 		y_next          <= 1'b0;
+		acc_w           <= 8'sd0;
+		z_next          <= 1'b0;
 		kprev           <= 4'd0;
 		kdown_pend      <= 4'd0;
 		kup_pend        <= 4'd0;
@@ -310,11 +323,14 @@ always @(posedge clk) begin
 		begin : mouse_events
 			reg signed [17:0] ax, ay;
 			reg signed  [7:0] cx, cy;
-			reg               send_key, send_x, send_y, send_hkey;
+			reg signed  [8:0] aw;
+			reg               send_key, send_x, send_y, send_z, send_hkey;
 			cx = chunk(acc_x);
 			cy = chunk(acc_y);
 			ax = {{2{acc_x[15]}}, acc_x};
 			ay = {{2{acc_y[15]}}, acc_y};
+			aw = {acc_w[7], acc_w};
+			if (hwheel_valid) aw = aw + {hwheel[7], hwheel};
 
 			if (mtick != '0) mtick <= mtick - 1'd1;
 			else begin
@@ -337,11 +353,14 @@ always @(posedge clk) begin
 			if (kgap != '0) kgap <= kgap - 1'd1;
 
 			// one event at a time
-			// a motion is an X event and then a Y event, nothing between
-			send_hkey = (evgap == 9'd0) && !y_next && !kq_empty && kgap == '0;
-			send_key = (evgap == 9'd0) && !y_next && !send_hkey && found && kgap == '0;
-			send_x   = (evgap == 9'd0) && !y_next && !send_hkey && !send_key && (acc_x != 16'sd0 || acc_y != 16'sd0);
+			// a motion is an X event and then a Y event, and then with wheel
+			// clicks waiting a third for them, nothing between
+			send_hkey = (evgap == 9'd0) && !y_next && !z_next && !kq_empty && kgap == '0;
+			send_key = (evgap == 9'd0) && !y_next && !z_next && !send_hkey && found && kgap == '0;
+			send_x   = (evgap == 9'd0) && !y_next && !z_next && !send_hkey && !send_key
+			           && (acc_x != 16'sd0 || acc_y != 16'sd0 || acc_w != 8'sd0);
 			send_y   = (evgap == 9'd0) && y_next;
+			send_z   = (evgap == 9'd0) && z_next;
 
 			if (evgap != 9'd0) evgap <= evgap - 9'd1;
 			if (send_hkey) begin
@@ -374,11 +393,21 @@ always @(posedge clk) begin
 				kbd_mouse_level <= ~kbd_mouse_level;
 				ay = ay - {{10{cy[7]}}, cy};
 				y_next <= 1'b0;
+				z_next <= acc_w != 8'sd0;
+				evgap <= EV_GAP[8:0];
+			end
+			else if (send_z) begin
+				kbd_mouse_type  <= 2'd1;
+				kbd_mouse_data  <= acc_w;
+				kbd_mouse_level <= ~kbd_mouse_level;
+				aw = aw - {acc_w[7], acc_w};
+				z_next <= 1'b0;
 				evgap <= EV_GAP[8:0];
 			end
 
 			acc_x <= sat16(ax);
 			acc_y <= sat16(ay);
+			acc_w <= sat8(aw);
 		end
 	end
 end

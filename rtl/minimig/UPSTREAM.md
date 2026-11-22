@@ -46,6 +46,11 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `rtl/fx68k/fx68k.sv` -> `fx68k/fx68k.sv`
 - `rtl/fx68k/fx68kAlu.sv` -> `fx68k/fx68kAlu.sv`
 - `rtl/fx68k/uaddrPla.sv` -> `fx68k/uaddrPla.sv`
+- `rtl/fpga-toccata/toccata.sv` -> `fpga-toccata/toccata.sv`
+- `rtl/fpga-toccata/toccata_capture.sv` -> `fpga-toccata/toccata_capture.sv`
+- `rtl/fpga-toccata/toccata_fifo.sv` -> `fpga-toccata/toccata_fifo.sv`
+- `rtl/fpga-toccata/toccata_playback.sv` -> `fpga-toccata/toccata_playback.sv`
+- `rtl/fpga-toccata/toccata_volume.sv` -> `fpga-toccata/toccata_volume.sv`
 - `rtl/gary.v` -> `gary.sv`
 - `rtl/gayle.v` -> `gayle.sv`
 - `rtl/ide.v` -> `ide.sv`
@@ -91,3 +96,8 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `0009-no-32-bit-chip-read-under-the-overlay.patch`
 - `0010-cartridge-level-7-acknowledge-without-a-bus-cycle.patch`
 - `0011-no-kickstart-mirror-at-a80000-with-a-cartridge.patch`
+- `0012-zorro-iii-board-of-32-mb.patch`
+- `0013-a2065-on-the-chip-bus.patch`
+- `0014-toccata-sound-card.patch`
+- `0015-toccata-volume-table-as-constants.patch`
+- `0016-toccata-autocalibration-at-every-mode-change.patch`

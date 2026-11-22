@@ -13,7 +13,7 @@ module memory_router
 	input         ar_on,
 
 	input         z2ram_ena,
-	input   [7:0] z3ram_base0,   // Game Bub port: a 16 MB board
+	input   [7:0] z3ram_base0,   // Game Bub port: a 32 MB board (its base in 16 MB units)
 	input         z3ram_ena0,
 	input   [3:0] z3ram_base1,
 	input         z3ram_ena1,
@@ -32,7 +32,7 @@ module memory_router
 	output [28:1] ramaddr
 );
 
-assign sel_z3ram0   = (cpu_addr[31:24] == z3ram_base0) && z3ram_ena0;
+assign sel_z3ram0   = (cpu_addr[31:25] == z3ram_base0[7:1]) && z3ram_ena0;
 assign sel_z3ram1   = (cpu_addr[31:28] == z3ram_base1) && z3ram_ena1;
 assign sel_z2ram    = !cpu_addr[31:24] && (cpu_addr[23] ^ |cpu_addr[22:21]) && z2ram_ena; // addr[23:21] = 1..4
 assign sel_zram     = sel_z3ram0 | sel_z3ram1 | sel_z2ram;
@@ -59,7 +59,8 @@ assign sel_chipram   = !cpu_addr[31:21] && cchip;
 
 assign ramaddr[28]    = sel_z2ram | sel_z3ram1;
 assign ramaddr[27]    = sel_z3ram0 | (sel_z3ram1 & cpu_addr[27]);
-assign ramaddr[26:23] = (sel_z3ram0 | sel_z3ram1) ? cpu_addr[26:23] : (sel_rtg ? 4'b1110 : 4'b0000);
+// (Game Bub port: the 32 MB board's own 25 address bits)
+assign ramaddr[26:23] = sel_z3ram0 ? {2'b00, cpu_addr[24:23]} : sel_z3ram1 ? cpu_addr[26:23] : (sel_rtg ? 4'b1110 : 4'b0000);
 assign ramaddr[22:19] = cpu_addr[22:19];
 assign ramaddr[18]    = (sel_kicklower & bootrom) | cpu_addr[18];
 assign ramaddr[17:16] = cpu_addr[17:16];

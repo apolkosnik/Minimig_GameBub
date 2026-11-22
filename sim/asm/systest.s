@@ -4,7 +4,7 @@
 ; (also through a vector table in fast RAM), interrupts with STOP, and chip
 ; RAM shared with copper, bitplane and blitter DMA. sim/asm/build.sh sets the
 ; long at $FFFFF8 so that the ROM's longs add up to zero (carries dropped).
-; Run with the "2M + 16M Z3 fast" memory preset. -DROM256 (systest256.rom):
+; Run with the "2M + 32M Z3 fast" memory preset. -DROM256 (systest256.rom):
 ; the same as a 256 KB ROM at $FC0000, its checksum over those 256 KB.
 ;
 ; COLOR00 through the setup: grey, white (the boards configured), pink (the
@@ -75,6 +75,7 @@ start:
 	clr.w	$102
 	clr.w	$104
 	clr.w	$10A
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#$4000,$E80044		; Zorro III RAM board at $40000000
 	move.w	#$5000,$E80044		; RTG board
 	move.w	#$0FFF,$180(a6)		; white: the boards configured

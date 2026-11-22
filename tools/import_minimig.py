@@ -35,8 +35,9 @@ PATCH_DIR = REPO_ROOT / "patches" / "minimig"
 DEFAULT_COMMIT = "e559717550f0236895245e048d4d944e28a771e7"
 
 # Upstream files used by the Game Bub core (paths relative to upstream root).
-# Expansion hardware that needs the MiSTer HPS or DDR3 (A2065, Toccata, CDTV,
-# Akiko/CD32, MT32-pi, IDE fast path) is intentionally not imported. RTG's
+# Expansion hardware that needs the MiSTer HPS or DDR3 (A2065, CDTV,
+# Akiko/CD32, MT32-pi, IDE fast path) is intentionally not imported; the
+# Toccata sound card (fpga-toccata) needs neither and is. RTG's
 # registers (rtg.v) are; its display is the port's own (rtl/gamebub).
 FILES = [
     "rtl/agnus.v",
@@ -76,6 +77,11 @@ FILES = [
     "rtl/fx68k/fx68k.sv",
     "rtl/fx68k/fx68kAlu.sv",
     "rtl/fx68k/uaddrPla.sv",
+    "rtl/fpga-toccata/toccata.sv",
+    "rtl/fpga-toccata/toccata_capture.sv",
+    "rtl/fpga-toccata/toccata_fifo.sv",
+    "rtl/fpga-toccata/toccata_playback.sv",
+    "rtl/fpga-toccata/toccata_volume.sv",
     "rtl/gary.v",
     "rtl/gayle.v",
     "rtl/ide.v",

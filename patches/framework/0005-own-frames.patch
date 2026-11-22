@@ -1,0 +1,214 @@
+diff --git a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
+index 5f553cf..b05164d 100644
+--- a/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
++++ b/src/main/scala/net/gamebub/framework/interface/VideoV0.scala
+@@ -42,8 +42,17 @@ class VideoV0(
+   /// the frame buffers (a display of any size kept in the core's memory):
+   /// `external`.
+   val externalPicture: Boolean = false,
++  /// If true (with `externalPicture`), the core keeps the frames itself,
++  /// in memory of its own: the framework builds no frame buffers, and what
++  /// it shows is always the core's picture (`external`), on the handheld's
++  /// own screen as on HDMI; `external.enable` must be high. The core still
++  /// drives `dataEnable`, `hblank` and `vblank` (`data` is not used): the
++  /// framework keeps deciding from them which of two frames is written
++  /// and which is shown, and tells the core (`frames`, `external.frame`).
++  val ownFrames: Boolean = false,
+ ) extends Bundle {
+   require(paletteBits == 0 || paletteBits == colorDepthR + colorDepthG + colorDepthB)
++  require(!ownFrames || externalPicture)
+   val data = Output(ColorRGB.apply(colorDepthR, colorDepthG, colorDepthB))
+   val dataEnable = Output(Bool())
+   val vblank = Output(Bool())
+@@ -62,22 +71,48 @@ class VideoV0(
+     val color = UInt(24.W)
+   })) else None
+   /// With `externalPicture`. All but `enable` are in the domain of `clock`,
+-  /// the HDMI pixel clock. While `active` (HDMI is shown, 1280 x 720), `x`
+-  /// and `y` name a pixel of the 1650 x 750 frame in every clock (x of
+-  /// 1280 and above, y of 720 and above: blanking), and `color` must be
+-  /// that pixel's colour (red 23:16, green 15:8, blue 7:0) exactly
+-  /// `VideoV0.externalLatency` clocks later. While `enable` (the core's
+-  /// clock domain) is high and HDMI is shown, `color` is shown on the
+-  /// whole screen (the framework's menu overlay on top) and the frame
+-  /// buffers are not.
++  /// the pixel clock of the screen shown. While `active` and `hdmi` (HDMI
++  /// is shown, 1280 x 720), `x` and `y` name a pixel of the 1650 x 750
++  /// frame in every clock (x of 1280 and above, y of 720 and above:
++  /// blanking), and `color` must be that pixel's colour (red 23:16, green
++  /// 15:8, blue 7:0) exactly `VideoV0.externalLatency` clocks later. While
++  /// `enable` (the core's clock domain) is high and HDMI is shown, `color`
++  /// is shown on the whole screen (the framework's menu overlay on top)
++  /// and the frame buffers are not.
++  ///
++  /// With `ownFrames`, `active` without `hdmi` is the handheld's own
++  /// screen, a rotated panel scanned in columns of the landscape picture:
++  /// `x` is the column (constant through a scan line of the panel, 0 at
++  /// the left edge of the landscape picture; the visible columns are those
++  /// the framework would put a picture of the screen's width in) and `y`
++  /// the row, counting up every clock within the column; the colour is
++  /// due `externalLatency` clocks later as on HDMI. Outside the rows and
++  /// columns shown `x` and `y` have no meaning.
++  /// `sync` rises when a frame of the screen begins, at least four scan
++  /// lines before its first pixel is named (the panel: the start of its
++  /// vertical sync; HDMI: the first blank line after the picture), and
++  /// `frame` then says which of the core's two frames to show in it (the
++  /// panel: the frame the framework has chosen, which is not written
++  /// while it is shown; HDMI: the last frame completed).
+   val external = if (externalPicture) Some(new Bundle {
+     val clock = Input(Clock())
+     val active = Input(Bool())
++    val hdmi = Input(Bool())
+     val x = Input(UInt(11.W))
+     val y = Input(UInt(10.W))
++    val sync = Input(Bool())
++    val frame = Input(UInt(1.W))
+     val color = Output(UInt(24.W))
+     val enable = Output(Bool())
+   }) else None
++  /// With `ownFrames` (the core's clock domain): the frame (0 or 1) that
++  /// the pixels sent with `dataEnable` belong to, and `drop` while they are
++  /// to be thrown away (the frame they would go to is on the screen). Both
++  /// are steady from a frame's first pixel to its last.
++  val frames = if (ownFrames) Some(Input(new Bundle {
++    val write = UInt(1.W)
++    val drop = Bool()
++  })) else None
+ }
+ 
+ object VideoV0 {
+diff --git a/src/main/scala/platform/handheld/HandheldTop.scala b/src/main/scala/platform/handheld/HandheldTop.scala
+index 630da29..33ae86b 100644
+--- a/src/main/scala/platform/handheld/HandheldTop.scala
++++ b/src/main/scala/platform/handheld/HandheldTop.scala
+@@ -214,6 +214,12 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     case Some(video: VideoV0) => video.external
+     case _ => None
+   }
++  // A core that keeps the frames itself (VideoV0.ownFrames)
++  val coreFrames = core.getInterface("video") match {
++    case Some(video: VideoV0) => video.frames
++    case _ => None
++  }
++  val videoOwnFrames = coreFrames.isDefined
+   val (
+     videoWidth: Int,
+     videoHeight: Int,
+@@ -600,9 +606,12 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+   io.hdmiEnable := hdmiActive
+ 
+   // Double buffering
++  // (A core that keeps the frames itself: two words, never shown.)
++  val framebufferSize = if (videoOwnFrames) 2 else videoWidth * videoHeight
++  def framebufferAddress(a: UInt): UInt = a.pad(32)(log2Ceil(framebufferSize) - 1, 0)
+   val framebuffers = (0 until 2).map(_ =>
+     SRAM(
+-      videoWidth * videoHeight, UInt((videoColorDepthR + videoColorDepthG + videoColorDepthB).W),
++      framebufferSize, UInt((videoColorDepthR + videoColorDepthG + videoColorDepthB).W),
+       readPortClocks = Seq(io.clock_av), writePortClocks = Seq(), readwritePortClocks = Seq(clock)
+     )
+   )
+@@ -656,10 +665,15 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     displayReadingFrame := framebufferIndex
+     val lastFrameComplete = XpmCdcSingle(clock, regLastFrameComplete.asBool).asUInt
+     for (i <- 0 until 2) {
+-      framebuffers(i).readPorts(0).enable := framebufferIndex === i.U
+-      framebuffers(i).readPorts(0).address := framebufferReadAddress
++      framebuffers(i).readPorts(0).enable := (framebufferIndex === i.U) && (!videoOwnFrames).B
++      framebuffers(i).readPorts(0).address := framebufferAddress(framebufferReadAddress)
+     }
+-    val framebufferRaw = MuxLookup(framebufferIndex, 0.U)(
++    // (A core that keeps the frames itself: nothing is read here. The two
++    // words left would be registers written in the core's clock and read
++    // in the screen's.)
++    val framebufferRaw = if (videoOwnFrames) {
++      0.U((videoColorDepthR + videoColorDepthG + videoColorDepthB).W)
++    } else MuxLookup(framebufferIndex, 0.U)(
+       (0 until 2).map(i => i.U -> RegNext(RegNext(framebuffers(i).readPorts(0).data)))
+     )
+     val framebufferRead = videoPalette match {
+@@ -720,15 +734,20 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     val videoOutput = ColorRGB(8, 8, 8).make(r = 0, g = 0, b = 0)
+     val darkenVideo = XpmCdcSingle(clock, controlVideoFilter.darken)
+     val fitVideo = XpmCdcSingle(clock, coreVideo.fit)
+-    // The core's own picture (HDMI only): set in the HDMI branch below.
++    // The core's own picture: set in the branches below (on the panel only
++    // for a core that keeps the frames itself).
+     val externalShown = WireDefault(false.B)
+     val externalColor = Wire(ColorRGB(8))
+     externalColor := DontCare
++    val externalOn = coreExternal.map(ext => XpmCdcSingle(clock, ext.enable)).getOrElse(false.B)
+     coreExternal.foreach { ext =>
+       ext.clock := io.clock_av
+       ext.active := false.B
++      ext.hdmi := false.B
+       ext.x := 0.U
+       ext.y := 0.U
++      ext.sync := false.B
++      ext.frame := 0.U
+       externalColor.r := ext.color(23, 16)
+       externalColor.g := ext.color(15, 8)
+       externalColor.b := ext.color(7, 0)
+@@ -847,9 +866,12 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+       // and is shown with the same one clock lead as the frame buffers').
+       coreExternal.foreach { ext =>
+         ext.active := true.B
++        ext.hdmi := true.B
+         ext.x := RegNext(videoX + VideoV0.externalLatency.U)
+         ext.y := RegNext(videoY)
+-        externalShown := XpmCdcSingle(clock, ext.enable)
++        ext.sync := RegNext(io.hdmiCy >= screenHeight.U)
++        ext.frame := lastFrameComplete
++        externalShown := externalOn
+       }
+       val framebufferX1 = RegNext(videoX - videoOffsetX.U + framebufferReadDelay.U)
+       val framebufferY1 = RegNext(videoY - videoOffsetY.U)
+@@ -929,6 +951,23 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+         (fitVideo || (dpiY >= videoOffsetY.U &&
+         dpiY < (videoOffsetY + (videoLines * videoScaleY)).U))
+ 
++      // A core that keeps the frames itself: its picture on the panel too,
++      // column 0 where the framework would put a picture of the video's
++      // width. The colour is shown as it comes, externalLatency clocks
++      // after the row is named through one register here.
++      if (videoOwnFrames) {
++        require(revision.displayRotate, "ownFrames: only a rotated panel")
++        require(videoOffsetX >= 0)
++        coreExternal.foreach { ext =>
++          ext.active := true.B
++          ext.x := RegNext(dpiX - videoOffsetX.U)
++          ext.y := RegNext((dpiY + (VideoV0.externalLatency + 1).U)(dpiY.getWidth - 1, 0))
++          ext.sync := RegNext(dpiDriverIo.signals.vsync)
++          ext.frame := dpiDriverIo.displayFrame
++          externalShown := externalOn
++        }
++      }
++
+       // Scale overlay
+       val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
+       val overlayOffsetX = (screenWidth - (overlayWidth * overlayScale)) / 2 + revision.displayOffsetX
+@@ -1043,7 +1082,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     for (i <- 0 until 2) {
+       when (regLastFrameComplete === i.U) {
+         framebuffers(i).readwritePorts(0).enable := true.B
+-        framebuffers(i).readwritePorts(0).address := address
++        framebuffers(i).readwritePorts(0).address := framebufferAddress(address)
+         framebuffers(i).readwritePorts(0).isWrite := false.B
+       }
+     }
+@@ -1097,10 +1136,14 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
+     data.r := coreVideo.dataR
+     data.g := coreVideo.dataG
+     data.b := coreVideo.dataB
++    coreFrames.foreach { f =>
++      f.write := framebufferWriteIndex
++      f.drop := dropFrame
++    }
+     for (i <- 0 until 2) {
+       when (coreVideo.dataEnable && i.U === framebufferWriteIndex && !dropFrame) {
+         framebuffers(i).readwritePorts(0).enable := true.B
+-        framebuffers(i).readwritePorts(0).address := address
++        framebuffers(i).readwritePorts(0).address := framebufferAddress(address)
+         framebuffers(i).readwritePorts(0).isWrite := true.B
+         framebuffers(i).readwritePorts(0).writeData := data.asUInt
+       }

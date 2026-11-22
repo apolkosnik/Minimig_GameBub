@@ -1,12 +1,14 @@
-// Game Bub Minimig: Amiga video -> VideoV0 (720 x 256, palette indices).
+// Game Bub Minimig: Amiga video -> a pixel stream of 720 x 256 in 18 bits.
 //
 // Denise produces a new colour every 28 MHz clock (super hires grid). The
-// Game Bub framework stores what the core sends into a 720 x 256 frame
-// buffer and shows it one to one across the 800 x 480 panel (fitted across
-// HDMI's 1280), and down either its first 240 lines twice each or, with
-// `fit`, all 256 lines over the 480 rows (seven lines of eight twice, one
-// once; on HDMI over its 720); patches/framework makes the framework scale
-// that way. This module:
+// core keeps what this module sends in two frames of 720 x 256 (gb_fb: the
+// board's SRAM and block RAM) and shows them one to one across the panel's
+// 720 visible columns (fitted across HDMI's 1280), and down either the
+// first 240 lines twice each or, with `fit`, all 256 lines over the 480
+// rows (seven lines of eight twice, one once; on HDMI over its 720). The
+// framework takes the stream's dataEnable and blanking too: it decides
+// which of the two frames a picture is written to (patches/framework).
+// This module:
 //   - counts 28 MHz clocks from the start of _hsync and lines from the start
 //     of _vsync,
 //   - keeps a 720 high resolution pixel (1440 clock) window, centred on
@@ -21,12 +23,9 @@
 //   - takes one pixel per high resolution pixel (every 2 clocks): a high
 //     resolution screen as it is, a low resolution pixel twice, every other
 //     pixel of a super high resolution one,
-//   - sends each pixel as 9 bits (the block RAM holds two 720 x 256 frame
-//     buffers of 9 bits per pixel, not of 24), by palette_mode either
-//     the index of its colour in a palette that gb_palette builds from the
-//     colours that appear (exact colours while there are no more than 384
-//     at a time), or the colour itself in 3 + 3 + 3 bits with an ordered
-//     dither (any number of colours, approximate),
+//   - sends each pixel as 18 bits (the two frames hold 18 bits a pixel,
+//     not 24): 6 + 6 + 6 with an ordered dither of the two bits below, so
+//     that a colour's average over four pixels is the Amiga's 24 bits,
 //   - drives dataEnable for one clock per pixel, hblank outside the 720
 //     pixels and vblank outside the lines (vblank changes only while
 //     hblank is high),
@@ -60,30 +59,22 @@ module gb_video
 	input                   diw,          // Denise's horizontal display window, with r_in / g_in / b_in
 	input                   drop_field,   // interlace: this field (the short one) is not shown
 	input                   fit_height,   // PAL: all 256 lines, fitted to the screen by the framework
-	input                   palette_mode, // 1: palette indices, 0: dithered colours
-	input                   palette_test, // palette entries are never reused (a test)
 	input             [7:0] r_in,
 	input             [7:0] g_in,
 	input             [7:0] b_in,
 	input                   hsync_n,
 	input                   vsync_n,
 
-	output            [8:0] index,        // palette index, or dithered 3 + 3 + 3 bit colour
+	output           [17:0] data,         // dithered 6 + 6 + 6 bit colour (red 17:12, green 11:6, blue 5:0)
 	output                  de,
 	output                  hblank,
 	output                  vblank,
-	output reg              fit,          // to the framework: show all 256 lines
-	output reg              palette_on,   // to the framework: the pixels are palette indices
+	output reg              fit,          // show all 256 lines (taken at a frame's start)
 
-	// palette writes for the framework
-	output                  pal_we,
-	output            [8:0] pal_index,
-	output           [23:0] pal_color,
-
-	output           [19:0] fixed_pixels  // pixels of the last frame not in the palette
+	output           [23:0] dbg_color     // the Amiga's colour of the pixel sent (bench)
 );
 
-// the pixel stream before the palette: hblank_i / vblank_i / de_i
+// the pixel stream before the dither: hblank_i / vblank_i / de_i
 reg        de_i, hblank_i, vblank_i;
 reg  [7:0] pr, pg, pb;
 reg  [1:0] pbayer;
@@ -121,8 +112,8 @@ wire signed [11:0] w_steps = 12'((w_delta + 14'sd2) >>> 2);
 wire signed [11:0] w_steps_c = (w_steps < -12'sd84) ? -12'sd84 : (w_steps > 12'sd16) ? 12'sd16 : w_steps;
 wire        [11:0] h_start_new = (w_last > w_first) ? H_START + {w_steps_c[10:0], 1'b0} : h_start;
 
-// dither threshold for colours that find no palette entry: by the pixel's
-// and the line's parity (a 2 x 2 Bayer matrix)
+// dither threshold: by the pixel's and the line's parity (a 2 x 2 Bayer
+// matrix)
 wire  [1:0] bayer  = {vcnt[0], hrel[1]} == 2'b00 ? 2'd0 :
                      {vcnt[0], hrel[1]} == 2'b01 ? 2'd2 :
                      {vcnt[0], hrel[1]} == 2'b10 ? 2'd3 : 2'd1;
@@ -139,7 +130,6 @@ always @(posedge clk) begin
 		hblank_i   <= 1'b1;
 		vblank_i   <= 1'b1;
 		fit        <= 1'b0;
-		palette_on <= 1'b0;
 		h_start    <= H_START;
 		skip       <= 1'b0;
 	end
@@ -151,7 +141,6 @@ always @(posedge clk) begin
 				vcnt       <= 9'd0;
 				frame_seen <= 1'b1;
 				fit        <= fit_height & ~ntsc;   // only changes between frames
-				palette_on <= palette_mode;
 				h_start    <= h_start_new;
 				skip       <= drop_field;
 			end
@@ -200,8 +189,7 @@ always @(posedge clk) begin
 	end
 end
 
-// colours -> palette indices (three clocks from de_i to de); the blanking
-// goes with them
+// the pixels as sent, three clocks after de_i; the blanking goes with them
 reg [2:0] hb_d, vb_d;
 always @(posedge clk) begin
 	hb_d <= reset ? 3'b111 : {hb_d[1:0], hblank_i};
@@ -210,56 +198,51 @@ end
 assign hblank = hb_d[2];
 assign vblank = vb_d[2];
 
-reg vb_prev;
-always @(posedge clk) vb_prev <= vblank_i;
-
-wire       pal_de;
-wire [8:0] pal_out;
-
-// dithered colours, three clocks like the palette's indices: a component c
-// (0..255) becomes (c * levels + t) >> 8 with levels 7 and t one of 24, 88, 152, 216 by the pixel's and the line's
-// parity (a 2 x 2 Bayer matrix), blue taking the thresholds in the opposite
-// order to red (where a grey's red goes up a level its blue goes down, so
-// the pattern is in the hue, not the brightness). Black and white are exact.
-function automatic [3:0] quant(input [7:0] c, input [3:0] levels, input [7:0] t);
-	reg [11:0] v;
+// dithered colours. A 6 bit component k is shown as the 8 bits {k, k[5:4]}
+// (gb_fb): those 64 values are sent as they are, in every pixel. A value c
+// between two of them, d above the lower one (the two are 4 or 5 apart),
+// is sent as the upper one in d of every four pixels: where d is above a
+// threshold of 0..3 that the pixel's and the line's parity give (a 2 x 2
+// Bayer matrix). Blue takes the thresholds in the opposite order to red
+// and green (where a grey's red goes up a step its blue goes down, so the
+// pattern is in the hue, not the brightness).
+function automatic [5:0] quant(input [7:0] c, input [1:0] b);
+	reg signed [2:0] e;      // c above {k0, k0[5:4]}, k0 = c[7:2]
+	reg        [2:0] d;
+	reg        [5:0] k0;
 	begin
-		v = c * levels + {4'd0, t};
-		quant = v[11:8];
+		k0 = c[7:2];
+		e  = $signed({1'b0, c[1:0]}) - $signed({1'b0, k0[5:4]});
+		if (e >= 0) begin
+			d = e[2:0];
+			quant = k0 + ((d > {1'b0, b}) ? 6'd1 : 6'd0);
+		end
+		else begin
+			// below it: from the value before, 4 away, or 5 where its top
+			// two bits differ
+			d = e[2:0] + ((k0[3:0] == 4'd0) ? 3'd5 : 3'd4);
+			quant = k0 - 6'd1 + ((d > {1'b0, b}) ? 6'd1 : 6'd0);
+		end
 	end
 endfunction
-wire [3:0] dq_r = quant(pr, 4'd7,  {pbayer, 6'd24});
-wire [3:0] dq_g = quant(pg, 4'd7,  {pbayer, 6'd24});
-wire [3:0] dq_b = quant(pb, 4'd7,  {~pbayer, 6'd24});
+wire [5:0] dq_r = quant(pr, pbayer);
+wire [5:0] dq_g = quant(pg, pbayer);
+wire [5:0] dq_b = quant(pb, ~pbayer);
 reg  [2:0] dd_de;
-reg  [8:0] dd1, dd2, dd3;
+reg [17:0] dd1, dd2, dd3;
+reg [23:0] dc1, dc2, dc3;
 always @(posedge clk) begin
 	dd_de <= reset ? 3'd0 : {dd_de[1:0], de_i};
-	dd1   <= {dq_r[2:0], dq_g[2:0], dq_b[2:0]};
+	dd1   <= {dq_r, dq_g, dq_b};
 	dd2   <= dd1;
 	dd3   <= dd2;
+	dc1   <= {pr, pg, pb};
+	dc2   <= dc1;
+	dc3   <= dc2;
 end
 
-assign de    = palette_on ? pal_de  : dd_de[2];
-assign index = palette_on ? pal_out : dd3;
-
-gb_palette palette
-(
-	.clk          (clk),
-	.reset        (reset),
-	.in_de        (de_i),
-	.in_r         (pr),
-	.in_g         (pg),
-	.in_b         (pb),
-	.in_bayer     (pbayer),
-	.frame        (vblank_i & ~vb_prev),
-	.no_reuse     (palette_test),
-	.out_de       (pal_de),
-	.out_index    (pal_out),
-	.pal_we       (pal_we),
-	.pal_index    (pal_index),
-	.pal_color    (pal_color),
-	.fixed_pixels (fixed_pixels)
-);
+assign de        = dd_de[2];
+assign data      = dd3;
+assign dbg_color = dc3;
 
 endmodule

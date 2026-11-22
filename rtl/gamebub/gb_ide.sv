@@ -33,7 +33,14 @@
 //  * a short read is padded with zeros; later blocks are still read;
 //  * set multiple with 0 sectors leaves the block size as it was (ide.cpp
 //    would then transfer blocks of 0 sectors);
-//  * command FA (mount an image by name, used by ao486) is not built.
+//  * command FA (mount an image by name, used by ao486) is not built;
+//  * reading ahead: a request to the host takes a few milliseconds whatever
+//    its size, and the Amiga asks for a few sectors at a time. A block that
+//    begins where the block before it ended (a file being read) is fetched
+//    with what follows it, 32 sectors in all, and the blocks after it come
+//    out of the buffer without a request; any other block is fetched alone,
+//    as before. What the buffer holds is forgotten as soon as anything else
+//    is put into it (a write's data, the virtual RDB, zeros, a mount).
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -356,6 +363,22 @@ reg [15:0] sd_hi, rv_lo;
 reg [31:0] glba, plba, pl_t;
 reg [31:0] lb_lba;
 reg  [5:0] lb_cnt;
+// reading ahead: the sectors of an image the buffer holds (c_cnt of them
+// from c_lba on, of file c_file), where the block last asked for ended, and
+// the buffer word at which the block to send begins
+reg        c_valid;
+reg [15:0] c_file;
+reg [31:0] c_lba;
+reg  [5:0] c_cnt, f_cnt;
+reg        seq_valid;
+reg [15:0] seq_file;
+reg [31:0] seq_lba;
+reg [11:0] xbase;
+reg [31:0] dbg_ahead;     // sectors that came out of the buffer without a request
+wire [31:0] c_off  = lb_lba - c_lba;
+wire        c_hit  = c_valid && c_file == file_id && lb_lba >= c_lba
+                     && (c_off + {26'd0, lb_cnt}) <= {26'd0, c_cnt};
+wire        lb_seq = seq_valid && seq_file == file_id && seq_lba == lb_lba;
 reg  [5:0] fk_s;
 reg        fk_blk;
 reg  [5:0] fk_i;
@@ -423,6 +446,10 @@ always @(posedge clk) begin
 		xnull          <= 1'b0;
 		idle_cnt      <= 25'd0;
 		r_drv         <= 1'b0;
+		c_valid       <= 1'b0;
+		seq_valid     <= 1'b0;
+		xbase         <= 12'd0;
+		dbg_ahead     <= 32'd0;
 		dbg_sectors_read    <= 32'd0;
 		dbg_sectors_written <= 32'd0;
 	end
@@ -587,7 +614,7 @@ always @(posedge clk) begin
 		S_SD0: begin xi <= 13'd0; state <= S_SD1; end
 		S_SD1:
 			if (xi == xn) state <= ret2;
-			else begin eb_addr <= xi[11:0]; state <= S_SD2; end
+			else begin eb_addr <= xi[11:0] + xbase; state <= S_SD2; end
 		S_SD2: state <= S_SD3;
 		S_SD3: begin
 			mw_addr <= 5'd15;
@@ -682,20 +709,35 @@ always @(posedge clk) begin
 		S_LB0:
 			if (xnull) begin
 				xi <= 13'd0; xn <= {lb_cnt, 7'd0};
+				xbase <= 12'd0;
+				seq_valid <= 1'b0;
 				ret1 <= ret2; state <= S_ZF0;
 			end
 			else if (lb_lba < {19'd0, d_offset}) begin
 				// the virtual RDB in front of the image
 				xi <= 13'd0; xn <= {lb_cnt, 7'd0};
+				xbase <= 12'd0;
+				seq_valid <= 1'b0;
 				ret1 <= S_FK0; state <= S_ZF0;
 			end
+			else if (c_hit) begin
+				// the buffer has the block: no request
+				xbase   <= {c_off[4:0], 7'd0};
+				seq_lba <= lb_lba + {26'd0, lb_cnt};
+				dbg_sectors_read <= dbg_sectors_read + {26'd0, lb_cnt};
+				dbg_ahead        <= dbg_ahead + {26'd0, lb_cnt};
+				state   <= ret2;
+			end
 			else begin
+				// (a block that follows the one before: with what comes after it)
+				xbase  <= 12'd0;
+				f_cnt  <= lb_seq ? 6'd32 : lb_cnt;
 				hc_cmd <= CMD_FILE_READ;
 				hc_p1  <= {16'd0, file_id};
 				hc_p2  <= BUF_ADDR;
 				hc_p3  <= {lb_file[22:0], 9'd0};
 				hc_p4  <= {23'd0, lb_file[31:23]};
-				hc_p5  <= {17'd0, lb_cnt, 9'd0};
+				hc_p5  <= {17'd0, (lb_seq ? 6'd32 : lb_cnt), 9'd0};
 				ret1   <= S_LB1;
 				state  <= S_HC0;
 			end
@@ -704,10 +746,24 @@ always @(posedge clk) begin
 			if (hc_fail || hc_res0 != 32'd0) begin
 				xnull <= 1'b1;
 				xi   <= 13'd0;
+				c_valid <= 1'b0;
 			end
-			else if (hc_res1 >= {17'd0, lb_cnt, 9'd0}) xi <= {lb_cnt, 7'd0};
-			else xi <= hc_res1[14:2] + {12'd0, |hc_res1[1:0]};
+			else if (hc_res1 >= {17'd0, lb_cnt, 9'd0}) begin
+				xi <= {lb_cnt, 7'd0};
+				// the whole sectors that came are the buffer's now
+				c_valid <= 1'b1;
+				c_file  <= file_id;
+				c_lba   <= lb_lba;
+				c_cnt   <= (hc_res1[31:9] >= {17'd0, f_cnt}) ? f_cnt : hc_res1[14:9];
+			end
+			else begin
+				xi <= hc_res1[14:2] + {12'd0, |hc_res1[1:0]};
+				c_valid <= 1'b0;
+			end
 			xn   <= {lb_cnt, 7'd0};
+			seq_valid <= 1'b1;
+			seq_file  <= file_id;
+			seq_lba   <= lb_lba + {26'd0, lb_cnt};
 			dbg_sectors_read <= dbg_sectors_read + {26'd0, lb_cnt};
 			ret1 <= ret2; state <= S_ZF0;
 		end
@@ -984,6 +1040,8 @@ always @(posedge clk) begin
 		end
 		// guess_geometry(): the first 16 sectors
 		S_MNT3: begin
+			c_valid   <= 1'b0;
+			seq_valid <= 1'b0;
 			hc_cmd <= CMD_FILE_READ;
 			hc_p1  <= {16'd0, file_id};
 			hc_p2  <= BUF_ADDR;
@@ -1108,6 +1166,10 @@ always @(posedge clk) begin
 
 		default: state <= S_POLL;
 		endcase
+
+		// (anything written into the buffer from here: it no longer holds
+		// the sectors read ahead)
+		if (eb_we) c_valid <= 1'b0;
 	end
 end
 

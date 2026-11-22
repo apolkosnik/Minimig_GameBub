@@ -76,6 +76,11 @@ module cpu_wrapper
 
 	output            a2065_ena,
 	output reg  [7:0] a2065_base,
+	// Game Bub port: the A2065 is offered in the autoconfig chain while
+	// a2065_on (taken at a reset); the last three bytes of its serial
+	// number, which a2065.device makes the station address 00:80:10:xx:xx:xx
+	input             a2065_on,
+	input      [23:0] a2065_serial,
 
 	input             cdtv_mode,
 	output reg  [7:0] cdtv_base,
@@ -91,7 +96,7 @@ module cpu_wrapper
 	output reg [31:0] nmi_addr,
 
 	output reg        z2ram_ena,
-	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units
+	output reg  [7:0] z3ram_base0,   // Game Bub port: 16 MB units (a 32 MB board: bit 0 is not compared)
 	output reg        z3ram_ena0,
 	output reg  [3:0] z3ram_base1,
 	output reg        z3ram_ena1,
@@ -683,7 +688,9 @@ end
 ///////////////////// AUTOCONFIG ////////////////////////////
 
 reg       ac_toccata;
+reg       toccata_cfg = 1'b0; // Game Bub port: the Toccata has its base
 reg       ac_a2065;
+reg       a2065_cfg = 1'b0;   // Game Bub port: the A2065 has its base
 reg       ac_cdtv;
 reg       ac_rtg;
 reg [2:0] ac_memcard;
@@ -753,6 +760,13 @@ always @(*) begin
 			6'h9: autocfg_data = 4'b1101; // er_Manufacturer high low
 			6'ha: autocfg_data = 4'b1111; // er_Manufacturer low high
 			6'hb: autocfg_data = 4'b1101; // er_Manufacturer low low -> 0x0202
+			// Game Bub port: er_SerialNumber's last three bytes (inverted)
+			6'he:  autocfg_data = ~a2065_serial[23:20];
+			6'hf:  autocfg_data = ~a2065_serial[19:16];
+			6'h10: autocfg_data = ~a2065_serial[15:12];
+			6'h11: autocfg_data = ~a2065_serial[11:8];
+			6'h12: autocfg_data = ~a2065_serial[7:4];
+			6'h13: autocfg_data = ~a2065_serial[3:0];
 			// er_SerialNumber bytes 2..5 — the A2065 station address low
 			// bytes, which AmigaOS reads as the card's MAC. Left at zero
 			// (nibbles are inverted, so 4'b1111 reads as 0): the host side
@@ -776,9 +790,10 @@ always @(*) begin
 	else if(ac_memcard[2]) begin
 		case (chip_addr[6:1])
 			6'b000000: autocfg_data = 4'b1010;	// Zorro-III card, add mem, no ROM
-			// Game Bub port: the 128 MB board is a 16 MB board (in the
-			// second SDRAM chip), extended size code 000
-			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0000 : 4'b0100; // 16MB or 256MB, extended
+			// Game Bub port: the 128 MB board is a 32 MB board (24 MB of
+			// the second SDRAM chip and 8 MB of the first), extended size
+			// code 001
+			6'b000001: autocfg_data = ac_memcard[1] ? 4'b0001 : 4'b0100; // 32MB or 256MB, extended
 			6'b000010: autocfg_data = 4'b1110;	// ProductID=0x10 (only setting upper nibble)
 			6'b000100: autocfg_data = 4'b0000;	// Memory card, not silenceable, Extended size, reserved.
 			6'b000101: autocfg_data = 4'b1111;	// 0000 - logical size matches physical size TODO change this to 0001, so it is autosized by the OS, WHEN it will be 24MB.
@@ -813,10 +828,13 @@ always @(posedge clk) begin
 
 	if (~reset | ~reset_out) begin
 		ac_memcard  <= (cpucfg[1] & ~ec020) ? fastramcfg : fastramcfg[2] ? 3'd3 : {1'b0, fastramcfg[1:0]};
-		// Game Bub port: Toccata, A2065 and CDTV are not built, so they
-		// are not offered in the autoconfig chain.
-		ac_toccata  <= 1'b0;
-		ac_a2065    <= 1'b0;
+		// Game Bub port: the CDTV is not built, so it is not offered in the
+		// autoconfig chain; the Toccata is, as on MiSTer, and the A2065
+		// (rtl/gamebub) while a2065_on.
+		ac_toccata  <= 1'b1;
+		toccata_cfg <= 1'b0;
+		ac_a2065    <= a2065_on;
+		a2065_cfg   <= 1'b0;
 		ac_cdtv     <= 1'b0;
 		ac_rtg      <= z3cpu;
 		rtg_ena     <= 0;
@@ -847,12 +865,14 @@ always @(posedge clk) begin
 			if (chip_addr[6:1] == 6'b100100) begin // Register 0x48 - config, Toccata card in ZII io space ($E90000)
 				toccata_base <= cpu_dout[7:0];
 				ac_toccata<=0;
+				toccata_cfg <= 1'b1;
 			end
 		end
 		else if(ac_a2065) begin
 			if (chip_addr[6:1] == 6'b100100) begin // Register 0x48 - config, A2065 Ethernet
 				a2065_base <= cpu_dout[7:0];
 				ac_a2065<=0;
+				a2065_cfg <= 1'b1;
 			end
 		end
 		else if(ac_memcard[2]) begin
@@ -863,7 +883,7 @@ always @(posedge clk) begin
 					ac_memcard <= {ac_memcard[0], ac_memcard[0], 1'b0};
 				end
 				else begin
-					z3ram_base0 <= cpu_dout[15:8]; //16MB chunk (Game Bub port)
+					z3ram_base0 <= cpu_dout[15:8]; //16MB units; the board is 32 MB (Game Bub port)
 					z3ram_ena0 <= 1;
 					ac_memcard <= 0;
 				end
@@ -879,8 +899,8 @@ always @(posedge clk) begin
 	end
 end
 
-// Game Bub port: the cards are absent, so they are never enabled in gary
-assign toccata_ena = 1'b0;
-assign a2065_ena   = 1'b0;
+// Game Bub port: a card is enabled in gary once it has its base
+assign toccata_ena = toccata_cfg;
+assign a2065_ena   = a2065_cfg;
 
 endmodule

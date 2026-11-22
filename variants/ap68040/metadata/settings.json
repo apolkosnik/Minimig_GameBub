@@ -76,7 +76,7 @@
 					"value": "0x7"
 				},
 				{
-					"label": "2M + 16M Z3 fast",
+					"label": "2M + 32M Z3 fast",
 					"value": "0x8"
 				}
 			],
@@ -403,20 +403,12 @@
 			"type": "list",
 			"items": [
 				{
-					"label": "256 lines, dithered",
+					"label": "256 lines",
 					"value": "0x1"
 				},
 				{
-					"label": "256 lines, palette",
-					"value": "0x3"
-				},
-				{
-					"label": "240 lines, dithered",
+					"label": "240 lines",
 					"value": "0x0"
-				},
-				{
-					"label": "240 lines, palette",
-					"value": "0x2"
 				}
 			],
 			"default": "0x1"

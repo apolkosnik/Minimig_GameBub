@@ -11,8 +11,24 @@
 //                         its size, bit 30 loaded, bit 31 the Action Replay
 //   0x0000_0024..3C       debug, read only: hard disk state, sectors read /
 //                         written, geometry and size of the two drives
-//   0x0000_0040           debug, read only: pixels of the last frame whose
-//                         colour found no palette entry (gb_palette)
+//   0x0000_0050           the A2065's frames (gb_a2065). Read: bits 10:0 the
+//                         length of the frame to send, bit 11 there is one,
+//                         bit 15 the frame received is still being taken,
+//                         bit 16 the MCU brings frames, bit 17 the board is
+//                         fitted. Write: bit 0 the frame to send was taken;
+//                         bit 17 sets "brings frames" from bit 16, bit 19
+//                         "fitted" from bit 18 (the Amiga sees the board
+//                         from its next reset)
+//   0x0000_0054           the station address's last three bytes (the
+//                         board's serial number: 00:80:10:xx:xx:xx)
+//   0x0000_0058           write: a frame of this many bytes is in the
+//                         receive buffer; read: frames sent (15:0) and
+//                         received (31:16); 0x5C frames not received
+//   0x4000_0000..07FF     the frame to send (read); 0x4000_1000..17FF the
+//                         frame received (write): byte 0 in bits 7:0
+//   0x0000_0040           debug, read only: the frames (gb_fb): bits 15:0
+//                         scan lines read for the screen, 30:16 those not
+//                         read in time, bit 31 a pixel lost (queue full)
 //   0x0000_1000, 1004     statistics: clocks the Amiga was paused / ran since
 //                         the last write (the Game Bub firmware's convention
 //                         for every core: it reads and clears them on pause)
@@ -20,6 +36,10 @@
 //                         and down positive (written by the firmware fork for
 //                         a USB/Bluetooth mouse, as for the 3DO core)
 //   0x0000_1034           mouse buttons: bit 0 left, 1 right, 2 middle
+//   0x0000_103C           mouse wheel: bits 7:0 its clicks since the write
+//                         before, signed, away from the user positive (as
+//                         MiSTer gives them to minimig: the Amiga reads
+//                         their sum in the low byte of $DFF1F0)
 //   0x0000_1038           keyboard event (written by the firmware fork for a
 //                         USB keyboard on the dock): bits 7:0 the key's USB
 //                         HID usage (0xE0..E7 the modifiers), bit 8 set when
@@ -132,14 +152,14 @@ module gb_host
 	output reg  [7:0] key_select,
 	output reg  [4:0] video_vpos,
 	output reg        video_fit,
-	output reg        video_palette,
-	output reg        video_palette_test,
 
 	// mouse from the host (firmware)
 	output reg        hmouse_valid,   // one clock per motion write
 	output reg [15:0] hmouse_dx,
 	output reg [15:0] hmouse_dy,
 	output reg  [2:0] hmouse_btn,
+	output reg        hwheel_valid,   // one clock per wheel write
+	output reg  [7:0] hwheel,
 
 	// keyboard from the host (firmware)
 	output reg        hkey_valid,     // one clock per key event
@@ -170,7 +190,24 @@ module gb_host
 	input      [31:0] ide_sectors_written,
 	input      [31:0] ide_chs0, ide_chs1,
 	input      [31:0] ide_total0, ide_total1,
-	input      [19:0] video_fixed_pixels   // pixels of the last frame not in the palette
+	input      [31:0] fb_state,            // gb_fb: write queue overflowed, scan lines late, scan lines fetched
+
+	// the A2065's frames (gb_a2065)
+	output reg        net_board = 1'b0,    // the board is offered to the Amiga (taken at its reset)
+	output reg        net_up = 1'b0,       // the MCU takes and brings frames
+	output reg [23:0] net_serial = 24'h474201,  // the last three bytes of the station address
+	input             net_tx_valid,
+	input      [10:0] net_tx_len,
+	output reg        net_tx_taken,
+	output      [8:0] net_tx_raddr,
+	input      [31:0] net_tx_rdata,
+	output reg        net_rx_we,
+	output      [8:0] net_rx_waddr,
+	output     [31:0] net_rx_wdata,
+	output reg        net_rx_commit,
+	output reg [10:0] net_rx_len,
+	input             net_rx_busy,
+	input      [47:0] net_counts           // frames sent, received, not received
 );
 
 localparam [15:0] CMD_GET_STATUS     = 16'h0000;
@@ -200,7 +237,7 @@ reg  [7:0] set_df1;
 reg  [7:0] set_filter;
 reg  [7:0] set_stereo;
 reg  [7:0] set_vpos;
-reg  [7:0] set_fit;       // Picture: bit 0 all 256 PAL lines fitted to the screen, bit 1 palette colours, bit 2 never reuse palette entries (a test)
+reg  [7:0] set_fit;       // Picture: bit 0 all 256 PAL lines fitted to the screen
 
 // memory presets: XHFFSSCC
 function automatic [7:0] mem_preset(input [2:0] p);
@@ -228,8 +265,6 @@ always @* begin
 	audio_filter = set_filter[0];
 	video_vpos   = set_vpos[4:0];
 	video_fit    = set_fit[0];
-	video_palette = set_fit[1];
-	video_palette_test = set_fit[2];
 end
 
 // --------------------------------------------------------------- files
@@ -314,6 +349,11 @@ wire        is_cart  = (mem_address[31:19] == 13'h0402);     // 0x2010_0000..7FF
 wire        is_cmd   = (mem_address[31:4] == 28'hF000000);
 wire        is_ccmd  = (mem_address[31:5] == 27'h7800080);     // 0xF000_1000..1F
 wire        is_buf   = (mem_address[31:14] == 18'h0C000);      // 0x3000_0000..3FFF
+wire        is_net   = (mem_address[31:13] == 19'h20000);      // 0x4000_0000..1FFF
+reg         m_net;
+assign      net_tx_raddr = hb_addr[8:0];
+assign      net_rx_waddr = hb_addr[8:0];
+assign      net_rx_wdata = hb_wdata;
 wire [24:1] disk_adr = SLOT_BASE + SLOT_WORDS * mem_address[21:20] + {5'd0, mem_address[19:1]};
 wire [24:1] kick_adr = KICK_STAGE + {5'd0, mem_address[19:1]};
 wire [24:1] cart_adr = CART_STAGE + {6'd0, mem_address[18:1]};
@@ -334,8 +374,12 @@ function automatic [31:0] reg_read(input [15:0] a);
 		16'h0034: reg_read = ide_chs1;
 		16'h0038: reg_read = ide_total0;
 		16'h003C: reg_read = ide_total1;
-		16'h0040: reg_read = {12'd0, video_fixed_pixels};
+		16'h0040: reg_read = fb_state;
 		16'h0044: reg_read = {cart_ar, cart_loaded, 10'd0, cart_size};
+		16'h0050: reg_read = {14'd0, net_board, net_up, net_rx_busy, 3'd0, net_tx_valid, net_tx_len};
+		16'h0054: reg_read = {8'd0, net_serial};
+		16'h0058: reg_read = net_counts[31:0];
+		16'h005C: reg_read = {16'd0, net_counts[47:32]};
 		16'h1000: reg_read = stat_stalls;
 		16'h1004: reg_read = stat_cycles;
 		16'h1030: reg_read = {hmouse_dy, hmouse_dx};
@@ -365,9 +409,13 @@ always @(posedge clk) begin
 	mem_done     <= 1'b0;
 	boot_start   <= 1'b0;
 	hmouse_valid <= 1'b0;
+	hwheel_valid <= 1'b0;
 	hkey_valid   <= 1'b0;
 	stat_clr     <= 2'b00;
 	hb_we        <= 1'b0;
+	net_rx_we    <= 1'b0;
+	net_tx_taken <= 1'b0;
+	net_rx_commit <= 1'b0;
 
 	if (reset) begin
 		hc_res0      <= 32'd0;
@@ -416,6 +464,7 @@ always @(posedge clk) begin
 		hmouse_dx    <= 16'd0;
 		hmouse_dy    <= 16'd0;
 		hmouse_btn   <= 3'd0;
+		hwheel       <= 8'd0;
 		prev_df0     <= 8'd0;
 		prev_df1     <= 8'd7;
 		eject_cnt[0] <= 25'd0;
@@ -481,7 +530,17 @@ always @(posedge clk) begin
 					hb_addr  <= mem_address[13:2];
 					hb_wdata <= mem_dataWrite;
 					hb_we    <= mem_write;
+					m_net    <= 1'b0;
 					mstate   <= M_B0;
+				end
+				else if (is_net) begin
+					// the A2065's frames: 0x000 the frame to send (read),
+					// 0x1000 the frame received (write)
+					hb_addr   <= {3'd0, mem_address[10:2]};
+					hb_wdata  <= mem_dataWrite;
+					net_rx_we <= mem_write && mem_address[12];
+					m_net     <= 1'b1;
+					mstate    <= M_B0;
 				end
 				else begin
 					if (mem_write) begin
@@ -506,6 +565,10 @@ always @(posedge clk) begin
 								hmouse_dy    <= mem_dataWrite[31:16];
 							end
 							16'h1034: hmouse_btn  <= mem_dataWrite[2:0];
+							16'h103C: begin
+								hwheel_valid <= 1'b1;
+								hwheel       <= mem_dataWrite[7:0];
+							end
 							16'h1038: begin
 								hkey_valid <= 1'b1;
 								hkey_usage <= mem_dataWrite[7:0];
@@ -528,6 +591,21 @@ always @(posedge clk) begin
 							16'h1078: key_select  <= mem_dataWrite[7:0];
 							16'h107C: set_vpos    <= mem_dataWrite[7:0];
 							16'h1080: set_fit     <= mem_dataWrite[7:0];
+							// the network: 0x50 bit 0 the frame to send was taken,
+							// bit 16 the MCU brings frames (bit 17: write it), bit 18
+							// the board is fitted (bit 19: write it); 0x54 the
+							// station address's last three bytes; 0x58 a frame of
+							// this many bytes is in the receive buffer
+							16'h0050: begin
+								net_tx_taken <= mem_dataWrite[0];
+								if (mem_dataWrite[17]) net_up <= mem_dataWrite[16];
+								if (mem_dataWrite[19]) net_board <= mem_dataWrite[18];
+							end
+							16'h0054: net_serial <= mem_dataWrite[23:0];
+							16'h0058: begin
+								net_rx_len    <= mem_dataWrite[10:0];
+								net_rx_commit <= 1'b1;
+							end
 							default: ;
 						endcase
 					end
@@ -604,7 +682,7 @@ always @(posedge clk) begin
 		// sector buffer of gb_ide (block RAM: the read data follows the address)
 		M_B0: mstate <= M_B1;
 		M_B1: begin
-			mem_dataRead <= hb_rdata;
+			mem_dataRead <= m_net ? net_tx_rdata : hb_rdata;
 			mstate       <= M_DONE;
 		end
 

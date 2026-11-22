@@ -3,6 +3,8 @@
 Game Bub firmware's limits (firmware/handheld/src/core/info.rs): a core whose
 core.json does not fit is left out of the core list without a word.
 
+  - core.json has "min_firmware" (beside "metadata": firmware v1.1.0-beta5
+    and later refuse a core without it);
   - core.json metadata id, name and author: at most 32 characters each (an
     author of 33 hides the core); the id is the core's folder on the card;
   - at most 16 bitstreams, 16 files, 16 settings;
@@ -20,6 +22,7 @@ Usage: tools/check_metadata.py <metadata dir> [expected id]
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -31,6 +34,10 @@ def main():
     errors = []
     core = json.load(open(d / "core.json"))
     m = core["metadata"]
+    # firmware v1.1.0-beta5 and later refuse a core.json without it
+    mf = core.get("min_firmware")
+    if not isinstance(mf, str) or not re.fullmatch(r"\d+\.\d+(\.\d+)?(-[a-z]+\.?[1-9]\d*)?", mf):
+        errors.append(f"core.json: min_firmware {mf!r} is missing or not a version (\"1.1.0-beta5\"); it stands beside \"metadata\"")
     for k in ("id", "name", "author"):
         v = m.get(k, "")
         if not v.strip():

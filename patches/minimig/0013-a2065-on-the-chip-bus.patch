@@ -1,0 +1,123 @@
+--- a/rtl/minimig/cpu_wrapper.sv
++++ b/rtl/minimig/cpu_wrapper.sv
+@@ -76,6 +76,11 @@
+ 
+ 	output            a2065_ena,
+ 	output reg  [7:0] a2065_base,
++	// Game Bub port: the A2065 is offered in the autoconfig chain while
++	// a2065_on (taken at a reset); the last three bytes of its serial
++	// number, which a2065.device makes the station address 00:80:10:xx:xx:xx
++	input             a2065_on,
++	input      [23:0] a2065_serial,
+ 
+ 	input             cdtv_mode,
+ 	output reg  [7:0] cdtv_base,
+@@ -684,6 +689,7 @@
+ 
+ reg       ac_toccata;
+ reg       ac_a2065;
++reg       a2065_cfg = 1'b0;   // Game Bub port: the A2065 has its base
+ reg       ac_cdtv;
+ reg       ac_rtg;
+ reg [2:0] ac_memcard;
+@@ -753,6 +759,13 @@
+ 			6'h9: autocfg_data = 4'b1101; // er_Manufacturer high low
+ 			6'ha: autocfg_data = 4'b1111; // er_Manufacturer low high
+ 			6'hb: autocfg_data = 4'b1101; // er_Manufacturer low low -> 0x0202
++			// Game Bub port: er_SerialNumber's last three bytes (inverted)
++			6'he:  autocfg_data = ~a2065_serial[23:20];
++			6'hf:  autocfg_data = ~a2065_serial[19:16];
++			6'h10: autocfg_data = ~a2065_serial[15:12];
++			6'h11: autocfg_data = ~a2065_serial[11:8];
++			6'h12: autocfg_data = ~a2065_serial[7:4];
++			6'h13: autocfg_data = ~a2065_serial[3:0];
+ 			// er_SerialNumber bytes 2..5 — the A2065 station address low
+ 			// bytes, which AmigaOS reads as the card's MAC. Left at zero
+ 			// (nibbles are inverted, so 4'b1111 reads as 0): the host side
+@@ -814,10 +827,12 @@
+ 
+ 	if (~reset | ~reset_out) begin
+ 		ac_memcard  <= (cpucfg[1] & ~ec020) ? fastramcfg : fastramcfg[2] ? 3'd3 : {1'b0, fastramcfg[1:0]};
+-		// Game Bub port: Toccata, A2065 and CDTV are not built, so they
+-		// are not offered in the autoconfig chain.
++		// Game Bub port: Toccata and CDTV are not built, so they are not
++		// offered in the autoconfig chain; the A2065 (rtl/gamebub) is while
++		// a2065_on.
+ 		ac_toccata  <= 1'b0;
+-		ac_a2065    <= 1'b0;
++		ac_a2065    <= a2065_on;
++		a2065_cfg   <= 1'b0;
+ 		ac_cdtv     <= 1'b0;
+ 		ac_rtg      <= z3cpu;
+ 		rtg_ena     <= 0;
+@@ -854,6 +869,7 @@
+ 			if (chip_addr[6:1] == 6'b100100) begin // Register 0x48 - config, A2065 Ethernet
+ 				a2065_base <= cpu_dout[7:0];
+ 				ac_a2065<=0;
++				a2065_cfg <= 1'b1;
+ 			end
+ 		end
+ 		else if(ac_memcard[2]) begin
+@@ -882,6 +898,6 @@
+ 
+ // Game Bub port: the cards are absent, so they are never enabled in gary
+ assign toccata_ena = 1'b0;
+-assign a2065_ena   = 1'b0;
++assign a2065_ena   = a2065_cfg;
+ 
+ endmodule
+--- a/rtl/minimig/minimig.sv
++++ b/rtl/minimig/minimig.sv
+@@ -318,18 +318,16 @@
+ 	output   [2:0] mister_floppy_status,
+ 	output   [8:0] drive_snd,
+ 
+-	// A2065 register file + doorbell
+-	// A2065 memory port — goes to ddram_ctrl alongside the fast RAM
+-	input         a2065_clk_ddr,
+-	output [28:0] a2065_mem_address,
+-	output [7:0]  a2065_mem_burstcount,
+-	output        a2065_mem_read,
+-	input  [63:0] a2065_mem_readdata,
+-	input         a2065_mem_readdatavalid,
+-	output [63:0] a2065_mem_writedata,
+-	output [7:0]  a2065_mem_byteenable,
+-	output        a2065_mem_write,
+-	input         a2065_mem_waitrequest
++	// Game Bub port: the A2065's place on the chip bus, for the board in
++	// rtl/gamebub (gb_a2065: the LANCE and its RAM in the FPGA)
++	output        a2065_sel,        // the board's 64 KB are addressed
++	output [23:1] a2065_addr,
++	output [15:0] a2065_wdata,
++	output        a2065_rw,         // 1: read
++	output        a2065_uds_n,
++	output        a2065_lds_n,
++	input  [15:0] a2065_rdata,      // 0 unless the board is read
++	input         a2065_irq         // level 2
+ );
+ 
+ 
+@@ -1051,15 +1049,15 @@
+ assign      toccata_aud_left  = 16'h0000;
+ assign      toccata_aud_right = 16'h0000;
+ 
+-assign      a2065_dout = 16'h0000;
++assign      a2065_sel   = sel_a2065;
++assign      a2065_addr  = cpu_address_out[23:1];
++assign      a2065_wdata = cpu_data_out;
++assign      a2065_rw    = cpu_r_w;
++assign      a2065_uds_n = _cpu_uds;
++assign      a2065_lds_n = _cpu_lds;
++assign      a2065_dout = a2065_rdata;
+ assign      a2065_nrdy = 1'b0;
+-assign      a2065_int2_sync = 1'b0;
+-assign      a2065_mem_address    = 29'd0;
+-assign      a2065_mem_burstcount = 8'd0;
+-assign      a2065_mem_read       = 1'b0;
+-assign      a2065_mem_writedata  = 64'd0;
+-assign      a2065_mem_byteenable = 8'd0;
+-assign      a2065_mem_write      = 1'b0;
++assign      a2065_int2_sync = a2065_irq;
+ 
+ assign cdtv_bridge_dout       = 16'h0000;
+ assign cdtv_bridge_selack     = 1'b0;

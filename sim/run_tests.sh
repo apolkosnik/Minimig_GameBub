@@ -3,34 +3,48 @@
 # first). Each test prints TEST PASSED / TEST FAILED; the script fails if
 # any test fails.
 #
+# Every test also compares what the core shows with what it was sent: the
+# bench has the framework's video side (sim/rtl/fw_video_sim.sv: which of
+# the two frames a picture goes to, the handheld's panel or with --hdmi the
+# 720p frame) and the board's SRAM (sim/rtl/sram_sim.sv, the pins' timing
+# checked), and every pixel of every frame of the screen must be the frame's
+# (gb_fb: the two frames in the SRAM and block RAM). And every pixel sent is
+# the chipset's colour dithered to 18 bits: one of the two 6 bit values
+# around each component, the mean over a flat 2 x 2 block the colour itself.
+#
 # The short tests use the test ROMs in sim/asm (built by asm/build.sh):
+#   fb      sim/fb: gb_fb on its own with a new picture every frame, the
+#           panel and HDMI, the stream stopping and going on (the menu)
 #   video   vidtest.rom: a copper-made 1 bitplane picture, every pixel of
-#           the 640 pixel wide frame checked; with OCS (all 256 PAL lines,
-#           dithered colours), ECS (240 lines, middle, dithered) and AGA with
-#           the 68EC020 (240, bottom, palette colours): AGA's picture
-#           comes a clock later, and blended every pixel with its neighbour
-#           before H_START took that in
+#           the 640 pixel wide frame checked; with OCS (all 256 PAL lines),
+#           ECS (240 lines, middle) and AGA with the 68EC020 (240, bottom):
+#           AGA's picture comes a clock later, and blended every pixel with
+#           its neighbour before H_START took that in; video_h on HDMI
 #   diw_*   vidtest_l.rom: the display window and the fetch 32 high
 #           resolution pixels left of the standard ones; vidtest_r.rom: the
 #           window alone 4 pixels right (the line's end allows no more).
 #           gb_video centres its 720 pixels on the window: every pixel must
-#           be where it belongs (OCS, ECS, and AGA with palette colours)
+#           be where it belongs (OCS, ECS, AGA)
 #   lace    lacetest.rom: the vidtest picture in interlace, the border blue
 #           in long fields and red in short ones: every frame the core
 #           completes must be a long field, one every two fields
 #   colour  coltest.rom: a different background colour on every line (256
-#           colours a frame): a still picture must be exact in every pixel;
-#           then the colours change every frame, the palette (gb_palette)
-#           runs out, and no entry may change while a frame that uses it
-#           can still be shown
+#           colours a frame): a still picture, every pixel its line's
+#           colour; then the colours change every frame
 #   ham     hamtest.rom: a still HAM picture, almost every pixel another
-#           colour; every pixel shown in palette mode is checked against the
-#           chipset's colour (exact, or the nearest fixed colour)
-#   aga256  aga256.rom: a still AGA picture of 256 colours, random pixels:
-#           in palette mode (aga256t: never reusing entries) every pixel
-#           exact, none in the fixed colours
+#           colour
+#   aga256  aga256.rom: a still AGA picture of 256 colours, random pixels;
+#           aga256_h on HDMI
+#   a2065   a2065test.rom: the A2065 Ethernet board (the LANCE in the FPGA):
+#           initialisation, loopback, frames sent to and brought by the MCU
+#   toccata toccatest.rom: the Toccata sound card (autoconfig, the codec's
+#           registers, 16 bit stereo at 44100 Hz from the FIFO, filled again
+#           at every level 6 interrupt: their rate, the status read, and the
+#           two channels at the core's audio output), on the 68000 and on
+#           the fastest CPU
 #   input   inptest.rom: joystick (port 2) from the D-pad and the left stick,
-#           fire, keyboard (with handshake), host mouse motion and buttons,
+#           fire, keyboard (with handshake), host mouse motion, buttons and
+#           wheel (alone, with motion, and motion after it not counted),
 #           D-pad mouse mode, right stick mouse, a second controller on port 1
 #           and host keyboard events (USB HID usages): a key down and up,
 #           Caps Lock toggling, a burst of four events, an unknown usage
@@ -87,6 +101,11 @@
 # Kickstart boots run when the ROMs are given (they are not included):
 #   KICK13=<Kickstart 1.3 A500 ROM> KICK31=<Kickstart 3.1 A1200 ROM>
 #   ADF13=<OFS bootable ADF> ADF31=<bootable ADF for 3.1>
+#   A2065DEV=<a2065.device> XDFTOOL=<amitools' xdftool>  ks31_a2065: the
+#           real driver against the core's A2065, and ks31_netdown: the
+#           same without a network at first (see below)
+#   TOCCATALIB=<toccata.library> TOCCATAINIT=<ToccataInit> XDFTOOL=...
+#           ks31_toccata: the real library sets the Toccata up (see below)
 #   HDF31=<bootable partition image> HDFRDB31=<bootable image with an RDB>
 #   (sim/make_hdf.sh makes both from the files of an ADF)
 # and with KICK31 the real cartridges (not included):
@@ -117,6 +136,8 @@ open(sys.argv[1] + '/rdb.hdf', 'wb').write(d)
 PY
 # the SDRAM controller on its own, every port at once (sim/sdr)
 sdr/run_sdr.sh > $OUT/sdr.log 2>&1 && echo "sdram_ctrl   TEST PASSED" || { echo "sdram_ctrl   TEST FAILED"; FAILED_SDR=1; }
+# the picture's two frames on their own, the panel and HDMI (sim/fb)
+fb/run_fb.sh > $OUT/fb.log 2>&1 && echo "fb           TEST PASSED" || { echo "fb           TEST FAILED"; FAILED_SDR=1; }
 pids=()
 names=()
 run() {
@@ -126,18 +147,19 @@ run() {
 }
 run video  --kick asm/vidtest.rom --ms 560 --check-vidtest
 run video_ecs --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=1 --set 1080=0 --set 107C=8
-run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
+run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=0 --set 107C=10
+run video_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi
 run diw_l    --kick asm/vidtest_l.rom --ms 560 --check-vidtest
 run diw_r    --kick asm/vidtest_r.rom --ms 560 --check-vidtest --vidtest-data-x 36 --set 1044=1 --set 1080=0 --set 107C=8
-run diw_aga  --kick asm/vidtest_l.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
+run diw_aga  --kick asm/vidtest_l.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=0 --set 107C=10
 run lace     --kick asm/lacetest.rom --ms 1000 --check-vidtest --check-lace
-run colour --kick asm/coltest.rom --check-coltest 1100 --ms 4000 --set 1080=3
-run ham    --kick asm/hamtest.rom --ms 900 --set 1080=3
-run aga256 --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=3 --expect-no-fixed
-run aga256t --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=7 --expect-no-fixed
-# z3test.rom: the 68030 / 68020, the 16 MB Zorro III board and the RTG
+run colour --kick asm/coltest.rom --check-coltest 1100 --ms 4000
+run ham    --kick asm/hamtest.rom --ms 900
+run aga256 --kick asm/aga256.rom --ms 1000 --set 1044=2
+run aga256_h --kick asm/aga256.rom --ms 1000 --set 1044=2 --set 1080=0 --hdmi
+# z3test.rom: the 68030 / 68020, the 32 MB Zorro III board and the RTG
 # board's memory in the second SDRAM chip (autoconfig, patterns, lanes)
-Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:10A:F000:A000 --check-word 790:10C:F000:0000 --check-word 790:10E:F000:8000 --check-word 790:110:F000:0000"
+Z3CHK="--check-word 790:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:10A:F000:A000 --check-word 790:10C:F000:1000 --check-word 790:10E:F000:8000 --check-word 790:110:F000:0000 --check-word 790:112:F000:C000 --check-word 790:114:F000:1000"
 RTGROM=rtgtest.rom
 if [ -d ../rtl/ap68040 ]; then
 	# a build variant's tree with the AP68040 (tools/stage_variant.sh): the
@@ -178,6 +200,18 @@ run smc --kick asm/smctest.rom --ms 700 --set 1044=2 --set 1048=4 --set 104C=8 \
 # the blitter)
 run smcstress --kick asm/smcstress.rom --ms 1500 --set 1044=2 --set 1048=4 --set 104C=8 \
 	--check-word 1490:100:FFFF:600D --check-word 1490:102:FFFF:0000
+# a2065: a2065test.rom drives the A2065 Ethernet board as a2065.device does
+# (autoconfig, the LANCE's registers, the board's RAM, a frame in loopback
+# with its CRC, two frames sent, four of seven received, level 2 interrupts,
+# a missed frame); the bench is the MCU that takes and brings the frames
+run a2065 --kick asm/a2065test.rom --ms 900 --set 50=F0000 --net-test \
+	--check-word 890:100:FFFF:600D --check-word 890:102:FFFF:0000 --check-word 890:104:FFFF:0004
+# toccata: toccatest.rom drives the Toccata sound card as toccata.library
+# does. 256 bytes go in at every interrupt, four bytes are a frame: 689
+# interrupts a second at 44100 Hz. The wave is +-$3000 left, +-$1000 right.
+TOCCHK="--check-word 500:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:106:FFFF:0008 --check-word 790:108:FFFF:0000 --check-word 790:10A:FFFF:005B --check-rate 550:740:104:129:133 --expect-audio-ratio 0.333333 --expect-audio-peak 12288:4096"
+run toccata --kick asm/toccatest.rom --ms 800 $TOCCHK
+run toccata_f --kick asm/toccatest.rom --ms 800 --set 1044=2 --set 1048=4 --set 104C=8 $TOCCHK
 # cart_*: carttest.rom and a cartridge image; Help from a USB keyboard
 # (Insert) and from the X button set to Help. HRTmon's configuration as its
 # stub found it ($130: 22 bytes, then maxchip): ide ($13B), aga ($13D),
@@ -216,7 +250,7 @@ done
 # 1920 x 1080, cut at 2048 pixels), each
 # shown on the framework's external picture (HDMI, tb_top) and every pixel
 # of a whole 1280 x 720 frame checked
-run rtg --kick asm/$RTGROM --ms 2500 --set 1048=4 --set 104C=8 --rtg-check --rtg-modes 9 \
+run rtg --kick asm/$RTGROM --ms 2500 --set 1048=4 --set 104C=8 --hdmi --rtg-check --rtg-modes 9 \
 	--check-word 2400:100:FFFF:600D --check-word 2400:104:FFFF:0000
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
@@ -237,24 +271,71 @@ run input  --kick asm/inptest.rom \
 	--hwrite 1290:1038:039 --hwrite 1300:1038:139 --check-word 1340:108:00FF:00E2 \
 	--hwrite 1350:1038:1E1 --hwrite 1352:1038:11A --hwrite 1354:1038:01A --hwrite 1356:1038:0E1 \
 	--hwrite 1358:1038:1FF --check-word 1420:108:00FF:00E0 --check-word 1420:10A:FFFF:000A \
-	--ms 1450
+	--hwrite 1400:1034:1 --hwrite 1410:1034:0 --check-word 1420:10C:00FF:0000 \
+	--hwrite 1430:103C:3 --check-word 1460:10C:00FF:0003 \
+	--hwrite 1470:103C:FE --check-word 1500:10C:00FF:0001 \
+	--mouse 1510:12:-6 --hwrite 1511:103C:5 --check-mouse 1505:1570:12:-6 --check-word 1570:10C:00FF:0006 \
+	--hwrite 1580:1038:104 --check-word 1620:108:00FF:0020 --check-word 1620:10A:FFFF:000B \
+	--mouse 1630:-9:14 --check-mouse 1625:1690:-9:14 --check-word 1690:10C:00FF:0006 \
+	--ms 1700
 run audio0 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=0 --expect-audio-ratio 0
 run audio1 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=1 --expect-audio-ratio 0.142857
 run audio2 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=2 --expect-audio-ratio 0.333333
 run audio3 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=3 --expect-audio-ratio 1
 run floppy --kick asm/wrtest.rom --disk 0 $OUT/blank.adf --ms 1200 --floppy-write-test --exit
-run ide_part  --kick asm/idetest.rom --hdf 0 $OUT/part.hdf --ide-test --ms 1800
-run ide_rdb   --kick asm/idetest.rom --hdf 0 $OUT/rdb.hdf  --ide-test --ms 1800
-run ide_slave --kick asm/idetest.rom --hdf 1 $OUT/part.hdf --ide-test --ms 1800
+# (of the 323 sectors it reads at least 150 must come out of the buffer read
+# ahead, without a request to the firmware)
+run ide_part  --kick asm/idetest.rom --hdf 0 $OUT/part.hdf --ide-test --ms 1800 --expect-hdd-ahead 150
+run ide_rdb   --kick asm/idetest.rom --hdf 0 $OUT/rdb.hdf  --ide-test --ms 1800 --expect-hdd-ahead 150
+run ide_slave --kick asm/idetest.rom --hdf 1 $OUT/part.hdf --ide-test --ms 1800 --expect-hdd-ahead 150
 if [ -n "${KICK13:-}" ]; then
 	run ks13_nodisk --kick "$KICK13" --ms 6000 --expect-boot-frame --frames-dir $OUT --shot-every 300
 	[ -n "${ADF13:-}" ] && run ks13_boot --kick "$KICK13" --disk 0 "$ADF13" --ms 15000 --expect-sectors 100 --exit
 fi
 if [ -n "${KICK31:-}" ] && [ -n "${ADF31:-}" ]; then
 	run ks31_aga --kick "$KICK31" --disk 0 "$ADF31" --set 1044=2 --set 1048=2 --set 104C=4 --ms 12000 --expect-sectors 100
-	# the 68030 with the 16 MB Zorro III board (second SDRAM chip)
+	# the 68030 with the 32 MB Zorro III board (second SDRAM chip)
 	mkdir -p $OUT/ks31_030
 	run ks31_030 --kick "$KICK31" --disk 0 "$ADF31" --set 1044=2 --set 1048=4 --set 104C=8 --ms 12000 --expect-sectors 100 --frames-dir $OUT/ks31_030 --shot-every 100
+fi
+# ks31_a2065: the real a2065.device (SANA-II) under Kickstart 3.1 against
+# the core's A2065: asm/netdrv.s from a boot disk made here with the driver
+# in Devs:Networks opens it, asks what it is, takes the station address,
+# configures, sends a broadcast and reads a frame, takes the device offline
+# and online, and sends and reads again; the bench is the MCU
+if [ -n "${KICK31:-}" ] && [ -n "${A2065DEV:-}" ] && [ -n "${XDFTOOL:-}" ]; then
+	printf 'netdrv\n' > $OUT/netdrv.startup
+	rm -f $OUT/netdrv.adf
+	"$XDFTOOL" $OUT/netdrv.adf create + format NetDrv ffs + boot install + makedir s + makedir devs + makedir devs/networks \
+		+ write "$A2065DEV" devs/networks/a2065.device + write asm/netdrv.exe netdrv + write $OUT/netdrv.startup s/Startup-Sequence > /dev/null \
+		&& run ks31_a2065 --kick "$KICK31" --disk 0 $OUT/netdrv.adf --set 1044=2 --set 1048=4 --set 104C=8 --set 50=F0000 --net-drv --ms 9000
+fi
+# ks31_netdown: the same driver with no network at first (asm/netdown.s:
+# the handheld not on its dock): the frame it sends does not reach the MCU,
+# the driver says it went offline (S2EVENT_OFFLINE) and refuses the next
+# frame; then the bench brings the link up, and it is put online, sends and
+# reads
+if [ -n "${KICK31:-}" ] && [ -n "${A2065DEV:-}" ] && [ -n "${XDFTOOL:-}" ]; then
+	printf 'netdown\n' > $OUT/netdown.startup
+	rm -f $OUT/netdown.adf
+	"$XDFTOOL" $OUT/netdown.adf create + format NetDown ffs + boot install + makedir s + makedir devs + makedir devs/networks \
+		+ write "$A2065DEV" devs/networks/a2065.device + write asm/netdown.exe netdown + write $OUT/netdown.startup s/Startup-Sequence > /dev/null \
+		&& run ks31_netdown --kick "$KICK31" --disk 0 $OUT/netdown.adf --set 1044=2 --set 1048=4 --set 104C=8 --set 50=E0000 --net-down --ms 9000
+fi
+# ks31_toccata: the real toccata.library under Kickstart 3.1 against the
+# core's Toccata: a boot disk made here with the library in Libs: and
+# ToccataInit (which opens it: the library then sets the card up, waiting
+# for its autocalibration with interrupts off) between two calls of
+# asm/mark.s, which counts in chip RAM: 2 when ToccataInit came back.
+# asm/envram.s gives the library its ENV: first.
+if [ -n "${KICK31:-}" ] && [ -n "${TOCCATALIB:-}" ] && [ -n "${TOCCATAINIT:-}" ] && [ -n "${XDFTOOL:-}" ]; then
+	printf 'envram\nmark\nToccataInit\nmark\n' > $OUT/toccata.startup
+	rm -f $OUT/toccata.adf
+	"$XDFTOOL" $OUT/toccata.adf create + format TocBoot ffs + boot install + makedir s + makedir libs \
+		+ write "$TOCCATALIB" libs/toccata.library + write "$TOCCATAINIT" ToccataInit + write asm/mark.exe mark \
+		+ write asm/envram.exe envram + write $OUT/toccata.startup s/Startup-Sequence > /dev/null \
+		&& run ks31_toccata --kick "$KICK31" --disk 0 $OUT/toccata.adf --set 1044=2 --set 1048=4 --set 104C=8 --ms 10000 \
+			--check-word 9900:100:FFFF:0002 --check-word 9900:102:FFFF:4D4B
 fi
 if [ -n "${KICK31:-}" ]; then
 	# the real cartridges under Kickstart 3.1: where the CPU is (--check-pc)

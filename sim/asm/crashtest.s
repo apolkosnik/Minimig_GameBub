@@ -36,6 +36,7 @@ start:
 	move.w	#253,d7
 .v:	move.l	#crash,(a0)+
 	dbf	d7,.v
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	#$4000,$E80044		; Zorro III RAM board at $40000000
 	move.w	#$5000,$E80044		; RTG board
 

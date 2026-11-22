@@ -1,52 +1,65 @@
-// HDMI output test for the 720p framework branch (hdmi-720p), from the 3DO
-// core's test of the same framework change (3DO_GameBub, sim/tb/tb_hdmi720.sv).
+// The framework's generated HandheldTop (patches/framework, with the
+// complete Minimig core in it, build/hdmi720/generated) on both screens:
+// what reaches the HDMI encoder's TMDS output, and what reaches the panel's
+// pins, against the pictures the core was sent. (From the 3DO core's test
+// of the framework's 720p change, 3DO_GameBub sim/tb/tb_hdmi720.sv.)
 //
-// Runs the framework's generated HandheldTop (patches/framework 0001 and
-// 0002, with the complete Minimig core in it, build/hdmi720/generated) and
-// the framework's hdmi module instantiated exactly as in
-// framework/verilog/handheld/top.sv (the instance is extracted from top.sv
-// by sim/hdmi720/run_hdmi720.sh into hdmi_inst.svh), and decodes the TMDS
-// symbols of the three channels as an HDMI sink would:
+// The core keeps the picture's two frames itself (gb_fb: the board's SRAM,
+// here sim/rtl/sram_sim.sv on HandheldTop's SRAM pins, and block RAM) and
+// shows them through the framework's external picture (patches/framework
+// 0003, 0005). The bench puts a pixel stream timed as gb_video's in place
+// of the Amiga's (the core's video outputs forced: 720 pixels a line, 256
+// or 240 lines, 50 frames a second, a different picture every frame), and
+// keeps the two frames as the framework says they are written
+// (framebufferWriteIndex, dropFrame).
+//
+// HDMI (+mode=0, 1, 2): the framework's hdmi module instantiated exactly as
+// in framework/verilog/handheld/top.sv (the instance is extracted from
+// top.sv by sim/hdmi720/run_hdmi720.sh into hdmi_inst.svh); the TMDS
+// symbols of the three channels are decoded as an HDMI sink would:
 //   - control tokens, TERC4 data islands, guard bands and video periods;
 //   - the sync timing against CEA-861 VIC 4 (1280x720p60: 1650 x 750 total,
 //     hsync 40 after a 110 front porch, back porch 220, vsync 5 lines after
 //     a 5-line front porch, back porch 20, both sync pulses active high),
 //     with the hdmi module's one-pixel skew of the video period (DE_SKEW);
-//   - every active pixel of two whole frames against the framebuffer,
-//     palette and overlay contents the test wrote: the 720x256 frame buffer
-//     of 9 bit indices fitted across (patches/framework 0004: all 1280
-//     columns, output column x showing column x * 720 / 1280; column 0 of
-//     the picture in the first symbol of the video period, column 719 in
-//     the last) and, by +mode:
-//       0: direct colours (no palette: 3 + 3 + 3 bits), 240 lines at 3x;
-//       1: palette colours (the palette RAM's 24 bit entries, and the fixed
-//          2 + 3 + 2 bit colours of the indices 384..511), the 256 lines
-//          spread over the 720 (fit: line y * 256 / 720);
-//       2: the core's own picture (patches/framework 0003, the RTG
-//          display): the core's external colour is forced to a pattern of
-//          the x / y the framework presented VideoV0.externalLatency (12)
-//          clocks before, every pixel of the 1280 x 720 screen must be
-//          the pattern at its own position;
+//   - every active pixel of whole frames: the 720 pixels fitted across all
+//     1280 columns (column x shows pixel x * 9 / 16), and by +mode:
+//       0: the first 240 lines, each three times;
+//       1: the 256 lines spread over the 720 (fit: line y * 256 / 720);
+//     of the frame that was the last completed when the screen's frame
+//     began (a pixel may also be what it was before its last write: HDMI
+//     runs at 60 frames a second and the frame shown may be written);
+//       2: the core's external colour is forced to a pattern of the x / y
+//          the framework presented VideoV0.externalLatency (12) clocks
+//          before: every pixel of the 1280 x 720 screen must be the
+//          pattern at its own position;
 //     and the 360x240 pause-menu overlay scaled 3x and centred
 //     (x 100..1179) over the picture;
 //   - the data island packets: the AVI InfoFrame's VIC (must be 4), the
 //     audio clock regeneration packets (N 6144, CTS from the real clocks:
 //     6144 / 128 x 1546 = 74208 pixel clocks), and the audio samples sent
 //     per frame (48 kHz from the 74.21875 MHz pixel clock: 48006 Hz,
-//     about 800.6 samples per 59.966 Hz frame).
+//     about 800.6 samples per 59.966 Hz frame, four to a packet).
 //
-// What the test does instead of the firmware and the core:
-//   - the MCU's dock register write (docked, external screen) is a force of
-//     the two HandheldTop control registers it sets;
-//   - the framebuffers, the palette and the overlay are written directly
-//     with a pattern in which every pixel differs from its neighbours, and
-//     the core's video data enable and palette writes are held low so the
-//     core does not overwrite them; the core's palette enable and fit
-//     outputs are forced to the mode under test.
-// The pixel clock is 74.21875 MHz, the frequency clk_wiz_hdmi.v makes
-// (50 MHz / 4 x 59.375 / 10).
+// The panel (+mode=3: all 256 lines fitted to the 480 rows; 4: the first
+// 240 lines twice each): the DPI pins of the rev 4 display driver (480 x
+// 800, scanned in columns of the landscape picture) and the 24 data pins.
+// Every pixel of whole frames of the panel: scan line X, pixel Y of it is
+// column X - 12, line Y * 256 / 480 (or Y / 2) of the frame the driver
+// shows, which is never written while it is shown; black in the columns
+// outside the 720; the overlay, twice its size, on top.
 //
-// Plusargs: +frames=<n> frames to check (default 2), +mode=<0|1|2>.
+// What the test does instead of the firmware and the Amiga:
+//   - the MCU's dock register write (docked, external screen; the HDMI
+//     modes) is a force of the two HandheldTop control registers it sets;
+//   - the core's pixel stream is forced (see above), and the overlay is
+//     written directly with a pattern.
+// The pixel clocks: 74.21875 MHz for HDMI, the frequency clk_wiz_hdmi.v
+// makes (50 MHz / 4 x 59.375 / 10); 25.952 MHz for the panel (the core's
+// MMCM: 908.33 MHz / 35).
+//
+// Plusargs: +frames=<n> frames of the screen to check (default 2),
+// +mode=<0..4>.
 //
 // Copyright (c) 2026 Adam Polkosnik
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -60,11 +73,13 @@ module tb_hdmi720;
 	localparam real T_114 = 1000.0 / 113.541667;
 	reg clk_114 = 0;
 	reg clk_28 = 0;
+	reg clk_57 = 0;                  // (CLKOUT5: the AP68040 variant's CPU clock)
 	reg mmcm_locked = 0;
 	integer half_114 = 0;
 	always #(T_114 / 2.0) begin
 		clk_114 = ~clk_114;
 		half_114 = half_114 + 1;
+		if (half_114 == 2 || half_114 == 4) clk_57 = ~clk_57;
 		if (half_114 == 4) begin
 			half_114 = 0;
 			clk_28 = ~clk_28;
@@ -89,7 +104,13 @@ module tb_hdmi720;
 			clk_hdmi = ~clk_hdmi;
 		end
 	end
-	wire clk_av = clk_hdmi;
+	// the panel's pixel clock, and the screen under test
+	integer mode = 0;
+	initial if ($value$plusargs("mode=%d", mode)) ;
+	wire panel = (mode >= 3);
+	reg clk_dpi = 0;
+	always #(1000.0 / 25.952381 / 2.0) clk_dpi = ~clk_dpi;
+	wire clk_av = panel ? clk_dpi : clk_hdmi;
 
 	// Names used by the hdmi instance extracted from top.sv
 	logic hdmi_reset;
@@ -108,6 +129,18 @@ module tb_hdmi720;
 	wire reset;
 	pll_reset_generator sys_reset_gen(.clk(clk_sys_out), .clk_locked(clk_sys_locked), .reset(reset));
 	wire [1:0] sdram_cke, sdram_cs;
+	wire        lcd_vsync, lcd_hsync, lcd_enable;
+	wire  [7:0] lcd_r, lcd_g, lcd_b;
+	wire        sram_ce, sram_we, sram_oe, sram_dir;
+	wire  [1:0] sram_mask;
+	wire [17:0] sram_a;
+	wire [15:0] sram_q, sram_d;
+	wire [31:0] sram_errors, sram_writes, sram_reads;
+	sram_sim sram(
+		.clk(clk_114), .ce_n(sram_ce), .we_n(sram_we), .oe_n(sram_oe), .mask_n(sram_mask), .a(sram_a),
+		.din(sram_d), .dir(sram_dir), .dout(sram_q),
+		.errors(sram_errors), .writes(sram_writes), .reads(sram_reads)
+	);
 	HandheldTop dut(
 		.clock(clk_sys_out),
 		.reset(reset),
@@ -138,7 +171,10 @@ module tb_hdmi720;
 		.io_cartridge_bank3In(4'h0), .io_cartridge_pin30In(1'b0), .io_cartridge_pin31In(1'b0),
 		.io_pmod_in(4'h0),
 		.io_link_soIn(1'b0), .io_link_siIn(1'b0), .io_link_sdIn(1'b0), .io_link_scIn(1'b0),
-		.io_sram_dataIn(16'h0),
+		.io_lcd_vsync(lcd_vsync), .io_lcd_hsync(lcd_hsync), .io_lcd_enable(lcd_enable), .io_lcd_dotclk(),
+		.io_lcdDataR(lcd_r), .io_lcdDataG(lcd_g), .io_lcdDataB(lcd_b),
+		.io_sram_ceN(sram_ce), .io_sram_weN(sram_we), .io_sram_oeN(sram_oe), .io_sram_writeMaskN(sram_mask),
+		.io_sram_address(sram_a), .io_sram_dataIn(sram_q), .io_sram_dataOut(sram_d), .io_sram_dataDir(sram_dir),
 		.io_sdram_cke(sdram_cke), .io_sdram_cs(sdram_cs),
 		.io_sdram_dataIn(16'h0)
 	);
@@ -147,81 +183,145 @@ module tb_hdmi720;
 	// Test pattern
 	// ------------------------------------------------------------------
 	localparam int FB_W = 720, FB_H = 256, OV_W = 360, OV_H = 240;
-	localparam int SCALE = 3;                           // the overlay's
+	localparam int SCALE = 3;                           // the overlay's on HDMI
 	localparam int OV_X0 = (1280 - OV_W * SCALE) / 2;  // 100
-	integer mode = 0;
+	localparam int P_X0 = 12;                           // the picture's and the overlay's first column on the panel
+	wire fit = (mode == 1 || mode == 3);
 
-	// 9 bit indices, every one different from its neighbours (steps of 7
-	// across, 13 down), a quarter of them in the fixed colours (384..511)
-	function automatic [8:0] fb_pixel(input int x, input int y);
-		fb_pixel = 9'(x * 7 + y * 13 + (x >> 5) * 3);
+	// ---- the pixel stream, as gb_video times it
+	// (a PAL line is 227.5 colour clocks: 1820 of the 28 MHz clock, 49.9 frames
+	// a second; the panel, built for 50, takes 19.99 ms a frame at least)
+	localparam int LINE = 1820, LINES = 312, H0 = 300, V0 = 41;
+	reg [11:0] sh = 0;
+	reg  [8:0] sl = 0;
+	integer    sframe = 0;
+	reg        s_de = 0, s_hb = 1, s_vb = 1;
+	reg [17:0] s_data = 0;
+	wire [8:0] nlines = fit ? 9'd256 : 9'd240;
+	function automatic [17:0] pix(input integer f, input integer y, input integer x);
+		reg [31:0] v;
+		begin
+			v = (f * 32'h9E3779B1) ^ (y * 32'h85EBCA6B) ^ (x * 32'hC2B2AE35);
+			v = v ^ (v >> 15);
+			v = v * 32'h2C1B3C6D;
+			v = v ^ (v >> 12);
+			pix = v[17:0];
+		end
 	endfunction
-	// the palette's entries
-	function automatic [23:0] pal_entry(input int i);
-		pal_entry = {8'(i * 37 + 5), 8'(i * 91 + 11), 8'(i * 53 + 17)};
-	endfunction
-	// the framework's colour widening (Color.convertRGB: the bits repeated)
-	function automatic [7:0] w3(input [2:0] c); w3 = {c, c, c[2:1]}; endfunction
-	function automatic [7:0] w2(input [1:0] c); w2 = {c, c, c, c}; endfunction
-	function automatic [23:0] index_rgb(input [8:0] i);
-		if (mode == 0) index_rgb = {w3(i[8:6]), w3(i[5:3]), w3(i[2:0])};
-		else if (i[8:7] == 2'b11) index_rgb = {w2(i[6:5]), w3(i[4:2]), w2(i[1:0])};
-		else index_rgb = pal_entry(i);
-	endfunction
-	// the frame buffer line shown on output line y
-	function automatic int fb_line(input int y);
-		fb_line = (mode == 0) ? y / 3 : y * 256 / 720;
+	always @(posedge clk_sys_out) begin
+		s_de <= 0;
+		if (reset !== 1'b0) begin sh <= 0; sl <= 0; s_hb <= 1; s_vb <= 1; end
+		else begin
+			if (sh == LINE - 1) begin
+				sh <= 0;
+				if (sl == LINES - 1) begin sl <= 0; sframe <= sframe + 1; end
+				else sl <= sl + 1'd1;
+			end
+			else sh <= sh + 1'd1;
+			if (sh == 0) s_vb <= !(sl >= V0 && sl < V0 + nlines);
+			if (!s_vb && sh >= H0 && sh < H0 + 1440) begin
+				s_hb <= 0;
+				if (!((sh - H0) & 1)) begin
+					s_de   <= 1;
+					s_data <= pix(sframe, sl - V0, (sh - H0) >> 1);
+				end
+			end
+			else if (sh >= H0 + 1440) s_hb <= 1;
+		end
+	end
+
+	// ---- the two frames as the framework has them written, and every
+	// pixel before its last write
+	reg [17:0] fmem  [0:2*FB_W*FB_H-1];
+	reg [17:0] fprev [0:2*FB_W*FB_H-1];
+	reg  [9:0] fx = 0;
+	reg  [8:0] fy = 0;
+	reg        fvb_d = 1, fhb_d = 1;
+	integer    frames_kept = 0;
+	wire [18:0] fa = (dut.framebufferWriteIndex ? FB_W * FB_H : 0) + fy * FB_W + fx;
+	always @(posedge clk_sys_out) begin
+		fvb_d <= s_vb;
+		fhb_d <= s_hb;
+		if (s_de && !dut.dropFrame && fy < FB_H && fx < FB_W) begin
+			fprev[fa] <= fmem[fa];
+			fmem[fa]  <= s_data;
+		end
+		if (s_vb && !fvb_d && !dut.regDropFrame) frames_kept <= frames_kept + 1;
+		if (s_vb) begin fx <= 0; fy <= 0; end
+		else if (s_hb) begin if (!fhb_d) begin fx <= 0; if (fy < FB_H) fy <= fy + 1'd1; end end
+		else if (s_de && fx < FB_W) fx <= fx + 1'd1;
+	end
+	// both frames have a picture
+	wire pictures = (frames_kept >= 3);
+
+	function automatic [23:0] rgb24(input [17:0] q);
+		rgb24 = {q[17:12], q[17:16], q[11:6], q[11:10], q[5:0], q[5:4]};
 	endfunction
 	// 2-bit overlay: a grid of lines, 0 (transparent) elsewhere
 	function automatic [1:0] ov_pixel(input int x, input int y);
 		if (x % 37 == 5 || y % 23 == 7) ov_pixel = 2'((x + y) % 3 + 1);
 		else ov_pixel = 2'd0;
 	endfunction
+	function automatic [23:0] ov_rgb(input [1:0] o);
+		reg [7:0] lum;
+		begin
+			lum = o == 2'd1 ? 8'h00 : o == 2'd2 ? 8'h80 : 8'hFF;
+			ov_rgb = {lum, lum, lum};
+		end
+	endfunction
 	// mode 2: the core's picture, a colour for every pixel of the frame
 	function automatic [23:0] ext_pixel(input int x, input int y);
 		ext_pixel = {8'(x * 5 + y * 3), 8'(x ^ (y << 1)), 8'(y * 7 + (x >> 3))};
 	endfunction
-	function automatic [23:0] expected_rgb(input int x, input int y);
+
+	// HDMI: the frame taken as the screen's frame began (as the core takes it)
+	reg hsync_d = 0;
+	reg hdmi_shown = 0;
+	always @(posedge clk_av) begin
+		hsync_d <= dut.core_io_video_external_sync_REG;
+		if (dut.core_io_video_external_sync_REG && !hsync_d) hdmi_shown <= dut._lastFrameComplete_cdc_io_destOutput;
+	end
+	// pixel (x, y) of the HDMI screen: 1 as the frame has it, 2 as it was
+	// before its last write, 0 neither
+	integer old_pixels = 0;
+	function automatic int hdmi_match(input int x, input int y, input [23:0] got);
 		reg [1:0] o;
-		reg [7:0] lum;
-		expected_rgb = 24'h000000;
-		if (mode == 2)
-			expected_rgb = ext_pixel(x, y);
-		else if (x >= 0 && x < 1280)
-			expected_rgb = index_rgb(fb_pixel(x * FB_W / 1280, fb_line(y)));
-		if (x >= OV_X0 && x < OV_X0 + OV_W * SCALE) begin
-			o = ov_pixel((x - OV_X0) / SCALE, y / SCALE);
-			if (o != 0) begin
-				lum = o == 2'd1 ? 8'h00 : o == 2'd2 ? 8'h80 : 8'hFF;
-				expected_rgb = {lum, lum, lum};
+		int a;
+		begin
+			hdmi_match = 0;
+			o = 2'd0;
+			if (x >= OV_X0 && x < OV_X0 + OV_W * SCALE) o = ov_pixel((x - OV_X0) / SCALE, y / SCALE);
+			if (o != 0) hdmi_match = (got === ov_rgb(o)) ? 1 : 0;
+			else if (mode == 2) hdmi_match = (got === ext_pixel(x, y)) ? 1 : 0;
+			else begin
+				a = (hdmi_shown ? FB_W * FB_H : 0) + (fit ? y * 256 / 720 : y / 3) * FB_W + x * FB_W / 1280;
+				if (got === rgb24(fmem[a])) hdmi_match = 1;
+				else if (got === rgb24(fprev[a])) hdmi_match = 2;
 			end
+		end
+	endfunction
+	function automatic [23:0] hdmi_want(input int x, input int y);
+		int a;
+		begin
+			a = (hdmi_shown ? FB_W * FB_H : 0) + (fit ? y * 256 / 720 : y / 3) * FB_W + x * FB_W / 1280;
+			hdmi_want = (mode == 2) ? ext_pixel(x, y) : rgb24(fmem[a]);
 		end
 	endfunction
 
 	initial begin
-		if ($value$plusargs("mode=%d", mode)) ;
-		$display("mode %0d: %s", mode, mode == 0 ? "direct colours, 240 lines" :
-			mode == 1 ? "palette, 256 lines fit" : "the core's external picture");
+		$display("mode %0d: %s", mode, mode == 0 ? "HDMI, 240 lines" : mode == 1 ? "HDMI, 256 lines fit" :
+			mode == 2 ? "HDMI, the core's external colour forced" : mode == 3 ? "the panel, 256 lines fit" : "the panel, 240 lines");
 		#1;
-		for (int i = 0; i < 512; i++)
-			dut.videoPalette_sram_ext.Memory[i] = pal_entry(i);
-		for (int y = 0; y < FB_H; y++)
-			for (int x = 0; x < FB_W; x++) begin
-				dut.framebuffers_sram_ext.Memory[y * FB_W + x] = fb_pixel(x, y);
-				dut.framebuffers_sram_1_ext.Memory[y * FB_W + x] = fb_pixel(x, y);
-			end
 		for (int y = 0; y < OV_H; y++)
 			for (int x = 0; x < OV_W; x++)
 				dut.overlayFramebuffer_sram_ext.Memory[y * OV_W + x] = ov_pixel(x, y);
-		// The core sends no pixels and no palette entries (they would
-		// overwrite the pattern); its palette enable and fit outputs as the
-		// mode wants them
-		force dut._core_io_video_dataEnable = 1'b0;
-		force dut._core_io_video_palette_write = 1'b0;
-		force dut._core_io_video_palette_enable = (mode == 1);
-		force dut._core_io_video_fit = (mode == 1);
-		force dut._core_io_video_external_enable = (mode == 2);
-		force dut._core_io_video_external_color = ext_color;
+		// the stream in place of the Amiga's
+		force dut.core.extModule.video_dataEnable = s_de;
+		force dut.core.extModule.video_hblank = s_hb;
+		force dut.core.extModule.video_vblank = s_vb;
+		force dut.core.extModule.video_data = s_data;
+		force dut.core.extModule.video_fit = fit;
+		if (mode == 2) force dut._core_io_video_external_color = ext_color;
 	end
 
 	// mode 2: the colour of the pixel the framework named 12 clocks ago
@@ -245,8 +345,10 @@ module tb_hdmi720;
 	initial begin
 		wait (reset === 1'b0);
 		repeat (10) @(posedge clk_sys_out);
-		force dut.controlDock_docked = 1'b1;
-		force dut.controlDock_useInternalScreen = 1'b0;
+		if (!panel) begin
+			force dut.controlDock_docked = 1'b1;
+			force dut.controlDock_useInternalScreen = 1'b0;
+		end
 	end
 
 	// ------------------------------------------------------------------
@@ -336,6 +438,7 @@ module tb_hdmi720;
 	reg [63:0] pk_sub [4];
 	integer avi_count = 0, acr_count = 0, samples_in_frame = 0;
 	integer frame_samples [8];
+	integer audio_total = 0, audio_frames = 0;
 	integer acr_bad = 0;
 	integer avi_bad = 0;
 
@@ -379,9 +482,19 @@ module tb_hdmi720;
 			if (frames_seen < 8) frame_samples[frames_seen] = samples_in_frame;
 			$display("frame %0d: %0d lines, %0d active, %0d audio samples, %0d pixels checked so far",
 				frames_seen, frame_lines, active_lines, samples_in_frame, pixels_checked);
-			// The first frame after the receiver locks may start mid-stream
-			if (frames_seen > 0 && (samples_in_frame < 799 || samples_in_frame > 802))
-				fail($sformatf("%0d audio samples in the frame, expected 800 or 801", samples_in_frame));
+			// The first frame after the receiver locks may start mid-stream.
+			// 800.6 samples a frame, sent four to a packet: 800 in most
+			// frames and 804 in about one of six (seen at 99 ms whatever
+			// the picture is); the total must stay within a packet of the
+			// rate
+			if (frames_seen > 0) begin
+				audio_total += samples_in_frame;
+				audio_frames++;
+				if (samples_in_frame < 799 || samples_in_frame > 804)
+					fail($sformatf("%0d audio samples in the frame, expected 800 to 804", samples_in_frame));
+				if (audio_total < audio_frames * 800.64 - 5.0 || audio_total > audio_frames * 800.64 + 5.0)
+					fail($sformatf("%0d audio samples in %0d frames, expected 800.64 a frame", audio_total, audio_frames));
+			end
 			frames_seen++;
 		end
 		vs_rise = sym;
@@ -398,6 +511,8 @@ module tb_hdmi720;
 	initial begin
 		wait (dut.controlDock_docked === 1'b1);
 		repeat (20000) @(posedge clk_hdmi);
+		// (the pictures: once both frames have one)
+		if (mode != 2) wait (pictures);
 		rx_enable = 1;
 	end
 
@@ -516,10 +631,7 @@ module tb_hdmi720;
 						longint'(frames_target) * 1280 * 720));
 				if (avi_count < frames_target) fail("no AVI InfoFrame in every frame");
 				if (acr_count < frames_target * 15) fail("too few ACR packets");
-				$display("%0d pixel errors", pixel_errors);
-				if (errors == 0) $display("PASS");
-				else $display("FAIL: %0d errors", errors);
-				$finish;
+				finish_report();
 			end
 		end
 		if (!vs && vs_prev && vs_rise >= 0 && sym - vs_rise != 5 * 1650)
@@ -537,12 +649,15 @@ module tb_hdmi720;
 			end
 			got = {tmds_decode(s2), tmds_decode(s1), tmds_decode(s0)};
 			if (frames_seen >= 1 && vs_rise >= 0 && active_y >= 0 && active_y < 720 && line_video < 1280) begin
-				exp = expected_rgb(line_video, active_y);
-				if (got !== exp) begin
+				int m;
+				m = hdmi_match(line_video, active_y, got);
+				if (m == 2) old_pixels++;
+				if (m == 0) begin
+					exp = hdmi_want(line_video, active_y);
 					pixel_errors++;
 					if (pixel_errors <= 10)
 						$display("PIXEL (%0d, %0d): %h, expected %h (x-1: %h, x+1: %h)", line_video, active_y, got, exp,
-							expected_rgb(line_video - 1, active_y), expected_rgb(line_video + 1, active_y));
+							hdmi_want(line_video - 1, active_y), hdmi_want(line_video + 1, active_y));
 					fail($sformatf("pixel (%0d, %0d): %h, expected %h", line_video, active_y, got, exp));
 				end
 				pixels_checked++;
@@ -555,10 +670,77 @@ module tb_hdmi720;
 		sym++;
 	end
 
+	// ------------------------------------------------------------------
+	// The panel's pins
+	// ------------------------------------------------------------------
+	reg        lv_d = 1, le_d = 0;
+	integer    lcd_line = -1, lcd_px = 0;
+	integer    lcd_frames = 0;           // whole frames of the panel compared
+	reg        lcd_checking = 0;
+	longint    lcd_frame_px = 0;
+	always @(posedge clk_dpi) if (panel) begin
+		reg [23:0] got, want;
+		reg  [1:0] o;
+		int col, a;
+		lv_d <= lcd_vsync;
+		le_d <= lcd_enable;
+		if (lcd_vsync && !lv_d) begin
+			// a frame of the panel begins: the one before it is complete
+			if (lcd_checking) begin
+				if (lcd_frame_px != 800 * 480)
+					fail($sformatf("a frame of the panel with %0d pixels, expected %0d", lcd_frame_px, 800 * 480));
+				lcd_frames++;
+				$display("panel frame %0d at %0d ms: %0d pixels checked so far, %0d of the core's frames kept", lcd_frames, $time / 1000000, pixels_checked, frames_kept);
+				if (lcd_frames >= frames_target) finish_report();
+			end
+			lcd_checking <= pictures;
+			lcd_line     <= -1;
+			lcd_frame_px <= 0;
+		end
+		else if (lcd_enable) begin
+			int x, y;
+			x = le_d ? lcd_line : lcd_line + 1;
+			y = le_d ? lcd_px : 0;
+			if (!le_d) lcd_line <= lcd_line + 1;
+			lcd_px <= y + 1;
+			if (lcd_checking) begin
+				got = {lcd_r, lcd_g, lcd_b};
+				col = x - P_X0;
+				want = 24'd0;
+				if (col >= 0 && col < FB_W) begin
+					a = (dut.driver.currentFrame ? FB_W * FB_H : 0) + (fit ? y * 256 / 480 : y / 2) * FB_W + col;
+					want = rgb24(fmem[a]);
+					o = ov_pixel(col / 2, y / 2);
+					if (o != 0) want = ov_rgb(o);
+				end
+				if (got !== want) begin
+					pixel_errors++;
+					fail($sformatf("panel pixel (%0d, %0d): %h, expected %h", x, y, got, want));
+				end
+				pixels_checked++;
+				lcd_frame_px <= lcd_frame_px + 1;
+			end
+		end
+	end
+
+	task automatic finish_report();
+		$display("%0d pixel errors, %0d pixels as before their last write", pixel_errors, old_pixels);
+		$display("SRAM: %0d words written, %0d read, %0d timing errors; scan lines late %0d%s; frames kept %0d",
+			sram_writes, sram_reads, sram_errors, dut.core.extModule.fb_late,
+			dut.core.extModule.fb_overflow ? ", write queue OVERFLOWED" : "", frames_kept);
+		if (sram_errors != 0) fail("SRAM timing errors");
+		if (dut.core.extModule.fb_late != 0 || dut.core.extModule.fb_overflow) fail("scan lines late or the write queue full");
+		if (panel && old_pixels != 0) fail("the panel showed a frame that was written");
+		if (mode != 2 && (sram_writes == 0 || sram_reads == 0)) fail("the SRAM was not used");
+		if (errors == 0) $display("PASS");
+		else $display("FAIL: %0d errors", errors);
+		$finish;
+	endtask
+
 	integer timeout_ms = 120;
 	initial begin
 		if ($value$plusargs("frames=%d", frames_target)) ;
-		timeout_ms = 30 + 17 * (frames_target + 2);
+		timeout_ms = 30 + 80 + 45 * (frames_target + 3);
 		#(longint'(timeout_ms) * 1000000);
 		$display("ERROR: timeout, %0d frames seen", frames_seen);
 		$display("FAIL");

@@ -1,25 +1,29 @@
 ; CPU, Zorro III RAM and RTG memory test ROM (256 KB at $FC0000) for the
-; Game Bub Minimig bench. Run with the 68020 or 68030 and the "2M + 16M Z3
-; fast" memory preset: the Zorro III board and the RTG board's memory are
-; in the second SDRAM chip.
+; Game Bub Minimig bench. Run with the 68020 or 68030 and the "2M + 32M Z3
+; fast" memory preset: the RTG board's memory and the first 24 MB of the
+; Zorro III board are in the second SDRAM chip, the board's last 8 MB in
+; the first.
 ;
 ;   1  CPU: PMOVE TC,(a0) runs on the 68030 (its MMU), takes the F-line
 ;      exception on the 68020
-;   2  autoconfig: the first board is the 16 MB Zorro III memory board,
-;      given the base $40000000; the second the RTG board, given $50000000
+;   2  autoconfig: the first board is the Toccata sound card (Zorro II,
+;      64 KB), given the base $E90000; the next the 32 MB Zorro III memory
+;      board, given $40000000; the last the RTG board, given $50000000
 ;   3  a long at the start of every 64 KB of the Zorro III board (and its
 ;      last long) written with its address xor $5A5AA5A5
 ;   4  the same over the RTG board's 8 MB of memory ($50000000-$507FFFFF)
 ;   5  all of them read back (the Zorro III board after the RTG memory was
 ;      written, so neither overwrites the other), chip RAM written before
 ;      them unchanged
-;   6  bytes and words at both boards, read back as longs
+;   6  bytes and words at both boards (the Zorro III board in each of
+;      its three parts), read back as longs
 ;
 ;   $100  step being run, $600D when everything is done
 ;   $102  the step that failed, 0 when none did
 ;   $104  1: PMOVE ran (68030), 0: F-line exception
-;   $10A  the first board's autoconfig words at $E80000 and $E80002
-;   $10E  the second board's
+;   $10A  the memory board's autoconfig words at $E80000 and $E80002
+;   $10E  the RTG board's
+;   $112  the Toccata's
 ;   $120  failing address, $124 value read, $128 value expected
 ;
 ; COLOR00 is green at the end, red after a failure (-DDIAG: a colour for
@@ -62,6 +66,9 @@ start:
 
 	; ---- 2: autoconfig
 	move.w	#2,$100
+	move.w	$E80000,$112
+	move.w	$E80002,$114
+	move.b	#$E9,$E80048		; the Toccata sound card, first in the chain: $E90000
 	move.w	$E80000,$10A
 	move.w	$E80002,$10C
 	move.w	#(Z3BASE>>16),$E80044	; Zorro III board: base
@@ -76,13 +83,13 @@ start:
 	; ---- 3: the Zorro III board
 	move.w	#3,$100
 	lea	Z3BASE,a1
-	move.w	#255,d7
+	move.w	#511,d7
 .wz3:	move.l	a1,d0
 	eor.l	#$5A5AA5A5,d0
 	move.l	d0,(a1)
 	add.l	#$10000,a1
 	dbf	d7,.wz3
-	lea	Z3BASE+$FFFFFC,a1
+	lea	Z3BASE+$1FFFFFC,a1
 	move.l	a1,d0
 	eor.l	#$5A5AA5A5,d0
 	move.l	d0,(a1)
@@ -104,11 +111,11 @@ start:
 	; ---- 5: read back
 	move.w	#5,$100
 	lea	Z3BASE,a1
-	move.w	#255,d7
+	move.w	#511,d7
 .rz3:	bsr	check
 	add.l	#$10000,a1
 	dbf	d7,.rz3
-	lea	Z3BASE+$FFFFFC,a1
+	lea	Z3BASE+$1FFFFFC,a1
 	bsr	check
 	lea	RTGBASE,a1
 	move.w	#127,d7
@@ -127,6 +134,10 @@ start:
 	; ---- 6: byte and word lanes
 	move.w	#6,$100
 	lea	Z3BASE+$1000,a1
+	bsr	lanes
+	lea	Z3BASE+$1001000,a1
+	bsr	lanes
+	lea	Z3BASE+$1801000,a1
 	bsr	lanes
 	lea	RTGBASE+$1000,a1
 	bsr	lanes

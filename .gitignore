@@ -5,7 +5,10 @@
 /sim/out
 /sim/asm/*.rom
 /sim/asm/*.bin
-/sim/gls/work
+/sim/asm/*.exe
+/sim/gls/work*
 /sim/sdr/obj_*
 /sim/*.log
 __pycache__/
+/sim/fb/obj_*
+/sim/fb/obj_fb*

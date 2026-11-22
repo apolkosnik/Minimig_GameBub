@@ -32,28 +32,30 @@ class MinimigCore extends Module with Core {
     )
     val video = new VideoV0(
       // 720 high resolution pixels (the standard window and 40 either side:
-      // overscan), shown one to one across the panel and fitted across
-      // HDMI's 1280; down, the first 240 lines doubled or all 256 fitted to
-      // the screen's 480 (patches/framework: independentScale, fit). Two
-      // frame buffers of 720 x 256 fit the block RAM at 9 bits per pixel: a
-      // pixel is the index of its colour in a palette the core fills
-      // (paletteBits).
+      // overscan) by 256 lines. The core keeps the two frames itself, at 18
+      // bits a pixel in the board's SRAM and block RAM (gb_fb), and shows
+      // them through the framework's external picture, one to one across
+      // the panel and fitted across HDMI's 1280; down, the first 240 lines
+      // doubled or all 256 fitted to the screen's 480 (patches/framework:
+      // ownFrames). The framework builds no frame buffers and takes no
+      // pixel data, only the stream's timing.
       videoWidth = 720,
       videoHeight = 256,
-      colorDepthR = 3,
-      colorDepthG = 3,
-      colorDepthB = 3,
+      colorDepthR = 1,
+      colorDepthG = 1,
+      colorDepthB = 1,
       framePeriod = framePeriod,
       independentScale = true,
-      paletteBits = 9,
-      // RTG: the board's picture (second SDRAM chip) on HDMI
+      // also RTG: the board's picture (second SDRAM chip) on HDMI
       // (patches/framework 0003)
       externalPicture = true,
+      ownFrames = true,
     )
     val audio = new AudioV0()
     val host = new HostV0()
     val input = new InputExtendedV0(numSlots = 2)
     val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = 2)
+    val sram = new SramV0(addressWidth = 18, dataWidth = 16)
   })
 
   bindExtModule("minimig_gamebub", io, Map(

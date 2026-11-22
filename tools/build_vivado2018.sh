@@ -40,10 +40,26 @@ read -r RWNS RTNS _ _ RWHS _ < <(grep -A2 -m1 "WNS(ns)" "$RPT" | tail -1)
 echo "Timing in the run ($(basename "$RPT")): WNS $RWNS ns, TNS $RTNS ns, WHS $RWHS ns"
 CHK="$IMPL"/timing_recheck.rpt
 rm -f "$CHK"
-vivado -mode batch -nojournal -nolog -source "$ROOT"/tools/recheck_timing.tcl -tclargs "$DCP" "$CHK" > "$IMPL"/timing_recheck.log 2>&1
-read -r WNS TNS _ _ WHS _ < <(grep -A2 -m1 "WNS(ns)" "$CHK" | tail -1)
-echo "Timing ($(basename "$DCP") timed afresh): WNS $WNS ns, TNS $TNS ns, WHS $WHS ns"
-if awk -v w="$WNS" -v h="$WHS" 'BEGIN { exit !(w < 0 || h < 0) }'; then
+recheck() {
+	vivado -mode batch -nojournal -nolog -source "$ROOT"/tools/recheck_timing.tcl -tclargs "$DCP" "$CHK" > "$IMPL"/timing_recheck.log 2>&1
+	read -r WNS TNS _ _ WHS _ < <(grep -A2 -m1 "WNS(ns)" "$CHK" | tail -1)
+	echo "Timing ($(basename "$DCP") timed afresh): WNS $WNS ns, TNS $TNS ns, WHS $WHS ns"
+}
+failed() { awk -v w="$WNS" -v h="$WHS" 'BEGIN { exit !(w < 0 || h < 0) }'; }
+recheck
+# Vivado 2018.3's summary has once reported a path with an arrival time that
+# was not the sum of the delays it listed (an SDRAM data input, 5.367 ns late:
+# the forwarded clock's offset counted twice; -1.854 ns where the run and two
+# more fresh sessions gave +0.033 ns). So a failure here that the run does not
+# show is timed twice more, and stands unless both of those pass. The failing
+# report is kept.
+if failed && ! awk -v w="$RWNS" -v h="$RWHS" 'BEGIN { exit !(w < 0 || h < 0) }'; then
+	cp "$CHK" "$IMPL"/timing_recheck_failed.rpt
+	echo "the run met timing and the fresh session did not: timing twice more (first report kept as timing_recheck_failed.rpt)"
+	recheck
+	if ! failed; then recheck; fi
+fi
+if failed; then
 	echo "ERROR: timing not met" >&2
 	exit 1
 fi
