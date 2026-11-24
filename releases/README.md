@@ -3,20 +3,38 @@
 Two cores, each a complete directory to copy to `/cores/` on the microSD card (add a
 Kickstart ROM, see the top-level README):
 
-* `apolkosnik.Minimig/`: the standard core (68000 to 68030), v0.9.1;
-* `apolkosnik.Minimig040/`: the AP68040 build variant (`variants/ap68040`), v0.3.1. It
+* `apolkosnik.Minimig/`: the standard core (68000 to 68030), v0.10.0;
+* `apolkosnik.Minimig040/`: the AP68040 build variant (`variants/ap68040`), v0.4.0. It
   is a core of its own on the card, next to the standard one.
 
 Built with Vivado 2018.3 (`tools/build_vivado2018.sh`, `tools/build_variant.sh ap68040`)
 and framework v1.1.0-beta5: they need a firmware that calls itself 1.1.0-beta5 or later
-(`min_firmware`). Timing: worst setup slack +0.009 ns (standard) and +0.049 ns (68040),
-no hold violations.
+(`min_firmware`). Timing: worst setup slack +0.152 ns (standard) and +0.050 ns (68040),
+no hold violations. Block RAM: 130 and 131 of the FPGA's 135.
 
 The network, a keyboard or a mouse on the dock and the mouse's wheel need the firmware
 forks (top-level README): the handheld's at commit `f1b9bec4` or later
 (`apolkosnik/gamebub`, branch `minimig-net-beta5`), the dock's at `8bd58a4` or later
 (`apolkosnik/dock-firmware`, branch `usb-mouse`). With the stock firmware the cores run
 without them: no A2065 in the Amiga's list of boards, no dock keyboard or mouse.
+
+## v0.10.0 (68040 core v0.4.0)
+
+* Picture **800 x 480**, a third choice next to 256 and 240 lines: 800 pixels of each
+  line one to one across all 800 columns of the handheld's panel (720 before, with
+  bars either side), 240 lines two rows each. An Amiga line has some 828 pixels
+  between its blankings, so the 800 are not centred on the standard window: its 640
+  pixels are at columns 99 to 738, the border colour out to both edges. An overscan
+  screen moves the picture left with it. No 256 lines in this mode: two frames of 800 x
+  256 need more block RAM than the FPGA has left. On HDMI the 800 pixels are fitted
+  across the 1280 columns.
+* Each of the two frames is shown with the size it was written in, so changing the
+  setting does not show a garbled frame.
+
+Tested in simulation: both cores' full suites (65 and 64 tests, the Kickstart boots
+among them) passed on these sources, with new tests of the 800 x 480 picture (OCS,
+AGA, NTSC, HDMI, an overscan window; every pixel checked) and of the frame store
+switching between the two sizes while running. Not yet run on a Game Bub.
 
 ## v0.9.1 (68040 core v0.3.1)
 
