@@ -112,10 +112,13 @@ static int failures = 0;
 static void rtg_sample();   // RTG picture check, at every rising clk_av edge
 
 // -------------------------------------------------------------- video
-static const int VW = 720, VH = 256;   // the frame buffer
-static std::vector<uint32_t> fb(VW * VH);        // the last whole frame, as colours
-static std::vector<uint32_t> fbi(VW * VH);       // the frame being written: 6 + 6 + 6 bits as sent
-static std::vector<uint32_t> fbt(VW * VH);       // the colours the chipset produced for them
+// the frame buffer: 720 x 256, or 800 x 240 with the core's wide frames
+// (Picture: 800 x 480; VW taken as each frame begins)
+static const int VWMAX = 800, VH = 256;
+static int VW = 720;
+static std::vector<uint32_t> fb(VWMAX * VH);     // the last whole frame, as colours
+static std::vector<uint32_t> fbi(VWMAX * VH);    // the frame being written: 6 + 6 + 6 bits as sent
+static std::vector<uint32_t> fbt(VWMAX * VH);    // the colours the chipset produced for them
 // Every pixel sent is checked against the chipset's colour (gb_video's
 // dither): a component that is one of the 64 values a 6 bit one is shown as
 // ({k, k[5:4]}) must be that one; any other must be the value below it or
@@ -235,6 +238,7 @@ static void video_sample() {
 		frames++;
 	}
 	if (vb) { fb_x = 0; fb_y = 0; }
+	if (!vb && prev_vblank) VW = top->video_wide ? VWMAX : 720;
 	else if (hb) { if (hb_edge) { fb_x = 0; fb_y++; } }
 	else if (de) fb_x++;
 	prev_hblank = hb;
@@ -1144,6 +1148,7 @@ int main(int argc, char **argv) {
 	bool expect_frame = false;
 	bool check_vidtest = false;
 	int vidtest_data_x = 40;
+	int vidtest_wide_dx = 59;   // wide: the picture's columns from the 720 one's
 	bool floppy_write_test = false;
 	bool ide_test = false;
 	double coltest_ms = -1;       // when to check the still picture of sim/asm/coltest.s
@@ -1207,6 +1212,7 @@ int main(int argc, char **argv) {
 		else if (a == "--check-vidtest") check_vidtest = true;
 		else if (a == "--check-lace") check_lace = true;
 		else if (a == "--vidtest-data-x") vidtest_data_x = std::atoi(next().c_str());
+		else if (a == "--vidtest-wide-dx") vidtest_wide_dx = std::atoi(next().c_str());
 		else if (a == "--floppy-write-test") floppy_write_test = true;
 		else if (a == "--expect-audio-ratio") expect_lr = std::atof(next().c_str());
 		else if (a == "--random-ram") random_ram = std::stoul(next());
@@ -1541,6 +1547,7 @@ int main(int argc, char **argv) {
 		            top->sram_writes, top->sram_reads, top->sram_errors, top->fb_lines, top->fb_late,
 		            top->fb_overflow ? ", write queue OVERFLOWED" : "", fbs);
 		if (top->disp_errors) FAIL("%u pixels on the screen that are not the frame's", top->disp_errors);
+		if (top->disp_unwritten) FAIL("%u pixels on the screen from memory no frame wrote", top->disp_unwritten);
 		if (top->store_errors) FAIL("%u pixels in the core's frames that are not as sent", top->store_errors);
 		if (top->sram_errors) FAIL("%u SRAM timing errors", top->sram_errors);
 		if (top->fb_late) FAIL("%u scan lines shown before they were read", top->fb_late);
@@ -1752,12 +1759,22 @@ int main(int argc, char **argv) {
 	// the window moved (vidtest_l, vidtest_r). The bitplane's first pixel
 	// at --vidtest-data-x (40: where the window opens; vidtest_r moves the
 	// window and not the fetch). Colour 1 yellow, colour 0 blue.
+	// Picture 800 x 480 (0x1080 = 2): 800 x 240, the picture's columns
+	// --vidtest-wide-dx to the right of the 720 one's (59: gb_video's
+	// window from clock 215, the latest, where the 720 one is from 333; 40
+	// for a window it need not hold back, 80 clocks before the 720 one's),
+	// border all the way to both edges.
 	if (check_vidtest) {
 		const uint32_t Y = 0xFFFF00, B = 0x0000FF;
 		int vpos = 0, fit = 1;
+		bool wide = false;
 		for (auto &e : extra_settings) if (e.first == 0x107C) vpos = int(e.second);
-		for (auto &e : extra_settings) if (e.first == 0x1080) fit = int(e.second) & 1;
-		const int left = vidtest_data_x;
+		for (auto &e : extra_settings) if (e.first == 0x1080) { fit = int(e.second) & 1; wide = (e.second & 2) != 0; }
+		if (wide) fit = 0;
+		if (bool(top->video_wide) != wide) FAIL("the core's wide output is %d, expected %d", int(top->video_wide), int(wide));
+		if (VW != (wide ? 800 : 720)) FAIL("the frames are %d pixels wide, expected %d", VW, wide ? 800 : 720);
+		const int dx = wide ? vidtest_wide_dx : 0;
+		const int left = vidtest_data_x + dx;
 		// NTSC (0x1050 = 1): 240 lines from the window's top line whatever
 		// the two settings say; the frame ends some 220 lines below it, and
 		// the rest of the 240 are the next frame's first lines: black
@@ -1776,7 +1793,7 @@ int main(int argc, char **argv) {
 				continue;
 			}
 			int lx = (x - left) / 2;   // the low resolution pixel, shown twice
-			bool one = x >= 40 && x < 680 && x >= left && x < left + 640 &&
+			bool one = x >= 40 + dx && x < 680 + dx && x >= left && x < left + 640 &&
 			           ((line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4);
 			uint32_t e = one ? Y : B;
 			if (fb[y * VW + x] != e && bad++ < 5) FAIL("vidtest pixel (%d,%d) is %06X, expected %06X", x, y, fb[y * VW + x], e);

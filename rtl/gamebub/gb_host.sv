@@ -152,6 +152,7 @@ module gb_host
 	output reg  [7:0] key_select,
 	output reg  [4:0] video_vpos,
 	output reg        video_fit,
+	output reg        video_wide,     // 800 x 480: 800 pixels by 240 lines, one to one on the panel
 
 	// mouse from the host (firmware)
 	output reg        hmouse_valid,   // one clock per motion write
@@ -237,7 +238,8 @@ reg  [7:0] set_df1;
 reg  [7:0] set_filter;
 reg  [7:0] set_stereo;
 reg  [7:0] set_vpos;
-reg  [7:0] set_fit;       // Picture: bit 0 all 256 PAL lines fitted to the screen
+reg  [7:0] set_fit;       // Picture: bit 0 all 256 PAL lines fitted to the screen,
+                          // bit 1 800 x 480 (800 pixels by 240 lines)
 
 // memory presets: XHFFSSCC
 function automatic [7:0] mem_preset(input [2:0] p);
@@ -264,7 +266,8 @@ always @* begin
 	cfg_audmix   = set_stereo[1:0];
 	audio_filter = set_filter[0];
 	video_vpos   = set_vpos[4:0];
-	video_fit    = set_fit[0];
+	video_fit    = set_fit[0] & ~set_fit[1];
+	video_wide   = set_fit[1];
 end
 
 // --------------------------------------------------------------- files

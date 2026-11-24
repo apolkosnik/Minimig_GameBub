@@ -28,6 +28,11 @@
 #           window alone 4 pixels right (the line's end allows no more).
 #           gb_video centres its 720 pixels on the window: every pixel must
 #           be where it belongs (OCS, ECS, AGA)
+#   *wide   Picture 800 x 480: the frames 800 x 240, the vidtest picture
+#           59 pixels right of the 720 one's (gb_video's window from clock
+#           215, the latest a line's end allows), 40 with the window 32
+#           pixels left (diw_wide: no need to hold it back), the border to
+#           both edges; OCS, AGA, NTSC and HDMI
 #   lace    lacetest.rom: the vidtest picture in interlace, the border blue
 #           in long fields and red in short ones: every frame the core
 #           completes must be a long field, one every two fields
@@ -159,6 +164,11 @@ run video_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi
 run video_ntsc --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1
 run video_ntsc_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1 --set 1044=2 --set 1048=2 --set 107C=10
 run diw_l    --kick asm/vidtest_l.rom --ms 560 --check-vidtest
+run video_wide --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1080=2
+run video_wide_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
+run video_wide_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi --set 1080=2
+run video_wide_ntsc --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1 --set 1080=2
+run diw_wide --kick asm/vidtest_l.rom --ms 560 --check-vidtest --set 1080=2 --vidtest-wide-dx 40
 run diw_r    --kick asm/vidtest_r.rom --ms 560 --check-vidtest --vidtest-data-x 36 --set 1044=1 --set 1080=0 --set 107C=8
 run diw_aga  --kick asm/vidtest_l.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=0 --set 107C=10
 run lace     --kick asm/lacetest.rom --ms 1000 --check-vidtest --check-lace

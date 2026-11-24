@@ -11,7 +11,12 @@
 // middle the stream stops for some frames (the menu's pause) and goes on,
 // and one line of one frame does not end (two lines' pixels in one).
 // The clocks: clk_114 and clk_28 as the MMCM's, the screen's clock (25.95
-// MHz, or 74.22 MHz for HDMI) with a phase of its own (+seed).
+// MHz, or 74.22 MHz for HDMI) with a phase of its own (+seed). With +wide
+// the frames are 800 x 240 (Picture: 800 x 480), a line's 800 pixels from
+// clock 200 (gb_video: 161 .. 215), shown on all of the panel's 800 columns.
+// +wideswitch: 720 x 240 frames, 800 x 240 from frame 4 to frame 9, then
+// 720 x 240 again (the setting changed while running: each frame must be
+// shown as it was written, with its own size).
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 `timescale 1ns/1ps
@@ -31,6 +36,9 @@ integer frames_run = 14;
 bit     hdmi = 0;
 bit     fit = 1;
 bit     ntsc = 0;         // frames of 262 lines (16.8 ms), 240 of them the picture's
+bit     wide0 = 0;        // 800 x 240
+bit     wideswitch = 0;
+reg     wide = 0;         // the frame's (changes between frames)
 real    av_half;
 reg     clk_av = 0;
 initial begin
@@ -38,7 +46,9 @@ initial begin
 	void'($value$plusargs("frames=%d", frames_run));
 	hdmi = $test$plusargs("hdmi");
 	ntsc = $test$plusargs("ntsc");
-	fit  = !$test$plusargs("nofit") && !ntsc;
+	wide0 = $test$plusargs("wide");
+	wideswitch = $test$plusargs("wideswitch");
+	fit  = !$test$plusargs("nofit") && !ntsc && !wide0 && !wideswitch;
 	av_half = hdmi ? 6.7368 : 19.2664;
 	#(0.37 * seed + 1.0);
 	forever #(av_half) clk_av = ~clk_av;
@@ -51,7 +61,9 @@ initial begin
 end
 
 // ---- the pixel stream
-localparam LINE = 1820, H0 = 300;
+localparam LINE = 1820;
+wire [11:0] H0   = wide ? 12'd200 : 12'd300;
+wire [11:0] HLEN = wide ? 12'd1600 : 12'd1440;
 wire [8:0] LINES = ntsc ? 9'd262 : 9'd312;
 wire [8:0] V0    = ntsc ? 9'd20 : 9'd41;
 reg [11:0] h = 0;
@@ -75,13 +87,14 @@ endfunction
 
 always @(posedge clk_28) begin
 	de <= 0;
-	if (reset) begin h <= 0; l <= 0; hblank <= 1; vblank <= 1; end
+	if (reset) begin h <= 0; l <= 0; hblank <= 1; vblank <= 1; wide <= wide0; end
 	else begin
 		if (h == LINE - 1) begin
 			h <= 0;
 			if (l == LINES - 1) begin
 				l <= 0;
 				frame <= frame + 1;
+				if (wideswitch) wide <= (frame + 1 >= 4 && frame + 1 < 10);
 				// frames 7 to 9: no picture (the Amiga held)
 				stalled <= (frame + 1 >= 7 && frame + 1 < 10);
 			end
@@ -91,7 +104,7 @@ always @(posedge clk_28) begin
 
 		// vblank moves at a line's start, while hblank is high
 		if (h == 0) vblank <= stalled || !(l >= V0 && l < V0 + nlines);
-		if (!vblank && h >= H0 && h < H0 + 1440) begin
+		if (!vblank && h >= H0 && h < H0 + HLEN) begin
 			hblank <= 0;
 			if (!((h - H0) & 1)) begin
 				de   <= 1;
@@ -99,10 +112,10 @@ always @(posedge clk_28) begin
 			end
 		end
 		// (frame 5, the line before the last: it does not end, as when the
-		// Amiga's sync goes astray; its 720 pixels are kept, the last line's,
+		// Amiga's sync goes astray; its 720 (800) pixels are kept, the last line's,
 		// which come as more of it, are not, and the frame's last line stays
 		// as it was)
-		else if (h >= H0 + 1440 && !(frame == 5 && l == V0 + nlines - 2)) hblank <= 1;
+		else if (h >= H0 + HLEN && !(frame == 5 && l == V0 + nlines - 2)) hblank <= 1;
 	end
 end
 
@@ -112,19 +125,20 @@ wire        ext_hdmi, ext_sync, ext_frame;
 wire [10:0] ext_x;
 wire  [9:0] ext_y;
 wire [23:0] ext_color;
-wire [31:0] v_errors, v_screens, v_frames, v_dropped;
+wire [31:0] v_errors, v_screens, v_frames, v_dropped, v_unwritten;
 wire [63:0] v_pixels, v_old;
 wire        check;
 
 fw_video_sim fw
 (
 	.clk_sys (clk_28), .reset (reset), .hdmi (hdmi),
-	.de (de), .hblank (hblank), .vblank (vblank), .data (data), .fit (fit),
+	.de (de), .hblank (hblank), .vblank (vblank), .data (data), .fit (fit), .wide (wide),
 	.wr_frame (wr_frame), .wr_drop (wr_drop),
 	.clk_av (clk_av), .ext_hdmi (ext_hdmi), .ext_x (ext_x), .ext_y (ext_y),
 	.ext_sync (ext_sync), .ext_frame (ext_frame), .ext_color (ext_color),
 	.check (check), .errors (v_errors), .pixels (v_pixels), .screens (v_screens),
-	.frames_done (v_frames), .frames_dropped (v_dropped), .old_pixels (v_old)
+	.frames_done (v_frames), .frames_dropped (v_dropped), .old_pixels (v_old),
+	.unwritten (v_unwritten)
 );
 // from the third frame completed: both frames have a picture
 assign check = (v_frames >= 3);
@@ -146,7 +160,7 @@ wire        dbg_overflow;
 gb_fb dut
 (
 	.clk_sys (clk_28), .reset (reset),
-	.px_de (de), .px_data (data), .px_hblank (hblank), .px_vblank (vblank), .fit (fit),
+	.px_de (de), .px_data (data), .px_hblank (hblank), .px_vblank (vblank), .fit (fit), .wide (wide),
 	.wr_frame (wr_frame), .wr_drop (wr_drop),
 	.clk_114 (clk_114), .reset_114 (reset),
 	.sram_ceN (s_ce), .sram_weN (s_we), .sram_oeN (s_oe), .sram_writeMaskN (s_mask),
@@ -166,8 +180,9 @@ integer want_screens;
 initial begin
 	wait (frame == frames_run);
 	repeat (2000) @(posedge clk_28);
-	$display("frames: %0d sent, %0d kept, %0d dropped; screen: %0d frames, %0d pixels compared, %0d as before their last write",
-	         frame, v_frames, v_dropped, v_screens, v_pixels, v_old);
+	$display("frames: %0d sent, %0d kept, %0d dropped; screen: %0d frames, %0d pixels compared, %0d as before their last write, %0d never written",
+	         frame, v_frames, v_dropped, v_screens, v_pixels, v_old, v_unwritten);
+
 	$display("SRAM: %0d words written, %0d read, %0d timing errors; scan lines read %0d (mod 65536), late %0d; write queue up to %0d of 8%s",
 	         s_writes, s_reads, s_errors, dbg_lines, dbg_late, q_max, dbg_overflow ? ", OVERFLOWED" : "");
 	// the screen shows a frame for every one the core completes (the panel),
@@ -181,6 +196,14 @@ initial begin
 		want_screens = 1 << 30;
 	end
 	if (want_screens < 1) want_screens = 1;
+	// (only where the size changed: the line that does not end, frame 5,
+	// leaves its last line of the 800 x 240 layout as no frame wrote it,
+	// 800 pixels: 1,600 on the panel's rows, on HDMI's three rows of 1280
+	// for one or two of its frames; anything more is wrong)
+	if (v_unwritten > (!wideswitch ? 32'd0 : hdmi ? 32'd7680 : 32'd1600)) begin
+		$display("FAIL: %0d pixels shown from memory never written", v_unwritten);
+		want_screens = 1 << 30;
+	end
 	if (v_errors != 0 || s_errors != 0 || dbg_late != 0 || dbg_overflow || $signed(v_screens) < want_screens ||
 	    (!hdmi && v_old != 0) || s_writes == 0 || s_reads == 0) begin
 		$display("FAIL: %0d wrong pixels, %0d SRAM timing errors, %0d screen frames (at least %0d wanted)",

@@ -1,4 +1,5 @@
-// Game Bub Minimig: Amiga video -> a pixel stream of 720 x 256 in 18 bits.
+// Game Bub Minimig: Amiga video -> a pixel stream of 720 x 256 (or 800 x 240)
+// in 18 bits.
 //
 // Denise produces a new colour every 28 MHz clock (super hires grid). The
 // core keeps what this module sends in two frames of 720 x 256 (gb_fb: the
@@ -25,6 +26,16 @@
 //     _vsync into the next frame's first lines, which are blank, so the
 //     rows below the frame's end are black and every frame sent has its
 //     240 lines,
+//   - with `wide` (Picture: 800 x 480) keeps 800 pixels (1600 clocks) and
+//     240 lines, for the panel's 800 columns one to one. A line has 828
+//     pixels between Denise's blanking during _hsync (it ends at clock 160)
+//     and the next _hsync (1816), so 800 of them centred on the standard
+//     window (from clock 253) would run past the line's end: the window
+//     starts at clock 215 at the latest (the standard window's 640 pixels
+//     from its pixel 98) and moves left from there with an overscan screen
+//     whose middle is left of the standard one's, to clock 161 at the
+//     earliest. No fitted 256 lines in this mode (no memory for two frames
+//     of 800 x 256),
 //   - takes one pixel per high resolution pixel (every 2 clocks): a high
 //     resolution screen as it is, a low resolution pixel twice, every other
 //     pixel of a super high resolution one,
@@ -64,6 +75,7 @@ module gb_video
 	input                   diw,          // Denise's horizontal display window, with r_in / g_in / b_in
 	input                   drop_field,   // interlace: this field (the short one) is not shown
 	input                   fit_height,   // PAL: all 256 lines, fitted to the screen by the framework
+	input                   wide_set,     // 800 x 240 (Picture: 800 x 480)
 	input             [7:0] r_in,
 	input             [7:0] g_in,
 	input             [7:0] b_in,
@@ -76,6 +88,7 @@ module gb_video
 	output                  hblank,
 	output                  vblank,
 	output reg              fit,          // show all 256 lines (taken at a frame's start)
+	output reg              wide,         // 800 pixels by 240 lines (taken at a frame's start)
 
 	output           [23:0] dbg_color     // the Amiga's colour of the pixel sent (bench)
 );
@@ -104,8 +117,18 @@ wire  [8:0] v_lines = fit ? 9'd256 : 9'd240;
 reg         win;          // between the first line sent and the last
 reg   [8:0] wl;           // lines of the window so far
 wire        line_on = win;
-wire [11:0] hrel    = hcnt - h_start;
-wire        h_on    = (hcnt >= h_start) && (hcnt < h_start + 12'd1440);
+// the window's first clock and its length: 720 pixels from h_start, or
+// with `wide` 800 from h_start 80 clocks earlier, kept to H_W_FIRST ..
+// H_W_LAST (H_START's parity)
+localparam [11:0] H_W_FIRST = H_START - 12'd172;   // 161: after the blanking (160)
+localparam [11:0] H_W_LAST  = H_START - 12'd118;   // 215: its last pixel (1813) before _hsync (1816)
+wire [11:0] h_wide  = h_start - 12'd80;
+wire [11:0] h_go    = !wide ? h_start :
+                      (h_wide < H_W_FIRST) ? H_W_FIRST :
+                      (h_wide > H_W_LAST) ? H_W_LAST : h_wide;
+wire [11:0] h_len   = wide ? 12'd1600 : 12'd1440;
+wire [11:0] hrel    = hcnt - h_go;
+wire        h_on    = (hcnt >= h_go) && (hcnt < h_go + h_len);
 
 // the window centred on the display window seen in the frame: by the
 // distance of its middle from the standard one's (W_SUM), in steps of a
@@ -140,6 +163,7 @@ always @(posedge clk) begin
 		hblank_i   <= 1'b1;
 		vblank_i   <= 1'b1;
 		fit        <= 1'b0;
+		wide       <= 1'b0;
 		h_start    <= H_START;
 		skip       <= 1'b0;
 		win        <= 1'b0;
@@ -152,7 +176,8 @@ always @(posedge clk) begin
 			if (vs_start) begin
 				vcnt       <= 9'd0;
 				frame_seen <= 1'b1;
-				fit        <= fit_height & ~ntsc;   // only changes between frames
+				fit        <= fit_height & ~ntsc & ~wide_set;   // only changes between frames
+				wide       <= wide_set;
 				h_start    <= h_start_new;
 				skip       <= drop_field;
 			end
@@ -195,7 +220,7 @@ always @(posedge clk) begin
 				de_i   <= 1'b1;
 			end
 		end
-		else if (!hs_start && hcnt >= h_start + 12'd1440) hblank_i <= 1'b1;
+		else if (!hs_start && hcnt >= h_go + h_len) hblank_i <= 1'b1;
 	end
 end
 

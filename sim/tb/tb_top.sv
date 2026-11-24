@@ -50,6 +50,7 @@ module tb_top
 	output        video_hblank,
 	output        video_vblank,
 	output        video_fit,
+	output        video_wide,        // 800 x 240 frames (Picture: 800 x 480)
 	output [23:0] dbg_pixel_color,   // the chipset's colour of the pixel sent, with video_de
 
 	// the screen (sim/rtl/fw_video_sim.sv: the framework's side, every
@@ -59,6 +60,7 @@ module tb_top
 	output [63:0] disp_pixels,
 	output [31:0] disp_screens,
 	output [63:0] disp_old,
+	output [31:0] disp_unwritten,    // pixels shown from memory no frame wrote (not compared)
 	output [31:0] disp_frames,
 	output [31:0] disp_dropped,
 	output [31:0] sram_errors,
@@ -150,6 +152,7 @@ fw_video_sim fw
 	.vblank         (video_vblank),
 	.data           (video_data),
 	.fit            (video_fit),
+	.wide           (video_wide),
 	.wr_frame       (fw_frame),
 	.wr_drop        (fw_drop),
 	.clk_av         (clk_av),
@@ -166,7 +169,8 @@ fw_video_sim fw
 	.screens        (disp_screens),
 	.frames_done    (disp_frames),
 	.frames_dropped (disp_dropped),
-	.old_pixels     (disp_old)
+	.old_pixels     (disp_old),
+	.unwritten      (disp_unwritten)
 );
 // The frames in the core's memory against the frames as the framework's
 // side has them: every pixel of a frame, a few lines after its last pixel
@@ -189,20 +193,21 @@ always @(posedge clk_28) begin
 		if (st_wait == 10'd1 && st_kept && !reset) begin
 			int bad;
 			bad = 0;
-			// (the lines sent: 256 with fit, else 240)
-			for (int i = 0; i < 720 * (video_fit ? 256 : 240); i++) begin
+			// (the lines sent: 256 with fit, else 240; 800 pixels each wide)
+			for (int i = 0; i < int'(fw.lw) * (video_fit ? 256 : 240); i++) begin
 				int q;
 				reg [17:0] have;
-				q = (st_idx ? 720 * 256 : 0) + i;
+				q = (st_idx ? fw.FS : 0) + i;
 				if (q < 262144) have = {sram.mem[q], dut.fb.bx[q]};
 				else if (q < 262144 + 65536) have = dut.fb.bh0[q - 262144];
 				else if (q < 262144 + 98304) have = dut.fb.bh1[q - 262144 - 65536];
-				else have = dut.fb.bh2[q - 262144 - 98304];
+				else if (q < 262144 + 114688) have = dut.fb.bh2[q - 262144 - 98304];
+				else have = dut.fb.bh3[q - 262144 - 114688];
 				if (have !== fw.mem[q]) begin
 					bad++;
 					if (st_errors < 8 && bad <= 4)
 						$display("[store] ERROR at %0t: frame %0d (the core's %0d), line %0d, pixel %0d: the memory has %05x, sent %05x",
-						         $time, st_idx, disp_frames, i / 720, i % 720, have, fw.mem[q]);
+						         $time, st_idx, disp_frames, i / int'(fw.lw), i % int'(fw.lw), have, fw.mem[q]);
 				end
 			end
 			if (bad != 0) st_errors <= st_errors + bad;
@@ -218,7 +223,7 @@ reg [17:0] ck_d;
 reg        ck_tgl = 1'b0;
 integer    ck_bad = 0;
 always @(posedge clk_28) begin
-	ck_v <= video_de && !fw_drop && !reset && fw.fx < 720 && fw.fy < 256;
+	ck_v <= video_de && !fw_drop && !reset && fw.fx < fw.lw && fw.fy < fw.lh;
 	ck_a <= fw.waddr;
 	ck_d <= video_data;
 	ck_tgl <= dut.fb.w_tgl;
@@ -279,6 +284,7 @@ sram_sim sram
 	.reads  (sram_reads)
 );
 
+assign video_wide = dut.video_wide;
 minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 (
 	.clock                   (clk_28),

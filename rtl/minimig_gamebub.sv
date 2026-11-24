@@ -203,6 +203,8 @@ wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
 wire  [4:0] video_vpos;
 wire        video_fit_set;
+wire        video_wide_set;
+wire        video_wide;
 wire [15:0] fb_lines, fb_late;
 // the A2065's frames (gb_host <-> gb_a2065)
 wire        net_board, net_up, net_tx_valid, net_tx_taken, net_rx_we, net_rx_commit, net_rx_busy;
@@ -297,6 +299,7 @@ gb_host #(
 	.key_select       (key_select),
 	.video_vpos       (video_vpos),
 	.video_fit        (video_fit_set),
+	.video_wide       (video_wide_set),
 	.hmouse_valid     (hmouse_valid),
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
@@ -1096,7 +1099,9 @@ gb_video video
 	.diw     (diw),
 	.drop_field (field1),
 	.fit_height (video_fit_set),
+	.wide_set   (video_wide_set),
 	.fit     (video_fit),
+	.wide    (video_wide),
 	.r_in    (red),
 	.g_in    (green),
 	.b_in    (blue),
@@ -1125,6 +1130,7 @@ gb_fb fb
 	.px_hblank       (video_hblank),
 	.px_vblank       (video_vblank),
 	.fit             (video_fit),
+	.wide            (video_wide),
 	.wr_frame        (video_frames_write),
 	.wr_drop         (video_frames_drop),
 

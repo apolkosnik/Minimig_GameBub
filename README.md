@@ -223,13 +223,21 @@ unselected ones quietly.
   wherever Overscan prefs put it, so a 720 pixel overscan Workbench is shown whole (a
   wider one loses its edges evenly). Each frame the core measures where Denise's display
   window opens and closes and centres the next frame on it.
-  On the handheld's screen (720 x 480 visible of the panel's 800 x 480) it is one to one
+  On the handheld's screen (720 of the panel's 800 columns, with 240 or 256 lines) it is one to one
   across, edge to edge, so an 80 column Workbench or CLI is sharp (a low resolution pixel is two pixels wide); on HDMI it is fitted across
   all 1280 columns (column x shows pixel x * 9 / 16).
   The screen has 480 rows. **Picture** chooses between all 256 PAL lines
   fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
   is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
-  (the firmware takes 16 settings at most, so there is none for which 240). In NTSC the picture is 240 lines from the same top line as PAL's, two rows each: the 200 lines of an NTSC screen are at the very top (up to v0.9.1 they were centred, 20 lines down), a PAL-sized screen run in NTSC shows as far as the NTSC frame goes (some 220 lines), and the rows below the frame's end are black.
+  (the firmware takes 16 settings at most, so there is none for which 240).
+  The third choice, **800 x 480**, fills the panel: 800 pixels of each line one to one across all of its
+  800 columns, 240 lines two rows each (no fitted 256: the FPGA has no block RAM left for
+  two frames of 800 x 256). An Amiga line has some 828 pixels between its blankings,
+  so 800 are the standard window's 640, 99 to their left and 61 to their right: the
+  window cannot be centred, 800 centred on it would run past the line's end. An overscan
+  screen moves the 800 left with it (not right). On HDMI the 800 are fitted across
+  the 1280 columns (column x shows pixel x * 5 / 8).
+  In NTSC the picture is 240 lines from the same top line as PAL's, two rows each: the 200 lines of an NTSC screen are at the very top (up to v0.9.1 they were centred, 20 lines down), a PAL-sized screen run in NTSC shows as far as the NTSC frame goes (some 220 lines), and the rows below the frame's end are black.
   Interlaced screens show their long fields only: there is memory for two frames of
   256 lines, not of both fields' 512, and the two fields in the same lines would
   flicker. The picture has the lines of one field (every other line of the screen) and

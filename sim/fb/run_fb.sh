@@ -1,7 +1,7 @@
 #!/bin/sh
 # gb_fb with the SRAM model and the framework's video side (tb_fb.sv): the
-# panel and HDMI, all 256 lines fitted and the first 240, several phases of
-# the screen's clock. Exits 1 on any failure. R=<repo> picks another source
+# panel and HDMI, all 256 lines fitted and the first 240, 800 x 240 frames
+# (+wide), several phases of the screen's clock. Exits 1 on any failure. R=<repo> picks another source
 # tree (default: this one); FB=<file> another gb_fb (a changed one that
 # must fail).
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -15,7 +15,7 @@ verilator --binary --timing -j ${JOBS:-16} -Wno-fatal -Wno-WIDTH -Wno-CASEINCOMP
 	../rtl/xilinx_sim.sv ../rtl/sram_sim.sv ../rtl/fw_video_sim.sv ${FB:-$R/rtl/gamebub/gb_fb.sv} \
 	tb_fb.sv > $OBJ.log 2>&1 || { tail -30 $OBJ.log; exit 1; }
 rc=0
-for args in ${RUNS:-"+seed=1" "+seed=2+nofit" "+seed=3+hdmi" "+seed=4+hdmi+nofit" "+seed=5" "+seed=6+hdmi" "+seed=7+ntsc" "+seed=8+ntsc" "+seed=9+ntsc+hdmi"}; do
+for args in ${RUNS:-"+seed=1" "+seed=2+nofit" "+seed=3+hdmi" "+seed=4+hdmi+nofit" "+seed=5" "+seed=6+hdmi" "+seed=7+ntsc" "+seed=8+ntsc" "+seed=9+ntsc+hdmi" "+seed=10+wide" "+seed=11+wide" "+seed=12+wide+hdmi" "+seed=13+wide+ntsc" "+seed=14+wideswitch" "+seed=15+wideswitch+hdmi"}; do
 	out=$($OBJ/Vtb_fb $(echo $args | tr '+' ' ' | sed 's/ / +/g') +frames=${FRAMES:-14} 2>&1)
 	echo "== $args"
 	echo "$out" | grep -E "^(frames|SRAM|FAIL|TEST|\[sram\]|\[video\])" | head -24

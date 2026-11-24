@@ -2,25 +2,32 @@
 // board's asynchronous SRAM and block RAM, and shown through the
 // framework's external picture (patches/framework 0003, 0005: ownFrames).
 //
+// A frame is 720 x 256, or with `wide` (Picture: 800 x 480) 800 x 240,
+// shown one to one across all 800 columns of the panel.
+//
 // Why: two frames of 720 x 256 in the FPGA's block RAM leave 9 bits for a
 // pixel. Two are needed: the handheld's panel is scanned in columns of the
 // landscape picture while the Amiga draws it in rows, so a single frame
 // written while it is shown has a diagonal seam between the old and the new
 // picture on everything that moves. The SRAM (512 KiB, 262,144 words of 16
-// bits, used by nothing else) and 75 block RAMs hold both frames at 18 bits
-// a pixel (6 + 6 + 6; gb_video dithers the two bits below).
+// bits, used by nothing else) and 83 block RAMs hold both frames at 18 bits
+// a pixel (6 + 6 + 6; gb_video dithers the two bits below). Two frames of
+// 800 x 256 would need some 20 block RAMs more than the FPGA has left, so
+// the wide frame has 240 lines (the panel's 480 rows, two each).
 //
-// Where a pixel is: q = frame * 184,320 + line * 720 + column (0..368,639).
+// Where a pixel is: q = frame * 192,000 + line * 720 (800) + column
+// (0..383,999; a frame's 192,000 pixels are the 800 x 240 of the wide one,
+// 720 x 256 takes 184,320 of them).
 //   q < 262,144   bits 17:2 in the SRAM word q, bits 1:0 in a block RAM of
-//                 262,144 x 2 (frame 0, and the first 108 lines of frame 1)
-//   otherwise     all 18 bits in block RAM of 106,496 x 18 (three memories
-//                 of 65,536, 32,768 and 8,192: Vivado rounds a memory's
-//                 depth up to a power of two, 72 block RAMs for one of
-//                 106,496 words where these take 52)
+//                 262,144 x 2 (frame 0, and the first 70,144 pixels of
+//                 frame 1)
+//   otherwise     all 18 bits in block RAM of 122,880 x 18 (four memories
+//                 of 65,536, 32,768, 16,384 and 8,192: Vivado rounds a
+//                 memory's depth up to a power of two)
 //
 // Writing (clk_sys): the pixel stream gb_video sends the framework, counted
 // as the framework counts it (a line ends when hblank rises, the frame while
-// vblank is high; pixels beyond a line's 720 are dropped). The framework still decides which frame a picture goes
+// vblank is high; pixels beyond a line's 720 (800) are dropped). The framework still decides which frame a picture goes
 // to and whether it is thrown away because that frame is on the screen
 // (wr_frame, wr_drop), and which frame is shown (av_frame). A pixel comes
 // every other clk_sys clock at most (eight clk_114 clocks).
@@ -48,10 +55,16 @@
 // (one block RAM pair, written in clk_114, read in clk_av):
 //   - the handheld's panel (av_hdmi low): a scan line is a column of the
 //     picture, av_x (0..719), of 256 pixels, a column every 25 us; the row
-//     av_y (0..479) shows line y / 2, or with `fit` line y * 256 / 480;
+//     av_y (0..479) shows line y / 2, or with `fit` line y * 256 / 480.
+//     The framework names column x of the panel as av_x = x - PANEL_X0 (a
+//     720 wide picture's place, in 10 bits); the wide picture takes the
+//     panel's column x, av_x + PANEL_X0, all 800 of them, 240 pixels each;
+//     each frame is shown as it was written (its own `wide`, kept with it:
+//     a frame written before the setting changed is not read as the other
+//     size);
 //   - HDMI: a scan line is a line of the picture, shown on two or three
 //     lines of the 720 (line y / 3, or with `fit` y * 256 / 720); column x
-//     of the 1280 shows pixel x * 9 / 16.
+//     of the 1280 shows pixel x * 9 / 16 (wide: x * 5 / 8).
 // As the framework's own frame buffers were shown (patches/framework 0001,
 // 0004). At av_sync (a frame of the screen begins) the frame to show is
 // taken and its first four scan lines are fetched; a line is fetched once
@@ -62,7 +75,10 @@
 module gb_fb
 #(
 	parameter W = 720,           // pixels of a line
-	parameter H = 256            // lines
+	parameter H = 256,           // lines
+	parameter WW = 800,          // wide: pixels of a line
+	parameter HW = 240,          // wide: lines
+	parameter PANEL_X0 = 12      // the panel's column the framework names av_x 0
 )
 (
 	// the pixel stream (clk_sys)
@@ -73,6 +89,7 @@ module gb_fb
 	input             px_hblank,
 	input             px_vblank,
 	input             fit,           // all 256 lines over the screen's height (changes between frames)
+	input             wide,          // 800 x 240 (changes between frames)
 	input             wr_frame,      // the framework: the frame these pixels belong to
 	input             wr_drop,       // and whether they are thrown away
 
@@ -103,7 +120,7 @@ module gb_fb
 	output reg        dbg_overflow = 1'b0    // a pixel found the write queue full
 );
 
-localparam [18:0] FRAME = W * H;             // pixels of a frame
+localparam [18:0] FRAME = (WW * HW > W * H) ? WW * HW : W * H;   // pixels from frame 0 to frame 1
 
 // ===========================================================================
 // the pixel stream (clk_sys): where each pixel goes
@@ -114,10 +131,13 @@ reg [18:0] w_a = 19'd0;          // this pixel
 reg        w_tgl = 1'b0;         // flips with every pixel handed over
 reg [18:0] w_q = 19'd0;
 reg [17:0] w_d = 18'd0;
-// a line holds its first 720 pixels and a frame its first 256 lines: what
-// comes beyond them (the Amiga's sync gone astray: a line that does not
-// end) is not kept
-wire       w_in = (w_row < FRAME) && (w_a < w_row + W[18:0]);
+reg  [1:0] f_wide = 2'b00;       // each frame's size as it was written
+// a line holds its first 720 (800) pixels and a frame its first 256 (240)
+// lines: what comes beyond them (the Amiga's sync gone astray: a line that
+// does not end) is not kept
+wire [18:0] w_w   = wide ? WW[18:0] : W[18:0];
+wire [18:0] w_lim = wide ? 19'(WW * HW) : 19'(W * H);
+wire       w_in = (w_row < w_lim) && (w_a < w_row + w_w);
 
 always @(posedge clk_sys) begin
 	hb_d <= px_hblank;
@@ -126,9 +146,9 @@ always @(posedge clk_sys) begin
 		w_a   <= 19'd0;
 	end
 	else if (px_hblank) begin
-		if (!hb_d && w_row < FRAME) begin
-			w_row <= w_row + W[18:0];
-			w_a   <= w_row + W[18:0];
+		if (!hb_d && w_row < w_lim) begin
+			w_row <= w_row + w_w;
+			w_a   <= w_row + w_w;
 		end
 	end
 	else if (px_de && w_in) w_a <= w_a + 1'd1;
@@ -137,6 +157,7 @@ always @(posedge clk_sys) begin
 		w_q   <= wr_frame ? w_a + FRAME : w_a;
 		w_d   <= px_data;
 		w_tgl <= ~w_tgl;
+		f_wide[wr_frame] <= wide;
 	end
 end
 
@@ -150,6 +171,7 @@ reg        q_tgl = 1'b0;
 (* dont_touch = "true" *) reg        q_new = 1'b0;         // a frame of the screen begins
 (* dont_touch = "true" *) reg        q_hdmi = 1'b0;
 (* dont_touch = "true" *) reg        q_frame = 1'b0;
+(* dont_touch = "true" *) reg        q_wide = 1'b0;
 (* dont_touch = "true" *) reg  [9:0] q_need = 10'd0;       // the first scan line still needed
 
 // ===========================================================================
@@ -169,34 +191,39 @@ reg        draining = 1'b0;
 reg  [1:0] bx [0:262143];
 reg [17:0] bh0 [0:65535];        // pixels 262,144 on: the first 65,536,
 reg [17:0] bh1 [0:32767];        // the next 32,768,
-reg [17:0] bh2 [0:8191];         // the last 8,192
+reg [17:0] bh2 [0:16383];        // the next 16,384,
+reg [17:0] bh3 [0:8191];         // the last 8,192
 reg        bx_we = 1'b0, bh_we = 1'b0;
 reg [17:0] bx_wa, bx_ra;
 reg [16:0] bh_wa, bh_ra;
 reg [17:0] b_wd;
 reg  [1:0] bx_q;
-reg [17:0] bh0_q, bh1_q, bh2_q;
-wire [17:0] bh_q = !bh_ra[16] ? bh0_q : !bh_ra[15] ? bh1_q : bh2_q;
+reg [17:0] bh0_q, bh1_q, bh2_q, bh3_q;
+// (bh_ra as the memories took it: bx_ra1 and the rest are a clock later)
+wire [17:0] bh_q = !bh_ra[16] ? bh0_q : !bh_ra[15] ? bh1_q : !bh_ra[14] ? bh2_q : bh3_q;
 // Each memory behind registers of its own for address, data and write
-// enable (a clock later than the SRAM's plan registers): 16, 32, 16 and 4
-// block RAMs each, spread over the FPGA's columns.
+// enable (a clock later than the SRAM's plan registers): 16, 32, 16, 8 and
+// 4 block RAMs each, spread over the FPGA's columns.
 reg [17:0] bx_wa1, bx_ra1;
 reg  [1:0] bx_wd1;
 reg        bx_we1 = 1'b0;
 reg [15:0] bh0_wa1, bh0_ra1;
 reg [14:0] bh1_wa1, bh1_ra1;
-reg [12:0] bh2_wa1, bh2_ra1;
-reg [17:0] bh0_wd1, bh1_wd1, bh2_wd1;
-reg        bh0_we1 = 1'b0, bh1_we1 = 1'b0, bh2_we1 = 1'b0;
+reg [13:0] bh2_wa1, bh2_ra1;
+reg [12:0] bh3_wa1, bh3_ra1;
+reg [17:0] bh0_wd1, bh1_wd1, bh2_wd1, bh3_wd1;
+reg        bh0_we1 = 1'b0, bh1_we1 = 1'b0, bh2_we1 = 1'b0, bh3_we1 = 1'b0;
 always @(posedge clk_114) begin
 	bx_wa1  <= bx_wa;         bx_ra1  <= bx_ra;         bx_wd1  <= b_wd[1:0];
 	bh0_wa1 <= bh_wa[15:0];   bh0_ra1 <= bh_ra[15:0];   bh0_wd1 <= b_wd;
 	bh1_wa1 <= bh_wa[14:0];   bh1_ra1 <= bh_ra[14:0];   bh1_wd1 <= b_wd;
-	bh2_wa1 <= bh_wa[12:0];   bh2_ra1 <= bh_ra[12:0];   bh2_wd1 <= b_wd;
+	bh2_wa1 <= bh_wa[13:0];   bh2_ra1 <= bh_ra[13:0];   bh2_wd1 <= b_wd;
+	bh3_wa1 <= bh_wa[12:0];   bh3_ra1 <= bh_ra[12:0];   bh3_wd1 <= b_wd;
 	bx_we1  <= bx_we;
 	bh0_we1 <= bh_we && !bh_wa[16];
 	bh1_we1 <= bh_we && (bh_wa[16:15] == 2'b10);
-	bh2_we1 <= bh_we && (bh_wa[16:15] == 2'b11);
+	bh2_we1 <= bh_we && (bh_wa[16:14] == 3'b110);
+	bh3_we1 <= bh_we && (bh_wa[16:13] == 4'b1110);
 end
 always @(posedge clk_114) begin
 	if (bx_we1) bx[bx_wa1] <= bx_wd1;
@@ -213,6 +240,10 @@ end
 always @(posedge clk_114) begin
 	if (bh2_we1) bh2[bh2_wa1] <= bh2_wd1;
 	bh2_q <= bh2[bh2_ra1];
+end
+always @(posedge clk_114) begin
+	if (bh3_we1) bh3[bh3_wa1] <= bh3_wd1;
+	bh3_q <= bh3[bh3_ra1];
 end
 
 // the line buffers: line L mod 4, pixel of the scan line
@@ -267,6 +298,7 @@ assign sram_dataDir    = o_dir;
 reg        g_valid = 1'b0;       // a frame to fetch from
 reg        g_hdmi = 1'b0;
 reg        g_frame = 1'b0;
+reg        g_wide = 1'b0;
 reg  [9:0] g_need = 10'd0;
 reg  [9:0] g_line = 10'd0;       // the scan line being fetched
 reg  [9:0] g_k = 10'd0;          // its next pixel
@@ -274,8 +306,10 @@ reg [18:0] g_a = 19'd0;          // that pixel in the frame
 reg [18:0] g_rowbase = 19'd0;    // HDMI: the line's first pixel
 reg        g_setup = 1'b0;       // the next scan line's first address is being made
 
-wire [9:0] g_lines = g_hdmi ? H[9:0] : W[9:0];        // scan lines of a frame
-wire [9:0] g_count = g_hdmi ? W[9:0] : H[9:0];        // pixels of a scan line
+wire [9:0] g_w     = g_wide ? WW[9:0] : W[9:0];        // pixels of a line
+wire [9:0] g_h     = g_wide ? HW[9:0] : H[9:0];        // lines
+wire [9:0] g_lines = g_hdmi ? g_h : g_w;              // scan lines of a frame
+wire [9:0] g_count = g_hdmi ? g_w : g_h;              // pixels of a scan line
 wire       rd_work = g_valid && !g_setup && (g_line < g_lines) &&
                      ({1'b0, g_line} < {1'b0, g_need} + 11'd4);
 
@@ -375,13 +409,13 @@ always @(posedge clk_114) begin
 				if (g_k == g_count - 1'd1) begin
 					g_k       <= 10'd0;
 					g_line    <= g_line + 1'd1;
-					g_rowbase <= g_rowbase + W[18:0];
+					g_rowbase <= g_rowbase + {9'd0, g_w};
 					g_setup   <= 1'b1;
 					dbg_lines <= dbg_lines + 1'd1;
 				end
 				else begin
 					g_k <= g_k + 1'd1;
-					g_a <= g_a + (g_hdmi ? 19'd1 : W[18:0]);
+					g_a <= g_a + (g_hdmi ? 19'd1 : {9'd0, g_w});
 				end
 			end
 		end
@@ -407,6 +441,7 @@ always @(posedge clk_114) begin
 			g_valid   <= 1'b1;
 			g_hdmi    <= q_hdmi;
 			g_frame   <= q_frame;
+			g_wide    <= q_wide;
 			g_need    <= 10'd0;
 			g_line    <= 10'd0;
 			g_k       <= 10'd0;
@@ -444,11 +479,14 @@ end
 // the screen (clk_av)
 // ===========================================================================
 (* ASYNC_REG = "TRUE" *) reg [1:0] fit_s = 2'b00;
+(* ASYNC_REG = "TRUE" *) reg [1:0] wide0_s = 2'b00;   // f_wide, frame 0
+(* ASYNC_REG = "TRUE" *) reg [1:0] wide1_s = 2'b00;   // and frame 1
 reg [10:0] x1 = 11'd0;
 reg  [9:0] y1 = 10'd0;
 reg        sync_d = 1'b0;
 reg        a_hdmi = 1'b0;
 reg        a_fit = 1'b0;
+reg        a_wide = 1'b0;
 reg  [9:0] need = 10'd0;         // the scan line being shown
 reg        q_go = 1'b0;
 
@@ -458,7 +496,10 @@ reg  [9:0] s_line = 10'd0;
 reg        s_ok = 1'b0;
 reg        s_ok1 = 1'b0;
 
-wire       adv_panel = !a_hdmi && (x1 < W) && (x1[9:0] == need + 10'd1);
+// the panel: the picture's column (the wide one's from the panel's first)
+wire [9:0] pcol      = a_wide ? x1[9:0] + 10'(PANEL_X0) : x1[9:0];
+wire       pcol_ok   = a_wide ? (pcol < WW[9:0]) : (x1 < W);
+wire       adv_panel = !a_hdmi && pcol_ok && (pcol == need + 10'd1);
 wire       adv_hdmi  = a_hdmi && s_ok && (s_line == need + 10'd1);
 
 always @(posedge clk_av) begin
@@ -466,6 +507,8 @@ always @(posedge clk_av) begin
 	y1     <= av_y;
 	sync_d <= av_sync;
 	fit_s  <= {fit_s[0], fit};
+	wide0_s <= {wide0_s[0], f_wide[0]};
+	wide1_s <= {wide1_s[0], f_wide[1]};
 	q_go   <= 1'b0;
 	if (q_go) q_tgl <= ~q_tgl;
 
@@ -479,12 +522,14 @@ always @(posedge clk_av) begin
 	if (av_sync && !sync_d) begin
 		a_hdmi  <= av_hdmi;
 		a_fit   <= fit_s[1];
+		a_wide  <= av_frame ? wide1_s[1] : wide0_s[1];
 		need    <= 10'd0;
 		s_ok    <= 1'b0;
 		s_ok1   <= 1'b0;
 		q_new   <= 1'b1;
 		q_hdmi  <= av_hdmi;
 		q_frame <= av_frame;
+		q_wide  <= av_frame ? wide1_s[1] : wide0_s[1];
 		q_need  <= 10'd0;
 		q_go    <= 1'b1;
 	end
@@ -500,6 +545,7 @@ end
 // y * 256 / 480 = (y * 34953) >> 16, exact for every row of the 480
 wire [24:0] row_fit = y1[8:0] * 16'd34953;
 wire [14:0] col_fit = x1 * 4'd9;            // x * 9 / 16
+wire [13:0] col_w   = x1 * 3'd5;            // wide: x * 5 / 8
 reg  [11:0] p2_a;
 reg         p2_in;
 reg  [17:0] p3_q, p4_q;
@@ -508,12 +554,12 @@ reg  [23:0] p_c [5:11];
 
 always @(posedge clk_av) begin
 	if (a_hdmi) begin
-		p2_a  <= {s_line[1:0], col_fit[13:4]};
+		p2_a  <= {s_line[1:0], a_wide ? col_w[12:3] : col_fit[13:4]};
 		p2_in <= s_ok && (x1 < 11'd1280);
 	end
 	else begin
-		p2_a  <= {x1[1:0], 2'b00, a_fit ? row_fit[23:16] : y1[8:1]};
-		p2_in <= (x1 < W) && (y1 < 10'd480);
+		p2_a  <= {pcol[1:0], 2'b00, a_fit ? row_fit[23:16] : y1[8:1]};
+		p2_in <= pcol_ok && (y1 < 10'd480);
 	end
 	p3_q  <= lbuf[p2_a];
 	p3_in <= p2_in;
