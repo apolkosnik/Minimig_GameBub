@@ -1102,6 +1102,7 @@ gb_video video
 	.b_in    (blue),
 	.hsync_n (hs),
 	.vsync_n (vs),
+	.vbl     (vbl),
 	.data    (video_data),
 	.de      (video_dataEnable),
 	.hblank  (video_hblank),

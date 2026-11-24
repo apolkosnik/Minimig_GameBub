@@ -27,9 +27,10 @@ module fw_video_sim
 #(
 	parameter W = 720,
 	parameter H = 256,
-	// ILI9806E at clockHz 25,952,381 (908.33 MHz / 35), 50 frames a second
-	parameter TW = 642,              // clocks of a scan line
-	parameter HS = 4, HBP = 126, HACT = 480,
+	// ILI9806E at clockHz 25,952,381 (908.33 MHz / 35) for a source frame of
+	// 16.7 ms at least (MinimigCore.scala: NTSC's; PAL's 20 ms is 970 lines)
+	parameter TW = 536,              // clocks of a scan line
+	parameter HS = 4, HBP = 50, HACT = 480,
 	parameter VS = 4, VBP = 2, VACT = 800,
 	parameter THMIN = 808, THMAX = 1061,
 	parameter OFFX = 12,             // the picture's first column on the panel

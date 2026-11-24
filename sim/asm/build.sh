@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -e
 cd "$(dirname "$0")"
-for t in vidtest lacetest inptest audtest wrtest idetest coltest hamtest aga256 z3test rtgtest mmutest mmu040test ramtest movectest crashtest resettest vectest smctest smcdist smcstress a2065test toccatest; do
+for t in vidtest lacetest inptest audtest wrtest idetest coltest hamtest aga256 z3test rtgtest mmutest mmu040test ramtest movectest crashtest resettest vectest smctest smcdist smcstress a2065test toccatest todtest; do
 	vasmm68k_mot -Fbin -quiet -o $t.bin $t.s
 	python3 -c "import sys; d = open('$t.bin', 'rb').read(); open('$t.rom', 'wb').write(d + b'\xff' * (262144 - len(d)))"
 	rm $t.bin

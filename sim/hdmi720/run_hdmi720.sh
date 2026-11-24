@@ -61,7 +61,7 @@ ACR=$BUILD/hdmi/audio_clock_regeneration_packet.sv
 sed -i "s|20'(int'(VIDEO_RATE \* int'(N) / 128 / AUDIO_RATE))|20'(\$rtoi(VIDEO_RATE * N / 128 / AUDIO_RATE + 0.5))|; s|20'(int'(real'(CYCLE_TIME_STAMP_COUNTER_IDEAL) \* 1.1))|20'(\$rtoi(real'(CYCLE_TIME_STAMP_COUNTER_IDEAL) * 1.1 + 0.5))|" "$ACR"
 [ "$(grep -c 'rtoi' "$ACR")" = 2 ] || { echo "audio_clock_regeneration_packet.sv: casts not found" >&2; exit 1; }
 # The Minimig RTL as sim/build.sh compiles it
-CORE=("$ROOT/rtl/minimig_gamebub.sv" $(ls "$ROOT"/rtl/gamebub/*.sv "$ROOT"/rtl/gamebub/compat/*.sv "$ROOT"/rtl/minimig/*.sv "$ROOT"/rtl/minimig/fx68k/*.sv))
+CORE=("$ROOT/rtl/minimig_gamebub.sv" $(ls "$ROOT"/rtl/gamebub/*.sv "$ROOT"/rtl/gamebub/compat/*.sv "$ROOT"/rtl/minimig/*.sv "$ROOT"/rtl/minimig/fpga-toccata/*.sv "$ROOT"/rtl/minimig/fx68k/*.sv))
 # ONESPIN: the XPM CDC models without their glbl.GSR power-up forcing (the
 # same synchroniser registers; Verilator cannot lower the force of an array).
 verilator --binary --timing -j "$(nproc)" -O2 --top-module tb_hdmi720 --Mdir "$BUILD/obj" -o tb_hdmi720 \

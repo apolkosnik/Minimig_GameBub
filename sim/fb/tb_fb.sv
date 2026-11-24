@@ -30,13 +30,15 @@ integer seed = 1;
 integer frames_run = 14;
 bit     hdmi = 0;
 bit     fit = 1;
+bit     ntsc = 0;         // frames of 262 lines (16.8 ms), 240 of them the picture's
 real    av_half;
 reg     clk_av = 0;
 initial begin
 	void'($value$plusargs("seed=%d", seed));
 	void'($value$plusargs("frames=%d", frames_run));
 	hdmi = $test$plusargs("hdmi");
-	fit  = !$test$plusargs("nofit");
+	ntsc = $test$plusargs("ntsc");
+	fit  = !$test$plusargs("nofit") && !ntsc;
 	av_half = hdmi ? 6.7368 : 19.2664;
 	#(0.37 * seed + 1.0);
 	forever #(av_half) clk_av = ~clk_av;
@@ -49,7 +51,9 @@ initial begin
 end
 
 // ---- the pixel stream
-localparam LINE = 1820, LINES = 312, H0 = 300, V0 = 41;
+localparam LINE = 1820, H0 = 300;
+wire [8:0] LINES = ntsc ? 9'd262 : 9'd312;
+wire [8:0] V0    = ntsc ? 9'd20 : 9'd41;
 reg [11:0] h = 0;
 reg  [8:0] l = 0;
 integer    frame = 0;
@@ -168,7 +172,14 @@ initial begin
 	         s_writes, s_reads, s_errors, dbg_lines, dbg_late, q_max, dbg_overflow ? ", OVERFLOWED" : "");
 	// the screen shows a frame for every one the core completes (the panel),
 	// or 60 a second
+	// (NTSC on the panel: every frame must be shown, none dropped for the
+	// panel still showing the other; two are, around the frames without a
+	// picture, as with PAL's)
 	want_screens = hdmi ? (frames_run - 4) : (frames_run - 8);
+	if (ntsc && !hdmi && v_dropped > 2) begin
+		$display("FAIL: %0d frames dropped", v_dropped);
+		want_screens = 1 << 30;
+	end
 	if (want_screens < 1) want_screens = 1;
 	if (v_errors != 0 || s_errors != 0 || dbg_late != 0 || dbg_overflow || $signed(v_screens) < want_screens ||
 	    (!hdmi && v_old != 0) || s_writes == 0 || s_reads == 0) begin
