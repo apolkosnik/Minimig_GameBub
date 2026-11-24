@@ -229,7 +229,7 @@ unselected ones quietly.
   The screen has 480 rows. **Picture** chooses between all 256 PAL lines
   fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
   is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
-  (the firmware takes 16 settings at most, so there is none for which 240). NTSC's 200 lines always fit, two rows each.
+  (the firmware takes 16 settings at most, so there is none for which 240). In NTSC the picture is 240 lines from the same top line as PAL's, two rows each: the 200 lines of an NTSC screen are at the very top (up to v0.9.1 they were centred, 20 lines down), a PAL-sized screen run in NTSC shows as far as the NTSC frame goes (some 220 lines), and the rows below the frame's end are black.
   Interlaced screens show their long fields only: there is memory for two frames of
   256 lines, not of both fields' 512, and the two fields in the same lines would
   flicker. The picture has the lines of one field (every other line of the screen) and
@@ -260,7 +260,10 @@ unselected ones quietly.
   path on the panel too (`0005`: the framework still decides from the stream's timing
   which frame is written and which is shown, and builds no frame buffers);
   `tools/patch_framework.sh` applies them to the submodule.
-* PAL runs at 50 Hz on the 60 Hz panel.
+* The handheld's panel follows the Amiga's frames, PAL's 50 a second and NTSC's 60: its
+  driver is built for the shorter NTSC frame and waits in its vertical blanking for a
+  longer one (up to 21.9 ms: a screen mode slower than 45.6 Hz is shown unlocked). Up
+  to v0.9.0 it was built for PAL's 20 ms and showed about one NTSC frame in three.
 * Hardware testing is young: the core has booted Kickstart 3.2 to the CLI on a Game Bub
   (rev 4) with a floppy image; hard disks, the dock keyboard and mouse and the cartridge
   are tested in simulation (see *Simulation*) and by the firmware's unit tests. The

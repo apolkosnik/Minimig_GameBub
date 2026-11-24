@@ -17,7 +17,13 @@ import net.gamebub.framework.interface._
 class MinimigCore extends Module with Core {
   val mmcmVcoHz: Double = 50_000_000.0 * 54.5 / 3.0
 
-  val framePeriod = 1.0 / 50.0  // PAL
+  // The shortest frame the core sends: NTSC, 262 lines of 1816 system clocks
+  // (16.76 ms), a little less to be safe. The panel's driver cannot start a
+  // frame sooner than this after the one before, and one that comes sooner
+  // is not shown: with PAL's 20 ms here NTSC lost every other frame and
+  // more. A longer frame (PAL: 20.03 ms) only makes the panel wait in its
+  // vertical blanking, up to 1061 of its lines (21.9 ms).
+  val framePeriod = 0.0167
   val (displayClockMin, displayClockMax) = ClocksV0.getClockDisplayHz(framePeriod)
   val displayDivider = math.floor(mmcmVcoHz / displayClockMin).toInt
   val displayClock = (mmcmVcoHz / displayDivider).toInt

@@ -259,6 +259,14 @@ always @(posedge sysclk) begin
 end
 // (the line ports: the AP68040 variant's cpu_cache_new answers a line
 // whole with CPU_LINE16; the upstream one ties them off)
+// A write is shown to the upstream cache from the select's second clock, as
+// it is queued (push, below): the select's first clock after a clk_sys edge
+// may be the last transfer's beside the next one's state and address, and
+// the upstream cache would take that write nobody made into its copy of the
+// line (the variant's has its own guard).
+reg  ramsel_q = 1'b0;
+always @(posedge sysclk) ramsel_q <= ramsel;
+wire cache_cs = (CPU_LINE16 != 0) ? ramsel : (ramsel & (ramsel_q | (cpustate != 2'd3)));
 cpu_cache_new
 #(.LINE_TAKE(1))
 cpu_cache
@@ -268,7 +276,7 @@ cpu_cache
 	.cpu_cache_ctrl   (cpu_cache_ctrl),        // CPU cache control
 	.dcache_sw_en     (dcache_sw_en),
 	.cache_inhibit    (cache_inhibit),         // cache inhibit
-	.cpu_cs           (ramsel),                // cpu activity
+	.cpu_cs           (cache_cs),              // cpu activity
 	.cpu_adr          (cpuAddr),               // cpu address
 	.cpu_bs           ({!cpuU, !cpuL}),        // cpu byte selects
 	.cpu_we           (cpustate == 3),         // cpu write

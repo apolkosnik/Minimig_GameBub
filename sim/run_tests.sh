@@ -20,6 +20,9 @@
 #           ECS (240 lines, middle) and AGA with the 68EC020 (240, bottom):
 #           AGA's picture comes a clock later, and blended every pixel with
 #           its neighbour before H_START took that in; video_h on HDMI
+#           video_ntsc: in NTSC the frame's first line is the display
+#           window's first too, 216 lines of the picture checked, and the
+#           rows below the NTSC frame's end black
 #   diw_*   vidtest_l.rom: the display window and the fetch 32 high
 #           resolution pixels left of the standard ones; vidtest_r.rom: the
 #           window alone 4 pixels right (the line's end allows no more).
@@ -37,6 +40,10 @@
 #           aga256_h on HDMI
 #   a2065   a2065test.rom: the A2065 Ethernet board (the LANCE in the FPGA):
 #           initialisation, loopback, frames sent to and brought by the MCU
+#   tod     todtest.rom: CIA-B's time of day counter (the lines) under the
+#           CPU's writes elsewhere: every line of a frame counted, and the
+#           carry into its high 12 bits kept 96 times of 96, on the 68000
+#           and on the fastest CPU
 #   toccata toccatest.rom: the Toccata sound card (autoconfig, the codec's
 #           registers, 16 bit stereo at 44100 Hz from the FIFO, filled again
 #           at every level 6 interrupt: their rate, the status read, and the
@@ -149,6 +156,8 @@ run video  --kick asm/vidtest.rom --ms 560 --check-vidtest
 run video_ecs --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=1 --set 1080=0 --set 107C=8
 run video_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=0 --set 107C=10
 run video_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi
+run video_ntsc --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1
+run video_ntsc_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1 --set 1044=2 --set 1048=2 --set 107C=10
 run diw_l    --kick asm/vidtest_l.rom --ms 560 --check-vidtest
 run diw_r    --kick asm/vidtest_r.rom --ms 560 --check-vidtest --vidtest-data-x 36 --set 1044=1 --set 1080=0 --set 107C=8
 run diw_aga  --kick asm/vidtest_l.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=0 --set 107C=10
@@ -212,6 +221,9 @@ run a2065 --kick asm/a2065test.rom --ms 900 --set 50=F0000 --net-test \
 TOCCHK="--check-word 500:100:FFFF:600D --check-word 790:102:FFFF:0000 --check-word 790:106:FFFF:0008 --check-word 790:108:FFFF:0000 --check-word 790:10A:FFFF:005B --check-rate 550:740:104:129:133 --expect-audio-ratio 0.333333 --expect-audio-peak 12288:4096"
 run toccata --kick asm/toccatest.rom --ms 800 $TOCCHK
 run toccata_f --kick asm/toccatest.rom --ms 800 --set 1044=2 --set 1048=4 --set 104C=8 $TOCCHK
+TODCHK="--check-word 890:100:FFFF:600D --check-word 890:102:FFFF:0000 --check-word 890:10A:FFFF:0000"
+run tod --kick asm/todtest.rom --ms 900 $TODCHK
+run tod_f --kick asm/todtest.rom --ms 900 --set 1044=2 --set 1048=4 --set 104C=8 $TODCHK
 # cart_*: carttest.rom and a cartridge image; Help from a USB keyboard
 # (Insert) and from the X button set to Help. HRTmon's configuration as its
 # stub found it ($130: 22 bytes, then maxchip): ide ($13B), aga ($13D),

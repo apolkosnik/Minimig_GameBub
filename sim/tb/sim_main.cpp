@@ -1547,6 +1547,9 @@ int main(int argc, char **argv) {
 		if (top->fb_overflow) FAIL("the frame store's write queue overflowed");
 		if (!top->hdmi && top->disp_old) FAIL("%llu pixels of a frame written while the panel showed it", (unsigned long long)top->disp_old);
 		if (frames >= 8 && !rtg_check && top->disp_screens == 0) FAIL("no frame of the screen was compared");
+		// the panel follows the Amiga's frames, PAL's and NTSC's: a frame is dropped only now and then
+		if (!top->hdmi && top->disp_dropped > 4 + top->disp_frames / 50)
+			FAIL("%u of %u frames dropped: the panel does not keep up", top->disp_dropped, top->disp_frames + top->disp_dropped);
 		if ((fbs >> 31) != uint32_t(top->fb_overflow) || ((fbs >> 16) & 0x7FFF) != (top->fb_late & 0x7FFFu))
 			FAIL("register 0x40 is %08X, the frame store's state: late %u, overflow %d", fbs, top->fb_late, int(top->fb_overflow));
 		if (coltest_end) {
@@ -1755,12 +1758,23 @@ int main(int argc, char **argv) {
 		for (auto &e : extra_settings) if (e.first == 0x107C) vpos = int(e.second);
 		for (auto &e : extra_settings) if (e.first == 0x1080) fit = int(e.second) & 1;
 		const int left = vidtest_data_x;
-		if (bool(top->video_fit) != bool(fit)) FAIL("the core's fit output is %d, the setting %d", int(top->video_fit), fit);
+		// NTSC (0x1050 = 1): 240 lines from the window's top line whatever
+		// the two settings say; the frame ends some 220 lines below it, and
+		// the rest of the 240 are the next frame's first lines: black
+		bool ntsc = false;
+		for (auto &e : extra_settings) if (e.first == 0x1050) ntsc = e.second & 1;
+		if (ntsc) { fit = 0; vpos = 0; }
+		if (bool(top->video_fit) != bool(fit)) FAIL("the core's fit output is %d, expected %d", int(top->video_fit), fit);
 		if (fit) vpos = 0;
 		const int lines = fit ? 256 : 240;
 		int bad = 0;
 		for (int y = 0; y < lines; y++) for (int x = 0; x < VW; x++) {
 			int line = y + vpos;
+			if (ntsc && y >= 216) {
+				if (y >= 226 && fb[y * VW + x] != 0 && bad++ < 5)
+					FAIL("vidtest pixel (%d,%d) is %06X, expected black below the NTSC frame's end", x, y, fb[y * VW + x]);
+				continue;
+			}
 			int lx = (x - left) / 2;   // the low resolution pixel, shown twice
 			bool one = x >= 40 && x < 680 && x >= left && x < left + 640 &&
 			           ((line % 16 == 0) || line == 255 || lx < 16 || lx >= 304 || ((lx - 16) % 8) < 4);

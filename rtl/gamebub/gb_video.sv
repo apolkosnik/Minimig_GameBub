@@ -19,7 +19,12 @@
 //     pixels loses its edges evenly); down, in PAL either all 256
 //     lines of the standard display window ($2C81) (fit_height) or 240 of
 //     them, from its line vpos (0: its top 240 lines, 16: its bottom 240);
-//     in NTSC its 200 lines with 20 lines above and below,
+//     in NTSC 240 lines from the display window's top line too, as PAL's
+//     (up to v0.9.1: its 200 lines with 20 above and below). An NTSC frame
+//     ends some 220 lines below that line: the 240 lines go on through
+//     _vsync into the next frame's first lines, which are blank, so the
+//     rows below the frame's end are black and every frame sent has its
+//     240 lines,
 //   - takes one pixel per high resolution pixel (every 2 clocks): a high
 //     resolution screen as it is, a low resolution pixel twice, every other
 //     pixel of a super high resolution one,
@@ -48,7 +53,7 @@ module gb_video
 #(
 	parameter        H_START      = 12'd333,  // 28 MHz clocks from _hsync to the first pixel
 	parameter        V_START      = 9'd41,    // lines from _vsync to the first line of the PAL display window
-	parameter        V_START_NTSC = 9'd21,
+	parameter        V_START_NTSC = 9'd41,    // the same line in NTSC
 	parameter        W_SUM        = 14'd2104  // opening + closing clock of the standard display window ($81..$1C1)
 )
 (
@@ -64,6 +69,7 @@ module gb_video
 	input             [7:0] b_in,
 	input                   hsync_n,
 	input                   vsync_n,
+	input                   vbl,          // the chipset's vertical blanking: its lines are black
 
 	output           [17:0] data,         // dithered 6 + 6 + 6 bit colour (red 17:12, green 11:6, blue 5:0)
 	output                  de,
@@ -93,7 +99,11 @@ wire vs_start = vs_d & ~vsync_n;
 
 wire  [8:0] v_first = ntsc ? V_START_NTSC : fit ? V_START : V_START + {4'd0, (vpos > 5'd16) ? 5'd16 : vpos};
 wire  [8:0] v_lines = fit ? 9'd256 : 9'd240;
-wire        line_on = frame_seen && !skip && (vcnt >= v_first) && (vcnt < v_first + v_lines);
+// the lines sent: v_lines of them from line v_first of a frame that is not
+// a dropped field, counted on through _vsync (NTSC)
+reg         win;          // between the first line sent and the last
+reg   [8:0] wl;           // lines of the window so far
+wire        line_on = win;
 wire [11:0] hrel    = hcnt - h_start;
 wire        h_on    = (hcnt >= h_start) && (hcnt < h_start + 12'd1440);
 
@@ -132,6 +142,8 @@ always @(posedge clk) begin
 		fit        <= 1'b0;
 		h_start    <= H_START;
 		skip       <= 1'b0;
+		win        <= 1'b0;
+		wl         <= 9'd0;
 	end
 	else begin
 		if (hs_start) begin
@@ -146,16 +158,26 @@ always @(posedge clk) begin
 			end
 			else if (vcnt != 9'h1FF) vcnt <= vcnt + 9'd1;
 			// lines are counted at the start of _hsync: vblank only moves here
-			vblank_i <= !(frame_seen && !(vs_start ? drop_field : skip) && ((vs_start ? 9'd0 : vcnt + 9'd1) >= v_first) &&
-			            ((vs_start ? 9'd0 : vcnt + 9'd1) < v_first + v_lines));
+			if (win) begin
+				if (wl == v_lines - 9'd1) begin
+					win      <= 1'b0;
+					vblank_i <= 1'b1;
+				end
+				else wl <= wl + 9'd1;
+			end
+			else if (frame_seen && !vs_start && !skip && (vcnt + 9'd1 == v_first)) begin
+				win      <= 1'b1;
+				wl       <= 9'd0;
+				vblank_i <= 1'b0;
+			end
 		end
 		else begin
 			if (hcnt != 12'hFFF) hcnt <= hcnt + 12'd1;
 			if (vs_start) begin
 				// _vsync starting away from _hsync (interlace): restart the count
+				// (the lines being sent go on)
 				vcnt       <= 9'd0;
 				frame_seen <= 1'b1;
-				vblank_i   <= 1'b1;
 				h_start    <= h_start_new;
 				skip       <= drop_field;
 			end
@@ -164,9 +186,11 @@ always @(posedge clk) begin
 		if (line_on && !vblank_i && h_on) begin
 			hblank_i <= 1'b0;
 			if (!hrel[0]) begin
-				pr     <= r_in;
-				pg     <= g_in;
-				pb     <= b_in;
+				// (Denise goes on giving the border's colour in the vertical
+				// blanking; a monitor shows none of it)
+				pr     <= vbl ? 8'd0 : r_in;
+				pg     <= vbl ? 8'd0 : g_in;
+				pb     <= vbl ? 8'd0 : b_in;
 				pbayer <= bayer;
 				de_i   <= 1'b1;
 			end
