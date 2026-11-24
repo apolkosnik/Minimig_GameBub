@@ -16,7 +16,16 @@
 //     them): on the panel line y / 2 (with `fit` y * 256 / 480) of the
 //     frame the driver shows, column x - 12 of the 800 (black outside the
 //     720); on HDMI line y / 3 (y * 256 / 720), column x * 9 / 16, of the
-//     frame that was the last completed when the screen's frame began. On
+//     frame that was the last completed when the screen's frame began.
+//     With `wide` (the core's 800 x 240 frames, gb_fb) a frame is 800 x
+//     240, the panel's column x is its column x (all 800), and HDMI's
+//     column x * 5 / 8; the external picture's x is the same (x - 12).
+//     Each frame is compared as it was written (its own size: a frame
+//     written before `wide` changed keeps the size it had; on HDMI the size
+//     taken as the screen's frame begins, as the core does). A pixel of the
+//     memory never written (a line that did not end leaves the next as it
+//     was: after the size changed it may never have been) is not compared,
+//     and counted (unwritten). On
 //     the panel the frame shown is not written (wr_drop), so every pixel
 //     must be the frame's; on HDMI it may be written while it is shown, and
 //     a pixel may also be what it was before its last write.
@@ -27,6 +36,8 @@ module fw_video_sim
 #(
 	parameter W = 720,
 	parameter H = 256,
+	parameter WW = 800,              // wide: a frame of 800 x 240
+	parameter HW = 240,
 	// ILI9806E at clockHz 25,952,381 (908.33 MHz / 35) for a source frame of
 	// 16.7 ms at least (MinimigCore.scala: NTSC's; PAL's 20 ms is 970 lines)
 	parameter TW = 536,              // clocks of a scan line
@@ -45,6 +56,7 @@ module fw_video_sim
 	input             vblank,
 	input      [17:0] data,
 	input             fit,
+	input             wide,          // (steady)
 	output            wr_frame,
 	output            wr_drop,
 
@@ -63,7 +75,8 @@ module fw_video_sim
 	output reg [31:0] frames_done = 32'd0,   // frames the core completed
 	output reg [31:0] frames_dropped = 32'd0,
 	output reg [63:0] old_pixels = 64'd0,    // HDMI: pixels shown as they were before their last write
-	output reg [31:0] shown_written = 32'd0  // pixels written to the frame the panel showed
+	output reg [31:0] shown_written = 32'd0, // pixels written to the frame the panel showed
+	output reg [31:0] unwritten = 32'd0      // pixels shown from memory never written (not compared)
 );
 
 // ---------------------------------------------------------------------------
@@ -74,8 +87,13 @@ reg        writeIndex = 1'b1;
 reg        frameStarted = 1'b0;
 reg        dropReg = 1'b0;
 reg        vb_d = 1'b0, hb_d = 1'b0;
-reg [10:0] fx = 11'd0;           // (the core keeps a line's first 720 pixels and a frame's first
-reg  [8:0] fy = 9'd0;            // 256 lines: gb_fb)
+reg [10:0] fx = 11'd0;           // (the core keeps a line's first 720 (800) pixels and a frame's first
+reg  [8:0] fy = 9'd0;            // 256 (240) lines: gb_fb)
+// a frame's pixels (from frame 0 to frame 1: the larger of the two sizes)
+localparam FS = (WW * HW > W * H) ? WW * HW : W * H;
+wire [10:0] lw = wide ? 11'(WW) : 11'(W);
+wire  [8:0] lh = wide ? 9'(HW) : 9'(H);
+reg   [1:0] fwide = 2'b00;      // each frame's size as written
 reg  [1:0] disp_s = 2'b00;
 wire       displayReadingFrame;
 // (the panel's driver, below: the frame it shows, its scan line)
@@ -88,11 +106,13 @@ assign wr_frame = writeIndex;
 assign wr_drop  = dropFrame;
 
 // the frames as written, and each pixel before its last write
-reg [17:0] mem  [0:2*W*H-1];
-reg [17:0] prev [0:2*W*H-1];
-initial for (int i = 0; i < 2*W*H; i++) begin mem[i] = 18'h3FFFF ^ i[17:0]; prev[i] = 18'h3FFFF ^ i[17:0]; end
+reg [17:0] mem  [0:2*FS-1];
+reg [17:0] prev [0:2*FS-1];
+reg        seen [0:2*FS-1];
+initial for (int i = 0; i < 2*FS; i++) seen[i] = 1'b0;
+initial for (int i = 0; i < 2*FS; i++) begin mem[i] = 18'h3FFFF ^ i[17:0]; prev[i] = 18'h3FFFF ^ i[17:0]; end
 
-wire [18:0] waddr = (writeIndex ? W*H : 0) + fy * W + fx;
+wire [18:0] waddr = (writeIndex ? 19'(FS) : 19'd0) + fy * lw + fx;
 
 always @(posedge clk_sys) begin
 	vb_d   <= vblank;
@@ -103,9 +123,11 @@ always @(posedge clk_sys) begin
 		frameStarted <= 1'b1;
 		dropReg      <= frameConflict;
 	end
-	if (de && !dropFrame && fx < W && fy < H) begin
+	if (de && !dropFrame && fx < lw && fy < lh) begin
 		prev[waddr] <= mem[waddr];
 		mem[waddr]  <= data;
+		seen[waddr] <= 1'b1;
+		fwide[writeIndex] <= wide;
 		// the framework's rules keep a frame the panel shows from being written
 		if (!hdmi && writeIndex == currentFrame && !reset) begin
 			shown_written <= shown_written + 1'd1;
@@ -132,10 +154,10 @@ always @(posedge clk_sys) begin
 	else if (hblank) begin
 		if (!hb_d) begin
 			fx <= 11'd0;
-			if (fy < H) fy <= fy + 1'd1;
+			if (fy < lh) fy <= fy + 1'd1;
 		end
 	end
-	else if (de && fx < W) fx <= fx + 1'd1;
+	else if (de && fx < lw) fx <= fx + 1'd1;
 
 	if (reset) begin
 		lastComplete <= 1'b0;
@@ -269,6 +291,7 @@ endfunction
 reg        sync_d = 1'b0;
 reg        shownFrame = 1'b0;
 reg        shownFit = 1'b0;
+reg        shownWide = 1'b0;
 reg        screen_ok = 1'b0;         // a whole frame of the screen is being compared
 reg [31:0] screen_px = 32'd0;
 reg        check_d = 1'b0;
@@ -286,6 +309,7 @@ always @(posedge clk_av) begin
 	if (ext_sync && !sync_d) begin
 		shownFrame <= ext_frame;
 		shownFit   <= fit_s[1];
+		shownWide  <= fwide[ext_frame];
 		// the screen's frame that ends here
 		if (screen_ok && check_d) begin
 			if (screen_px == (hdmi ? 32'd1280 * 32'd720 : 32'd800 * 32'd480)) screens <= screens + 1'd1;
@@ -305,24 +329,26 @@ always @(posedge clk_av) begin
 			// the hdmi module takes rgb one clock before the pixel's own
 			if (cx >= 11'd1 && cx <= 11'd1280 && cy < 10'd720) begin
 				line = shownFit ? (int'(cy) * 256) / 720 : int'(cy) / 3;
-				col  = ((int'(cx) - 1) * 9) / 16;
-				a    = (shownFrame ? W*H : 0) + line * W + col;
+				col  = shownWide ? ((int'(cx) - 1) * 5) / 8 : ((int'(cx) - 1) * 9) / 16;
+				a    = (shownFrame ? FS : 0) + line * (shownWide ? WW : W) + col;
 				pixels    <= pixels + 1'd1;
 				screen_px <= screen_px + 1'd1;
-				if (ext_color == rgb24(mem[a])) ;
+				if (!seen[a]) unwritten <= unwritten + 1'd1;
+				else if (ext_color == rgb24(mem[a])) ;
 				else if (ext_color == rgb24(prev[a])) old_pixels <= old_pixels + 1'd1;
 				else bad("HDMI pixel", int'(cx) - 1, int'(cy), ext_color, rgb24(mem[a]));
 			end
 		end
 		else if (d_active) begin
 			line = shownFit ? (int'(dpiY) * 256) / 480 : int'(dpiY) / 2;
-			col  = int'(dpiX) - OFFX;
-			a    = (currentFrame ? W*H : 0) + line * W + col;
+			col  = fwide[currentFrame] ? int'(dpiX) : int'(dpiX) - OFFX;
+			a    = (currentFrame ? FS : 0) + line * (fwide[currentFrame] ? WW : W) + col;
 			pixels    <= pixels + 1'd1;
 			screen_px <= screen_px + 1'd1;
-			if (col < 0 || col >= W) begin
+			if (col < 0 || col >= (fwide[currentFrame] ? WW : W)) begin
 				if (ext_color != 24'd0) bad("panel pixel outside the picture", int'(dpiX), int'(dpiY), ext_color, 24'd0);
 			end
+			else if (!seen[a]) unwritten <= unwritten + 1'd1;
 			else if (ext_color != rgb24(mem[a])) bad("panel pixel", int'(dpiX), int'(dpiY), ext_color, rgb24(mem[a]));
 		end
 	end
