@@ -4,8 +4,8 @@
 		"id": "apolkosnik.Minimig040",
 		"name": "Minimig (Amiga, 68040)",
 		"author": "Minimig team, apolkosnik",
-		"version": "0.3.0",
-		"release_date": "2026-11-22",
+		"version": "0.3.1",
+		"release_date": "2026-11-23",
 		"url": "https://github.com/apolkosnik/Minimig_GameBub",
 		"license": "GPL-3.0-or-later"
 	},
