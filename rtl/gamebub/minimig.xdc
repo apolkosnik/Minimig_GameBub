@@ -109,10 +109,10 @@ set_multicycle_path -hold 2 -from [get_ports sram_io[*]]
 # gb_fb between its clocks. The screen's request (q_*, clk_av) is held from
 # a scan line's start to the next and taken by clk_114 after its toggle went
 # through r_ts; `fit` (clk_sys) changes between frames and goes through two
-# registers to clk_av, and so does each frame's `wide` (f_wide, changed only
-# while that frame is written); the RTG board's enable likewise
+# registers to clk_av, and so do each frame's `wide` and its column on the
+# panel (f_wide, f_wx0 / f_wx1, changed only while that frame is written); the RTG board's enable likewise
 # (rtg_on_av). The line
 # buffers are block RAM written in clk_114 and read in clk_av.
-set_false_path -to [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */fb/r_ts_reg[0]* || NAME =~ */fb/fit_s_reg[0]* || NAME =~ */fb/wide0_s_reg[0]* || NAME =~ */fb/wide1_s_reg[0]* || NAME =~ */rtg_on_av_reg[0]*)}]
+set_false_path -to [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */fb/r_ts_reg[0]* || NAME =~ */fb/fit_s_reg[0]* || NAME =~ */fb/wide0_s_reg[0]* || NAME =~ */fb/wide1_s_reg[0]* || NAME =~ */fb/narrow0_s_reg[0]* || NAME =~ */fb/narrow1_s_reg[0]* || NAME =~ */fb/wx0_m_reg* || NAME =~ */fb/wx1_m_reg* || NAME =~ */rtg_on_av_reg[0]*)}]
 set_false_path -from [get_cells -hier -filter {IS_SEQUENTIAL && (NAME =~ */fb/q_new_reg* || NAME =~ */fb/q_hdmi_reg* || NAME =~ */fb/q_frame_reg* || NAME =~ */fb/q_wide_reg* || NAME =~ */fb/q_need_reg*)}] \
     -to $fb_clk_114

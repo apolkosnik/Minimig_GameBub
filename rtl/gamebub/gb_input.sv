@@ -3,14 +3,19 @@
 //
 // Slot 0 (the handheld's buttons, or the first dock controller):
 //   D-pad, left stick  joystick (port 2) directions (stick beyond +-64)
-//   A / B          joystick fire 1 / fire 2
+//   A / B          joystick fire 1 / fire 2, or as the A / B buttons
+//                  setting puts them (pad_ab): 1 fire 1 / up, 2 up / fire 1,
+//                  3 fire 2 / fire 1
 //   right stick    moves the mouse (port 1)
 //   L (held)       D-pad moves the mouse (port 1), A = left, B = right button
 //   R              left mouse button (for dragging while L is held)
 //   host mouse     a USB/Bluetooth mouse reported by the firmware fork
-//                  (gb_host 0x1030/0x1034) moves the port 1 mouse too
+//                  (gb_host 0x1030/0x1034) moves the port 1 mouse too; a
+//                  second one (0x1020/0x1024) is the mouse in port 2
 //   X, Y, Start,   Amiga keys (raw key codes from the settings,
-//   Select         defaults Space, Return, F1, Esc)
+//   Select         defaults Space, Return, F1, Esc), or with a setting of
+//                  8'h80, 8'h81, 8'h82 the joystick's fire 1, fire 2, up
+//                  (port 2; no key event)
 //   host keyboard  a USB keyboard on the dock, reported by the firmware
 //                  fork as key events (gb_host 0x1038: USB HID usage,
 //                  pressed / released), is the Amiga's keyboard: the usages
@@ -20,9 +25,18 @@
 //                  Amiga keys, Insert and F12 are Help, Num Lock and
 //                  Scroll Lock the keypad's ( and ).
 // Slot 1 (a second dock controller, when present):
-//   D-pad, left stick, A, B   the joystick in port 1 (minimig switches port 1
+//   D-pad, left stick, A, B   the joystick in port 1, A and B as the
+//                  setting puts them (pad_ab) (minimig switches port 1
 //                  from the mouse to the joystick when its fire button is
 //                  pressed, and back on a left mouse click, as on MiSTer)
+//   right stick, L + D-pad, R   the mouse in port 2, as slot 0's is the
+//                  mouse in port 1
+//
+// So there are two players: A with the joystick in port 2 and the mouse in
+// port 1, B with the joystick in port 1 and the mouse in port 2. Port 2 is
+// the joystick while player A's is used and the mouse once player B's is
+// (p2_mouse). The Ports setting (ports) swaps the controllers, the host
+// mice, or gives both host mice to one player.
 //
 // Mouse and keyboard events go to minimig the way hps_ext.v delivers them
 // on MiSTer: kbd_mouse_type 0 = X delta, 1 = Y delta, 2 = Amiga key code
@@ -54,9 +68,14 @@ module gb_input
 	input             p1_active,              // slot 1: a second controller
 	input             p1_a, p1_b,
 	input             p1_up, p1_down, p1_left, p1_right,
+	input             p1_l, p1_r,
 	input signed [7:0] p1_lx, p1_ly,
+	input signed [7:0] p1_rx, p1_ry,
 
-	input       [7:0] key_x,
+	input       [2:0] ports,         // bit 0 the dock mice swapped, bit 1 the controllers swapped, bit 2 the dock mice as one
+
+	input       [1:0] pad_ab,        // A / B: 0 fire 1 / fire 2, 1 fire 1 / up, 2 up / fire 1, 3 fire 2 / fire 1
+	input       [7:0] key_x,         // an Amiga key code, or 8'h80 fire 1, 8'h81 fire 2, 8'h82 up
 	input       [7:0] key_y,
 	input       [7:0] key_start,
 	input       [7:0] key_select,
@@ -67,6 +86,12 @@ module gb_input
 	input       [2:0] hmouse_btn,    // {middle, right, left}
 	input             hwheel_valid,  // one clock per host wheel report
 	input       [7:0] hwheel,        // signed, away from the user positive
+	input             hmouse2_valid, // the second host mouse, as the first
+	input      [15:0] hmouse2_dx,
+	input      [15:0] hmouse2_dy,
+	input       [2:0] hmouse2_btn,
+	input             hwheel2_valid,
+	input       [7:0] hwheel2,
 
 	input             hkey_valid,    // one clock per host key event
 	input       [7:0] hkey_usage,    // USB HID keyboard usage
@@ -81,12 +106,17 @@ module gb_input
 );
 
 localparam MOUSE_TICK = CLK_HZ / 200;   // 5 ms between mouse moves
+localparam QUAD_TICK  = CLK_HZ / 5208;  // between two counts of the port 2 mouse (the port 1 mouse's rate in userio)
 localparam KEY_GAP    = CLK_HZ / 100;   // 10 ms between key events
 localparam EV_GAP     = 256;            // clocks between any two events
 localparam signed [7:0] STICK_ON  = 8'sd64;    // stick as a digital direction
 localparam signed [7:0] STICK_DZ  = 8'sd16;    // right stick dead zone (mouse)
 
-wire mouse_mode = btn_l;
+wire mm0 = btn_l;                  // L held: the D-pad is the player's mouse
+wire mm1 = p1_active & p1_l;
+wire mouse_swap = ports[0];
+wire pad_swap   = ports[1];
+wire mice_one   = ports[2];
 
 // directions with the left stick added
 wire s0_up    = btn_up    | (stick_ly < -STICK_ON);
@@ -98,17 +128,73 @@ wire s1_down  = p1_active & (p1_down  | (p1_ly >  STICK_ON));
 wire s1_left  = p1_active & (p1_left  | (p1_lx < -STICK_ON));
 wire s1_right = p1_active & (p1_right | (p1_lx >  STICK_ON));
 
+// A and B as the setting puts them: {up, fire 2, fire 1}
+function automatic [2:0] ab_map(input [1:0] m, input a, input b);
+	case (m)
+		2'd0: ab_map = {1'b0, b, a};          // fire 1 / fire 2
+		2'd1: ab_map = {b, 1'b0, a};          // fire 1 / up
+		2'd2: ab_map = {a, 1'b0, b};          // up / fire 1
+		default: ab_map = {1'b0, a, b};       // fire 2 / fire 1
+	endcase
+endfunction
+// X, Y, Start, Select set to a joystick button (key code 8'h80 up): {up, fire 2, fire 1}
+wire [3:0] kbtn = {btn_select, btn_start, btn_y, btn_x};
+wire [3:0] kjoy = {key_select[7], key_start[7], key_y[7], key_x[7]};   // a joystick button, not a key
+wire [2:0] kj_bits;
+function automatic [2:0] kj_one(input [7:0] c, input pressed);
+	kj_one = (pressed && c[7]) ? ((c[1:0] == 2'd0) ? 3'b001 : (c[1:0] == 2'd1) ? 3'b010 :
+	                              (c[1:0] == 2'd2) ? 3'b100 : 3'b000) : 3'b000;
+endfunction
+assign kj_bits = kj_one(key_x, btn_x) | kj_one(key_y, btn_y) |
+                 kj_one(key_start, btn_start) | kj_one(key_select, btn_select);
+wire [2:0] s0_ab = ab_map(pad_ab, btn_a, btn_b) | kj_bits;
+wire [2:0] s1_ab = p1_active ? ab_map(pad_ab, p1_a, p1_b) : 3'b000;
+wire       s0_upj = s0_up | s0_ab[2];
+wire       s1_upj = s1_up | s1_ab[2];
+
 // joystick bits: 0 right, 1 left, 2 down, 3 up, 4 fire 1, 5 fire 2
-assign joy_port2 = mouse_mode ? 16'd0 :
-                   {10'd0, btn_b, btn_a, s0_up & ~s0_down, s0_down, s0_left & ~s0_right, s0_right};
-assign joy_port1 = {10'd0, p1_active & p1_b, p1_active & p1_a, s1_up & ~s1_down, s1_down,
-                    s1_left & ~s1_right, s1_right};
-assign mouse_btn = {hmouse_btn[2], (mouse_mode & btn_b) | hmouse_btn[1], (mouse_mode & btn_a) | btn_r | hmouse_btn[0]};
+wire [5:0] j0 = mm0 ? 6'd0 :
+                {s0_ab[1], s0_ab[0], s0_upj & ~s0_down, s0_down, s0_left & ~s0_right, s0_right};
+wire [5:0] j1 = mm1 ? 6'd0 :
+                {s1_ab[1], s1_ab[0], s1_upj & ~s1_down, s1_down, s1_left & ~s1_right, s1_right};
+// a controller's mouse buttons {middle, right, left}
+wire [2:0] pm0 = {1'b0, mm0 & btn_b, (mm0 & btn_a) | btn_r};
+wire [2:0] pm1 = p1_active ? {1'b0, mm1 & p1_b, (mm1 & p1_a) | p1_r} : 3'd0;
+
+// The two players. Player A: joystick in port 2, mouse in port 1; player
+// B: joystick in port 1, mouse in port 2. Slot 0 is player A's controller
+// and slot 1 player B's, or the other way round (pad_swap); the first host
+// mouse is player A's and the second player B's, or the other way round
+// (mouse_swap), or both are one player's (mice_one: A's, with mouse_swap
+// B's).
+wire [5:0] jA  = pad_swap ? j1 : j0;
+wire [5:0] jB  = pad_swap ? j0 : j1;
+wire [2:0] pmA = pad_swap ? pm1 : pm0;
+wire [2:0] pmB = pad_swap ? pm0 : pm1;
+wire       m1_a = ~mouse_swap;              // the first host mouse is player A's
+wire       m2_a = mice_one ^ mouse_swap;    // the second
+wire [2:0] mbA = pmA | (m1_a ? hmouse_btn : 3'd0) | (m2_a ? hmouse2_btn : 3'd0);
+wire [2:0] mbB = pmB | (m1_a ? 3'd0 : hmouse_btn) | (m2_a ? 3'd0 : hmouse2_btn);
+
+// Port 2 is the joystick or the mouse, whichever was used last (port 1 is
+// switched in userio: the joystick's fire button, the mouse's left
+// button). As a mouse its lines are a mouse's: the quadrature pairs
+// H / HQ on down / right and V / VQ on up / left (userio counts them into
+// JOY1DAT as Denise does), the left button on fire 1, the right on fire 2.
+reg        p2_mouse;
+reg  [1:0] qx, qy;           // the quadrature phases: JOY1DAT's bits 1:0 and 9:8
+wire [5:0] p2_quad = {mbB[1], mbB[0], qy[1] ^ qy[0], qx[1] ^ qx[0], qy[1], qx[1]};
+
+assign joy_port2 = {10'd0, p2_mouse ? p2_quad : jA};
+assign joy_port1 = {10'd0, jB};
+assign mouse_btn = mbA;
 
 // ------------------------------------------------------------- mouse
 reg [$clog2(MOUSE_TICK+1)-1:0] mtick;
-reg  [7:0] held;             // ticks the D-pad has been held (acceleration)
-reg signed [15:0] acc_x, acc_y;   // motion not yet sent to the Amiga
+reg  [7:0] held0, held1;     // ticks a D-pad has been held (acceleration)
+reg signed [15:0] acc_x, acc_y;   // port 1: motion not yet sent to the Amiga
+reg signed [15:0] acc2_x, acc2_y; // port 2: motion not yet stepped out
+reg [$clog2(QUAD_TICK+1)-1:0] qtick;
 reg        y_next;                // the X half of a motion was sent, Y follows
 reg signed [7:0] acc_w;           // wheel clicks not yet sent
 reg        z_next;                // X and Y were sent, the wheel follows
@@ -127,8 +213,43 @@ function automatic signed [7:0] sat8(input signed [8:0] v);
 	sat8 = (v > 9'sd127) ? 8'sd127 : (v < -9'sd127) ? -8'sd127 : v[7:0];
 endfunction
 
-wire       any_dir = btn_up | btn_down | btn_left | btn_right;
-wire [7:0] speed   = (held < 8'd8) ? 8'd1 : (held < 8'd24) ? 8'd2 : (held < 8'd48) ? 8'd4 : 8'd6;
+// a controller as a mouse, counts per tick: the right stick past its dead
+// zone (up to 7), and the D-pad while L is held (faster the longer)
+function automatic [3:0] dspeed(input [7:0] h);
+	dspeed = (h < 8'd8) ? 4'd1 : (h < 8'd24) ? 4'd2 : (h < 8'd48) ? 4'd4 : 4'd6;
+endfunction
+function automatic signed [8:0] pad_v(input signed [7:0] stick, input mm, input neg, input pos, input [3:0] sp);
+	reg signed [8:0] v;
+	begin
+		v = 9'sd0;
+		if (stick > STICK_DZ || stick < -STICK_DZ) v = $signed({stick[7], stick}) >>> 4;
+		if (mm && (neg ^ pos)) v = pos ? v + $signed({5'd0, sp}) : v - $signed({5'd0, sp});
+		pad_v = v;
+	end
+endfunction
+wire       dir0 = mm0 & (btn_up | btn_down | btn_left | btn_right);
+wire       dir1 = mm1 & (p1_up | p1_down | p1_left | p1_right);
+wire signed [8:0] v0x = pad_v(stick_rx, mm0, btn_left, btn_right, dspeed(held0));
+wire signed [8:0] v0y = pad_v(stick_ry, mm0, btn_up,   btn_down,  dspeed(held0));
+wire signed [8:0] v1x = p1_active ? pad_v(p1_rx, mm1, p1_left, p1_right, dspeed(held1)) : 9'sd0;
+wire signed [8:0] v1y = p1_active ? pad_v(p1_ry, mm1, p1_up,   p1_down,  dspeed(held1)) : 9'sd0;
+wire signed [8:0] vAx = pad_swap ? v1x : v0x;
+wire signed [8:0] vAy = pad_swap ? v1y : v0y;
+wire signed [8:0] vBx = pad_swap ? v0x : v1x;
+wire signed [8:0] vBy = pad_swap ? v0y : v1y;
+
+// what makes port 2 the joystick, and what the mouse: player A's joystick
+// (any direction or button, while held), else player B's mouse (a host
+// mouse moved, a button, the D-pad with L, the right stick well out)
+function automatic far(input signed [7:0] v);
+	far = (v > STICK_ON) || (v < -STICK_ON);
+endfunction
+wire       padB_far = pad_swap ? (far(stick_rx) | far(stick_ry) | dir0)
+                               : (p1_active & (far(p1_rx) | far(p1_ry))) | dir1;
+wire       hm1_moved = hmouse_valid  && (hmouse_dx  != 16'd0 || hmouse_dy  != 16'd0);
+wire       hm2_moved = hmouse2_valid && (hmouse2_dx != 16'd0 || hmouse2_dy != 16'd0);
+wire       joyA_act = |jA;
+wire       mouseB_act = (|mbB) | padB_far | (hm1_moved & ~m1_a) | (hm2_moved & ~m2_a);
 
 // ------------------------------------------------------------- keys
 reg  [3:0] kprev;            // {select, start, y, x}
@@ -136,7 +257,8 @@ reg  [3:0] kdown_pend, kup_pend;
 reg [$clog2(KEY_GAP+1)-1:0] kgap;
 reg [8:0]  evgap;
 
-wire [3:0] know = {btn_select, btn_start, btn_y, btn_x};
+// (a button set to a joystick button sends no key)
+wire [3:0] know = kbtn & ~kjoy;
 
 function automatic [7:0] keycode(input [1:0] k);
 	case (k)
@@ -280,9 +402,16 @@ end
 always @(posedge clk) begin
 	if (reset) begin
 		mtick           <= '0;
-		held            <= 8'd0;
+		held0           <= 8'd0;
+		held1           <= 8'd0;
 		acc_x           <= 16'sd0;
 		acc_y           <= 16'sd0;
+		acc2_x          <= 16'sd0;
+		acc2_y          <= 16'sd0;
+		qtick           <= '0;
+		qx              <= 2'd0;
+		qy              <= 2'd0;
+		p2_mouse        <= 1'b0;
 		y_next          <= 1'b0;
 		acc_w           <= 8'sd0;
 		z_next          <= 1'b0;
@@ -318,10 +447,16 @@ always @(posedge clk) begin
 			if (~know[i] & kprev[i]) kup_pend[i]   <= 1'b1;
 		end
 
-		// mouse movement: D-pad (in mouse mode) and host reports add up in
-		// acc_x/acc_y; events take out at most 127 counts at a time
+		// port 2: the joystick while it is used, the mouse once that is
+		if (joyA_act)        p2_mouse <= 1'b0;
+		else if (mouseB_act) p2_mouse <= 1'b1;
+
+		// mouse movement: the controllers (right stick, D-pad in mouse
+		// mode) and the host reports add up, player A's in acc_x/acc_y
+		// (port 1: events take out at most 127 counts at a time), player
+		// B's in acc2_x/acc2_y (port 2: one count per axis every QUAD_TICK)
 		begin : mouse_events
-			reg signed [17:0] ax, ay;
+			reg signed [17:0] ax, ay, bx, by;
 			reg signed  [7:0] cx, cy;
 			reg signed  [8:0] aw;
 			reg               send_key, send_x, send_y, send_z, send_hkey;
@@ -330,25 +465,69 @@ always @(posedge clk) begin
 			ax = {{2{acc_x[15]}}, acc_x};
 			ay = {{2{acc_y[15]}}, acc_y};
 			aw = {acc_w[7], acc_w};
-			if (hwheel_valid) aw = aw + {hwheel[7], hwheel};
+			bx = {{2{acc2_x[15]}}, acc2_x};
+			by = {{2{acc2_y[15]}}, acc2_y};
+			if (hwheel_valid  && m1_a) aw = aw + {hwheel[7], hwheel};
+			if (hwheel2_valid && m2_a) aw = aw + {hwheel2[7], hwheel2};
 
 			if (mtick != '0) mtick <= mtick - 1'd1;
 			else begin
 				mtick <= MOUSE_TICK[$bits(mtick)-1:0];
-				// right stick: up to 7 counts per tick, past the dead zone
-				if (stick_rx > STICK_DZ || stick_rx < -STICK_DZ) ax = ax + (stick_rx >>> 4);
-				if (stick_ry > STICK_DZ || stick_ry < -STICK_DZ) ay = ay + (stick_ry >>> 4);
-				if (mouse_mode && any_dir) begin
-					if (held != 8'hFF) held <= held + 8'd1;
-					if (btn_left ^ btn_right) ax = ax + (btn_right ? {10'd0, speed} : -{10'd0, speed});
-					if (btn_up ^ btn_down)    ay = ay + (btn_down  ? {10'd0, speed} : -{10'd0, speed});
-				end
-				else held <= 8'd0;
+				ax = ax + {{9{vAx[8]}}, vAx};
+				ay = ay + {{9{vAy[8]}}, vAy};
+				bx = bx + {{9{vBx[8]}}, vBx};
+				by = by + {{9{vBy[8]}}, vBy};
+				if (dir0) begin if (held0 != 8'hFF) held0 <= held0 + 8'd1; end
+				else held0 <= 8'd0;
+				if (dir1) begin if (held1 != 8'hFF) held1 <= held1 + 8'd1; end
+				else held1 <= 8'd0;
 			end
 			if (hmouse_valid) begin
-				ax = ax + {{2{hmouse_dx[15]}}, hmouse_dx};
-				ay = ay + {{2{hmouse_dy[15]}}, hmouse_dy};
+				if (m1_a) begin
+					ax = ax + {{2{hmouse_dx[15]}}, hmouse_dx};
+					ay = ay + {{2{hmouse_dy[15]}}, hmouse_dy};
+				end
+				else begin
+					bx = bx + {{2{hmouse_dx[15]}}, hmouse_dx};
+					by = by + {{2{hmouse_dy[15]}}, hmouse_dy};
+				end
 			end
+			if (hmouse2_valid) begin
+				if (m2_a) begin
+					ax = ax + {{2{hmouse2_dx[15]}}, hmouse2_dx};
+					ay = ay + {{2{hmouse2_dy[15]}}, hmouse2_dy};
+				end
+				else begin
+					bx = bx + {{2{hmouse2_dx[15]}}, hmouse2_dx};
+					by = by + {{2{hmouse2_dy[15]}}, hmouse2_dy};
+				end
+			end
+
+			// port 2: a count is one step of the quadrature phase (right and
+			// down count up, as on port 1); what moved while the joystick
+			// has the port is dropped
+			if (qtick != '0) qtick <= qtick - 1'd1;
+			else begin
+				qtick <= QUAD_TICK[$bits(qtick)-1:0];
+				if (p2_mouse) begin
+					if (bx > 18'sd0)      begin qx <= qx + 2'd1; bx = bx - 18'sd1; end
+					else if (bx < 18'sd0) begin qx <= qx - 2'd1; bx = bx + 18'sd1; end
+					if (by > 18'sd0)      begin qy <= qy + 2'd1; by = by - 18'sd1; end
+					else if (by < 18'sd0) begin qy <= qy - 2'd1; by = by + 18'sd1; end
+				end
+			end
+			// (the phases start at rest, the joystick's idle lines, so the
+			// counters do not jump when the mouse takes the port)
+			if (!p2_mouse) begin
+				qx <= 2'd0;
+				qy <= 2'd0;
+			end
+			if (joyA_act) begin
+				bx = 18'sd0;
+				by = 18'sd0;
+			end
+			acc2_x <= sat16(bx);
+			acc2_y <= sat16(by);
 
 			if (kgap != '0) kgap <= kgap - 1'd1;
 

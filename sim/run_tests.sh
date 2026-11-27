@@ -32,7 +32,8 @@
 #           59 pixels right of the 720 one's (gb_video's window from clock
 #           215, the latest a line's end allows), 40 with the window 32
 #           pixels left (diw_wide: no need to hold it back), the border to
-#           both edges; OCS, AGA, NTSC and HDMI
+#           both edges; OCS, AGA, NTSC and HDMI (the panel's view of the
+#           frames, placed as the 720 one (wide_dx), is fw_video_sim's)
 #   lace    lacetest.rom: the vidtest picture in interlace, the border blue
 #           in long fields and red in short ones: every frame the core
 #           completes must be a long field, one every two fields
@@ -58,8 +59,16 @@
 #           fire, keyboard (with handshake), host mouse motion, buttons and
 #           wheel (alone, with motion, and motion after it not counted),
 #           D-pad mouse mode, right stick mouse, a second controller on port 1
+#   input_mouse2, input_ports  the mouse in port 2 (second host mouse,
+#           slot 1's right stick) and the Ports setting
 #           and host keyboard events (USB HID usages): a key down and up,
 #           Caps Lock toggling, a burst of four events, an unknown usage
+#   input_map  the buttons as the settings put them: A / B as fire / up,
+#           X, Y, Start set to fire, fire 2, up (no key sent for them;
+#           the core takes them on any of the four, the menu offers them
+#           on X and Y), Select still a key (Esc down and up)
+#   input_ab   A / B as up / fire, then (changed while running) fire 2 /
+#           fire, on the handheld and on a second controller (port 1)
 #   audio   audtest.rom: Paula channel 0, the four stereo mix settings
 #   mmu     mmutest.rom: the 68030's MMU translating with 1 KB pages (as
 #           AmigaOS 3.2): scattered reads and writes over 120 pages, base
@@ -164,6 +173,14 @@ run video_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi
 run video_ntsc --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1
 run video_ntsc_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1050=1 --set 1044=2 --set 1048=2 --set 107C=10
 run diw_l    --kick asm/vidtest_l.rom --ms 560 --check-vidtest
+# Picture's PAL / NTSC choices (bit 4 NTSC) and the 640 pixel pictures (bit 2)
+run video_640 --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1080=5
+run video_640_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi --set 1080=5
+run video_640_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=5
+run video_640_ntsc --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1080=14
+run video_640_ntsc_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi --set 1080=14
+run video_ntsc_pic --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1080=10
+run video_wide_ntsc_pic --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1080=12
 run video_wide --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1080=2
 run video_wide_aga --kick asm/vidtest.rom --ms 560 --check-vidtest --set 1044=2 --set 1048=2 --set 1080=2 --set 107C=10
 run video_wide_h --kick asm/vidtest.rom --ms 560 --check-vidtest --hdmi --set 1080=2
@@ -274,6 +291,26 @@ done
 # of a whole 1280 x 720 frame checked
 run rtg --kick asm/$RTGROM --ms 2500 --set 1048=4 --set 104C=8 --hdmi --rtg-check --rtg-modes 9 \
 	--check-word 2400:100:FFFF:600D --check-word 2400:104:FFFF:0000
+# A / B fire / up; X fire, Y fire 2, Start up (no key); Select Esc
+run input_map --kick asm/inptest.rom --ms 960 --set 1084=1 --set 106C=80 --set 1070=81 --set 1074=82 \
+	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 --check-word 500:106:4000:4000 \
+	--press 520:2:40 --check-word 545:100:0303:0100 --check-word 545:104:0080:0080 \
+	--press 580:1:40 --check-word 605:104:0080:0000 --check-word 605:100:0303:0000 \
+	--press 640:4:40 --check-word 665:104:0080:0000 --check-word 665:106:4000:4000 \
+	--press 700:8:40 --check-word 725:106:4000:0000 --check-word 725:104:0080:0080 \
+	--press 760:400:40 --check-word 785:100:0303:0100 \
+	--check-word 820:10A:FFFF:0000 --check-word 820:108:FFFF:FFFF \
+	--press 840:800:40 --check-word 940:108:00FF:00C5 --check-word 940:10A:FFFF:0002
+# A / B up / fire, then fire 2 / fire; slot 0 and a second controller
+run input_ab --kick asm/inptest.rom --ms 900 --set 1084=2 \
+	--press 520:1:40 --check-word 545:100:0303:0100 --check-word 545:104:0080:0080 \
+	--press 580:2:40 --check-word 605:104:0080:0000 --check-word 605:100:0303:0000 \
+	--slot1 --press2 640:2:40 --check-word 665:104:0040:0000 \
+	--press2 700:1:40 --check-word 725:102:0303:0100 \
+	--hwrite 750:1084:3 \
+	--press 770:1:40 --check-word 795:106:4000:0000 --check-word 795:104:0080:0080 \
+	--press 830:2:40 --check-word 855:104:0080:0000 --check-word 855:106:4000:4000 \
+	--check-word 880:10A:FFFF:0000
 run input  --kick asm/inptest.rom \
 	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 \
 	--press 520:80:40 --check-word 545:100:0303:0003 \
@@ -300,11 +337,50 @@ run input  --kick asm/inptest.rom \
 	--hwrite 1580:1038:104 --check-word 1620:108:00FF:0020 --check-word 1620:10A:FFFF:000B \
 	--mouse 1630:-9:14 --check-mouse 1625:1690:-9:14 --check-word 1690:10C:00FF:0006 \
 	--ms 1700
-run audio0 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=0 --expect-audio-ratio 0
-run audio1 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=1 --expect-audio-ratio 0.142857
-run audio2 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=2 --expect-audio-ratio 0.333333
-run audio3 --kick asm/audtest.rom --ms 450 --set 1064=0 --set 1068=3 --expect-audio-ratio 1
+# the second host mouse is the mouse in port 2: motion (JOY1DAT counts as
+# JOY0DAT does, port 1's stand still), left button on fire, right on pin 9;
+# the joystick takes the port back while it is used (and that motion is
+# dropped), the mouse again after; slot 1's right stick, L + D-pad and R
+# are the port 2 mouse too
+run input_mouse2 --kick asm/inptest.rom --ms 1160 --slot1 \
+	--check-word 500:100:0303:0000 --check-word 500:104:0080:0080 --check-word 500:106:4000:4000 \
+	--mouse2 520:20:-10 --check-mouse2 515:570:20:-10 --check-mouse 515:570:0:0 \
+	--hwrite 580:1024:1 --check-word 600:104:0080:0000 --check-word 600:106:4000:4000 \
+	--hwrite 610:1024:2 --check-word 630:104:0080:0080 --check-word 630:106:4000:0000 \
+	--hwrite 640:1024:0 --check-word 655:106:4000:4000 \
+	--press 660:80:40 --check-word 685:100:0303:0003 --mouse2 680:30:30 \
+	--check-mouse2 710:760:0:0 --check-word 760:100:0303:0000 \
+	--mouse2 770:-9:14 --check-mouse2 765:820:-9:14 \
+	--stick1r 830:100:-50:50 --check-mouse2 825:900:60:-40:7 --check-mouse 825:900:0:0 \
+	--press 910:10:40 --check-word 935:100:0303:0100 \
+	--press2 960:180:40 --check-mouse2 955:1020:8:0:2 --check-word 1020:102:0303:0000 \
+	--press2 1040:200:40 --check-word 1060:104:0080:0000 --check-word 1100:104:0080:0080 \
+	--press2 1110:80:40 --check-word 1135:102:0303:0003
+# the Ports setting: the mice swapped (the first is port 2's, the second
+# port 1's, with its wheel), both as one (port 1), the controllers swapped
+# (slot 0 the joystick in port 1 and the mouse in port 2, slot 1 the
+# joystick in port 2; a left click gives port 1 back to the mouse), changed while running
+run input_ports --kick asm/inptest.rom --ms 1200 --slot1 --set 1088=1 \
+	--mouse 520:20:-10 --check-mouse2 515:570:20:-10 --check-mouse 515:570:0:0 \
+	--mouse2 580:7:5 --check-mouse 575:630:7:5 --check-mouse2 575:630:0:0 \
+	--hwrite 640:103C:5 --hwrite 642:1028:3 --check-word 670:10C:00FF:0003 \
+	--hwrite 680:1034:1 --check-word 700:104:00C0:0040 --hwrite 705:1034:0 \
+	--hwrite 710:1024:1 --check-word 730:104:00C0:0080 --hwrite 735:1024:0 \
+	--hwrite 750:1088:4 --mouse 770:5:5 --mouse2 772:6:-2 --check-mouse 765:820:11:3 --check-mouse2 765:820:0:0 \
+	--hwrite 830:1088:2 \
+	--press 850:81:40 --check-word 875:102:0303:0003 --check-word 875:104:0040:0000 \
+	--press2 910:10:40 --check-word 935:100:0303:0100 \
+	--stick 980:0:0:100:-50:0:0:50 --check-mouse2 975:1050:60:-40:7 \
+	--hwrite 1052:1034:1 --hwrite 1058:1034:0 --mouse 1070:4:9 --check-mouse 1065:1120:4:9 \
+	--mouse2 1130:-6:3 --check-mouse2 1125:1180:-6:3
+# (the filter off: Audio's bit 2)
+run audio0 --kick asm/audtest.rom --ms 450 --set 1068=4 --expect-audio-ratio 0
+run audio1 --kick asm/audtest.rom --ms 450 --set 1068=5 --expect-audio-ratio 0.142857
+run audio2 --kick asm/audtest.rom --ms 450 --set 1068=6 --expect-audio-ratio 0.333333
+run audio3 --kick asm/audtest.rom --ms 450 --set 1068=7 --expect-audio-ratio 1
 run floppy --kick asm/wrtest.rom --disk 0 $OUT/blank.adf --ms 1200 --floppy-write-test --exit
+# the second drive (Drives 2, DF1 = Disk 2), DF0 empty: the same on DF1
+run floppy_df1 --kick asm/wrtest_df1.rom --disk 1 $OUT/blank.adf --set 1054=1 --set 1060=1 --set 105C=7 --ms 1200 --floppy-write-test --floppy-write-slot 1 --exit
 # (of the 323 sectors it reads at least 150 must come out of the buffer read
 # ahead, without a request to the firmware)
 run ide_part  --kick asm/idetest.rom --hdf 0 $OUT/part.hdf --ide-test --ms 1800 --expect-hdd-ahead 150

@@ -41,8 +41,8 @@ module tb_top
 	input  [11:0] buttons,
 	input         slot1_active,
 	input  [11:0] buttons1,
-	// sticks {slot 1 left Y, left X, slot 0 right Y, right X, left Y, left X}
-	input  [47:0] sticks,
+	// sticks {slot 1 right Y, right X, left Y, left X, slot 0 right Y, right X, left Y, left X}
+	input  [63:0] sticks,
 
 	// VideoV0 / AudioV0
 	output [17:0] video_data,        // the pixel sent (gb_video): 6 + 6 + 6 bits
@@ -51,6 +51,7 @@ module tb_top
 	output        video_vblank,
 	output        video_fit,
 	output        video_wide,        // 800 x 240 frames (Picture: 800 x 480)
+	output  [6:0] video_wide_dx,     // and their column that is the 720 one's column 0
 	output [23:0] dbg_pixel_color,   // the chipset's colour of the pixel sent, with video_de
 
 	// the screen (sim/rtl/fw_video_sim.sv: the framework's side, every
@@ -80,6 +81,9 @@ module tb_top
 	output        dbg_chip_as,
 	output        dbg_chip_rw,
 	output        dbg_chip_long,     // a 32-bit CPU chip bus cycle (cpu_wrapper chip_long)
+	output [31:0] dbg_bus_wr, dbg_bus_rd,            // CPU chip bus cycles ended (the checker below)
+	output [31:0] dbg_bus_lost_wr, dbg_bus_lost_rd,  // and those the chipset did not take
+	output [31:0] dbg_bus_stray, dbg_bus_twice,      // the chipset's strobes with no cycle open; cycles strobed twice
 	output        dbg_ram_long,      // the CPU takes a long word from / to its RAM in one transfer
 	output  [3:0] dbg_sd_state,      // gb_sdram_ctrl: the window's state
 	output  [2:0] dbg_sd_c0,         // and the slots' types (CPU_RD 2, CPU_WR 3)
@@ -103,6 +107,18 @@ module tb_top
 	output        dbg_ntsc,
 	output        dbg_fdd_idle,
 	output        dbg_motor,         // some drive motor on (_motor of ciab, inverted)
+
+	// audio diagnosis (--audio-trace): the custom register bus as Paula
+	// takes it (on clk7_en), and each channel's state and output
+	output        dbg_clk7_en,
+	output  [8:1] dbg_reg_addr,
+	output [15:0] dbg_reg_data,
+	output  [3:0] dbg_aud_dmaena,
+	output [11:0] dbg_aud_state,     // 3 bits per channel
+	output  [3:0] dbg_aud_silence,
+	output [27:0] dbg_aud_volume,    // 7 bits per channel
+	output [31:0] dbg_aud_sample,    // 8 bits per channel
+	output [14:0] dbg_adkcon,
 
 	// the SDRAM pins: clock, and every other output the controller drives
 	// {cs, ras, cas, we, dqm, ba, a, oe, dout}
@@ -153,6 +169,8 @@ fw_video_sim fw
 	.data           (video_data),
 	.fit            (video_fit),
 	.wide           (video_wide),
+	.wide_dx        (video_wide_dx),
+	.narrow         (dut.video_narrow),
 	.wr_frame       (fw_frame),
 	.wr_drop        (fw_drop),
 	.clk_av         (clk_av),
@@ -285,6 +303,7 @@ sram_sim sram
 );
 
 assign video_wide = dut.video_wide;
+assign video_wide_dx = dut.video_wide_dx;
 minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 (
 	.clock                   (clk_28),
@@ -380,8 +399,8 @@ minimig_gamebub #(.DISPLAY_DIVIDER(35)) dut
 	.input_slots_1_buttons_r3     (1'b0),
 	.input_slots_1_analog_leftX  (sticks[39:32]),
 	.input_slots_1_analog_leftY  (sticks[47:40]),
-	.input_slots_1_analog_rightX (8'd0),
-	.input_slots_1_analog_rightY (8'd0),
+	.input_slots_1_analog_rightX (sticks[55:48]),
+	.input_slots_1_analog_rightY (sticks[63:56]),
 	.input_slots_1_analog_leftTrigger  (8'd0),
 	.input_slots_1_analog_rightTrigger (8'd0),
 	.sdram_clock             (sd_clk),
@@ -479,6 +498,105 @@ assign dbg_chip_addr = dut.chip_addr;
 assign dbg_chip_as   = dut.chip_as;
 assign dbg_chip_rw   = dut.chip_rw;
 assign dbg_chip_long = dut.chip_long;
+
+// ---------------------------------------------------------------------------
+// The CPU's chip bus cycles against the chipset's side of them. The chipset
+// (minimig_m68k_bridge) takes a cycle only while its `enable` is high: _as
+// and _dtack as it latched them at a 7 MHz clock enable, in the low half of
+// cck; that is when a write's strobes (hwr / lwr) are given and, at one
+// clock of it (c1 low, c3 high), a read's data is latched for the CPU. A
+// CPU side that ends its cycle (_as high again) before that has written
+// nothing, or has read the data of the cycle before. Every cycle that ends
+// must have had its strobe (a write) or its latch (a read) while _as was
+// low, with the address and the write data the CPU had at the cycle's end.
+// Both edges of clk_114: cpu_wrapper's _as moves on the falling one.
+// ---------------------------------------------------------------------------
+reg  [31:0] bus_wr = 0, bus_rd = 0, bus_lost_wr = 0, bus_lost_rd = 0;
+reg  [31:0] bus_lat = 0;          // read latches so far (clk_28)
+reg  [31:0] bus_lat0 = 0;         // at the cycle's start
+reg         bus_as_d = 1'b1;
+reg         bus_stb = 1'b0;       // a write strobe in this cycle
+reg         bus_stb_ok = 1'b0;    // with this cycle's address and data
+reg  [23:1] bus_stb_a = 0;
+reg  [15:0] bus_stb_d = 0;
+reg         bus_halt = 1'b0;
+reg  [31:0] bus_stray = 0, bus_twice = 0;
+reg         bus_any_d = 1'b0;
+reg   [1:0] bus_eps = 2'd0;
+reg         bus_rw_d = 1'b1, bus_long_d = 1'b0;
+reg  [23:1] bus_a_d = 0;
+reg  [15:0] bus_d_d = 0;
+wire        bus_en  = dut.minimig.CPU1.enable;
+wire        bus_wst = dut.minimig.CPU1.hwr | dut.minimig.CPU1.lwr;
+always @(posedge clk_28)
+	if (!dut.minimig.CPU1.c1 && dut.minimig.CPU1.c3 && bus_en) bus_lat <= bus_lat + 1'd1;
+always @(posedge clk_114 or negedge clk_114) begin
+	bus_as_d <= dut.chip_as;
+	// the other way round: the chipset must not strobe (a write, or a read:
+	// rd) while the CPU has no cycle open (_as high for a clock edge and
+	// more: its enable outliving the cycle, or come from the cycle before),
+	// and a cycle gets one strobe, not two (a register written twice, the
+	// first time perhaps in a DMA slot)
+	bus_any_d <= bus_en;
+	// (once the CPU is out of reset)
+	if (bus_en && dut.chip_as && bus_as_d && !dut.minimig.CPU1.halt && !reset && dut.cpu_rst) begin
+		if (!bus_any_d) begin
+			bus_stray <= bus_stray + 1'd1;
+			if (bus_stray < 10) $display("[bus] ERROR the chipset's enable with no CPU cycle open: %s %06X at %0t",
+				dut.minimig.CPU1.rd ? "read" : "write", {dut.minimig.CPU1.address_out, 1'b0}, $time);
+		end
+	end
+	if (!dut.chip_as && bus_en && !bus_any_d) begin
+		bus_eps <= bus_eps + 1'd1;
+		if (bus_eps == 2'd1 && !bus_halt && !reset) begin
+			bus_twice <= bus_twice + 1'd1;
+			if (bus_twice < 10) $display("[bus] ERROR a second strobe in one CPU cycle: %06X at %0t", {dut.chip_addr, 1'b0}, $time);
+		end
+	end
+	if (dut.chip_as) bus_eps <= 2'd0;
+	if (dut.chip_as) begin
+		bus_stb  <= 1'b0;
+		bus_lat0 <= bus_lat;
+		bus_halt <= dut.minimig.CPU1.halt;
+	end
+	else begin
+		if (dut.minimig.CPU1.halt) bus_halt <= 1'b1;
+		if (bus_wst) begin
+			bus_stb   <= 1'b1;
+			bus_stb_a <= dut.minimig.CPU1.address_out;
+			bus_stb_d <= dut.minimig.CPU1.data_out;
+		end
+	end
+	// the cycle's end (chip_rw is high again with _as: the values of the
+	// clock edge before)
+	if (dut.chip_as && !bus_as_d && !bus_halt && !reset) begin
+		if (!bus_rw_d) begin
+			bus_wr <= bus_wr + 1'd1;
+			if (!bus_stb || bus_stb_a != bus_a_d || (!bus_long_d && bus_stb_d != bus_d_d)) begin
+				bus_lost_wr <= bus_lost_wr + 1'd1;
+				if (bus_lost_wr < 10) $display("[bus] ERROR write %06X = %04X not taken by the chipset (%s) at %0t",
+					{bus_a_d, 1'b0}, bus_d_d, !bus_stb ? "no strobe" : "other address or data", $time);
+			end
+		end
+		else begin
+			bus_rd <= bus_rd + 1'd1;
+			if (bus_lat == bus_lat0) begin
+				bus_lost_rd <= bus_lost_rd + 1'd1;
+				if (bus_lost_rd < 10) $display("[bus] ERROR read %06X ended before the chipset's data was latched at %0t", {bus_a_d, 1'b0}, $time);
+			end
+		end
+	end
+	bus_rw_d   <= dut.chip_rw;
+	bus_long_d <= dut.chip_long;
+	bus_a_d    <= dut.chip_addr;
+	bus_d_d    <= dut.chip_din;
+end
+assign dbg_bus_wr = bus_wr;
+assign dbg_bus_stray = bus_stray;
+assign dbg_bus_twice = bus_twice;
+assign dbg_bus_rd = bus_rd;
+assign dbg_bus_lost_wr = bus_lost_wr;
+assign dbg_bus_lost_rd = bus_lost_rd;
 assign dbg_ram_long = dut.cpu_wrapper.long_ack & dut.cpu_wrapper.clkena_p_throttled;
 assign dbg_ram_wait = dut.ram_sel & ~dut.ram_ready;
 assign dbg_sd_state = dut.ram1.sdram_state;
@@ -492,6 +610,19 @@ always @(posedge dut.cpu_wrapper.clk)
 		fetch_q <= dut.cpu_wrapper.cpu_addr_m;
 assign dbg_ipl    = dut.cpu_wrapper.cpu_ipl;
 assign dbg_intreq = dut.minimig.PAULA1.pi1.intreq[14:0];
+assign dbg_clk7_en    = dut.minimig.clk7_en;
+assign dbg_reg_addr   = dut.minimig.reg_address;
+assign dbg_reg_data   = dut.minimig.custom_data_in;
+assign dbg_aud_dmaena = dut.minimig.PAULA1.ad1.dmaena;
+assign dbg_aud_state  = {dut.minimig.PAULA1.ad1.ach3.audio_state, dut.minimig.PAULA1.ad1.ach2.audio_state,
+                         dut.minimig.PAULA1.ad1.ach1.audio_state, dut.minimig.PAULA1.ad1.ach0.audio_state};
+assign dbg_aud_silence= {dut.minimig.PAULA1.ad1.ach3.silence, dut.minimig.PAULA1.ad1.ach2.silence,
+                         dut.minimig.PAULA1.ad1.ach1.silence, dut.minimig.PAULA1.ad1.ach0.silence};
+assign dbg_aud_volume = {dut.minimig.PAULA1.ad1.ach3.volume, dut.minimig.PAULA1.ad1.ach2.volume,
+                         dut.minimig.PAULA1.ad1.ach1.volume, dut.minimig.PAULA1.ad1.ach0.volume};
+assign dbg_aud_sample = {dut.minimig.PAULA1.ad1.ach3.sample, dut.minimig.PAULA1.ad1.ach2.sample,
+                         dut.minimig.PAULA1.ad1.ach1.sample, dut.minimig.PAULA1.ad1.ach0.sample};
+assign dbg_adkcon     = dut.minimig.PAULA1.adkcon;
 assign dbg_intena = dut.minimig.PAULA1.pi1.intena[14:0];
 `ifdef AP68040
 // (the core's dbg_pc output is zero unless it is built with DEBUG: the PC of

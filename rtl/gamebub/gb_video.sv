@@ -76,6 +76,7 @@ module gb_video
 	input                   drop_field,   // interlace: this field (the short one) is not shown
 	input                   fit_height,   // PAL: all 256 lines, fitted to the screen by the framework
 	input                   wide_set,     // 800 x 240 (Picture: 800 x 480)
+	input                   narrow_set,   // the standard screen only: 640 pixels (NTSC: 200 lines), black around them
 	input             [7:0] r_in,
 	input             [7:0] g_in,
 	input             [7:0] b_in,
@@ -89,6 +90,8 @@ module gb_video
 	output                  vblank,
 	output reg              fit,          // show all 256 lines (taken at a frame's start)
 	output reg              wide,         // 800 pixels by 240 lines (taken at a frame's start)
+	output            [6:0] wide_dx,      // wide: the frame's column that is the 720 one's column 0
+	output reg              narrow,       // 640 pixels, at the frame's columns 40 .. 679 (taken at a frame's start)
 
 	output           [23:0] dbg_color     // the Amiga's colour of the pixel sent (bench)
 );
@@ -110,7 +113,10 @@ reg        skip;         // this frame is the dropped field of an interlaced pic
 wire hs_start = hs_d & ~hsync_n;
 wire vs_start = vs_d & ~vsync_n;
 
-wire  [8:0] v_first = ntsc ? V_START_NTSC : fit ? V_START : V_START + {4'd0, (vpos > 5'd16) ? 5'd16 : vpos};
+// (narrow, NTSC: the screen's 200 lines are the frame's lines 20 .. 219,
+// so that they are in the middle of the panel's rows and HDMI's, two and
+// three rows each; the 20 lines above and below them are sent black)
+wire  [8:0] v_first = ntsc ? (narrow ? V_START_NTSC - 9'd20 : V_START_NTSC) : fit ? V_START : V_START + {4'd0, (vpos > 5'd16) ? 5'd16 : vpos};
 wire  [8:0] v_lines = fit ? 9'd256 : 9'd240;
 // the lines sent: v_lines of them from line v_first of a frame that is not
 // a dropped field, counted on through _vsync (NTSC)
@@ -127,6 +133,16 @@ wire [11:0] h_go    = !wide ? h_start :
                       (h_wide < H_W_FIRST) ? H_W_FIRST :
                       (h_wide > H_W_LAST) ? H_W_LAST : h_wide;
 wire [11:0] h_len   = wide ? 12'd1600 : 12'd1440;
+// the wide frame starts (h_start - h_go) / 2 pixels left of where the 720
+// one would (59 for the standard window, 40 when the window is not held
+// back, 2 at the least): gb_fb puts it on the panel by this, so a screen
+// is in the same place with either picture
+wire [11:0] h_dx    = h_start - h_go;
+// narrow: the frame's pixels 40 .. 679 (the standard window's 640, or the
+// middle 640 of an overscan screen) and in NTSC its lines 20 .. 219; the
+// rest black
+wire        n_black = narrow && (hrel < 12'd80 || hrel >= 12'd1360 || (ntsc && (wl < 9'd20 || wl >= 9'd220)));
+assign      wide_dx = h_dx[7:1];
 wire [11:0] hrel    = hcnt - h_go;
 wire        h_on    = (hcnt >= h_go) && (hcnt < h_go + h_len);
 
@@ -178,6 +194,7 @@ always @(posedge clk) begin
 				frame_seen <= 1'b1;
 				fit        <= fit_height & ~ntsc & ~wide_set;   // only changes between frames
 				wide       <= wide_set;
+				narrow     <= narrow_set & ~wide_set;
 				h_start    <= h_start_new;
 				skip       <= drop_field;
 			end
@@ -213,9 +230,9 @@ always @(posedge clk) begin
 			if (!hrel[0]) begin
 				// (Denise goes on giving the border's colour in the vertical
 				// blanking; a monitor shows none of it)
-				pr     <= vbl ? 8'd0 : r_in;
-				pg     <= vbl ? 8'd0 : g_in;
-				pb     <= vbl ? 8'd0 : b_in;
+				pr     <= (vbl | n_black) ? 8'd0 : r_in;
+				pg     <= (vbl | n_black) ? 8'd0 : g_in;
+				pb     <= (vbl | n_black) ? 8'd0 : b_in;
 				pbayer <= bayer;
 				de_i   <= 1'b1;
 			end

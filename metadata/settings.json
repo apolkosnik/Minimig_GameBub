@@ -99,23 +99,6 @@
 			"default": "0x1"
 		},
 		{
-			"id": 5,
-			"label": "Video",
-			"address": "0x00001050",
-			"type": "list",
-			"items": [
-				{
-					"label": "PAL",
-					"value": "0x0"
-				},
-				{
-					"label": "NTSC",
-					"value": "0x1"
-				}
-			],
-			"default": "0x0"
-		},
-		{
 			"id": 6,
 			"label": "DF0",
 			"address": "0x0000105C",
@@ -216,41 +199,107 @@
 			"default": "0x0"
 		},
 		{
-			"id": 10,
-			"label": "Audio filter",
-			"address": "0x00001064",
-			"type": "checkbox",
-			"value": "0x1",
-			"default": "0x1"
-		},
-		{
 			"id": 11,
-			"label": "Stereo mix",
+			"label": "Audio",
 			"address": "0x00001068",
 			"type": "list",
 			"items": [
 				{
-					"label": "None",
+					"label": "Stereo, filter",
 					"value": "0x0"
 				},
 				{
-					"label": "12%",
+					"label": "12% mix, filter",
 					"value": "0x1"
 				},
 				{
-					"label": "25%",
+					"label": "25% mix, filter",
 					"value": "0x2"
 				},
 				{
-					"label": "Mono",
+					"label": "Mono, filter",
 					"value": "0x3"
+				},
+				{
+					"label": "Stereo, no filter",
+					"value": "0x4"
+				},
+				{
+					"label": "12% mix, no filter",
+					"value": "0x5"
+				},
+				{
+					"label": "25% mix, no filter",
+					"value": "0x6"
+				},
+				{
+					"label": "Mono, no filter",
+					"value": "0x7"
 				}
 			],
 			"default": "0x2"
 		},
 		{
+			"id": 19,
+			"label": "Ports",
+			"address": "0x00001088",
+			"type": "list",
+			"items": [
+				{
+					"label": "Normal",
+					"value": "0x0"
+				},
+				{
+					"label": "Mice swapped",
+					"value": "0x1"
+				},
+				{
+					"label": "Pads swapped",
+					"value": "0x2"
+				},
+				{
+					"label": "Both swapped",
+					"value": "0x3"
+				},
+				{
+					"label": "Mice as one",
+					"value": "0x4"
+				},
+				{
+					"label": "Mice as one, pads swapped",
+					"value": "0x6"
+				}
+			],
+			"default": "0x0"
+		},
+		{
+			"id": 18,
+			"label": "A / B buttons",
+			"address": "0x00001084",
+			"type": "list",
+			"items": [
+				{
+					"label": "Fire / Fire 2",
+					"value": "0x0"
+				},
+				{
+					"label": "Fire / Up",
+					"value": "0x1"
+				},
+				{
+					"label": "Up / Fire",
+					"value": "0x2"
+				},
+				{
+					"label": "Fire 2 / Fire",
+					"value": "0x3"
+				}
+			],
+			"default": "0x0"
+		},
+		{
 			"id": 12,
-			"label": "X button key",
+			"label": "X button",
 			"address": "0x0000106C",
 			"type": "list",
 			"items": [
@@ -271,27 +320,27 @@
 					"value": "0x50"
 				},
 				{
-					"label": "F2",
-					"value": "0x51"
-				},
-				{
 					"label": "Help",
 					"value": "0x5F"
 				},
 				{
-					"label": "Del",
-					"value": "0x46"
+					"label": "Fire",
+					"value": "0x80"
 				},
 				{
-					"label": "P",
-					"value": "0x19"
+					"label": "Fire 2",
+					"value": "0x81"
+				},
+				{
+					"label": "Up",
+					"value": "0x82"
 				}
 			],
 			"default": "0x40"
 		},
 		{
 			"id": 13,
-			"label": "Y button key",
+			"label": "Y button",
 			"address": "0x00001070",
 			"type": "list",
 			"items": [
@@ -312,27 +361,27 @@
 					"value": "0x50"
 				},
 				{
-					"label": "F2",
-					"value": "0x51"
-				},
-				{
 					"label": "Help",
 					"value": "0x5F"
 				},
 				{
-					"label": "Del",
-					"value": "0x46"
+					"label": "Fire",
+					"value": "0x80"
 				},
 				{
-					"label": "P",
-					"value": "0x19"
+					"label": "Fire 2",
+					"value": "0x81"
+				},
+				{
+					"label": "Up",
+					"value": "0x82"
 				}
 			],
 			"default": "0x44"
 		},
 		{
 			"id": 14,
-			"label": "Start key",
+			"label": "Start",
 			"address": "0x00001074",
 			"type": "list",
 			"items": [
@@ -373,7 +422,7 @@
 		},
 		{
 			"id": 15,
-			"label": "Select key",
+			"label": "Select",
 			"address": "0x00001078",
 			"type": "list",
 			"items": [
@@ -419,16 +468,28 @@
 			"type": "list",
 			"items": [
 				{
-					"label": "256 lines",
+					"label": "PAL 640 x 256",
+					"value": "0x5"
+				},
+				{
+					"label": "NTSC 640 x 200",
+					"value": "0x14"
+				},
+				{
+					"label": "PAL overscan (720)",
 					"value": "0x1"
 				},
 				{
-					"label": "240 lines",
-					"value": "0x0"
+					"label": "NTSC overscan (720)",
+					"value": "0x10"
 				},
 				{
-					"label": "800 x 480",
+					"label": "PAL 800 x 480",
 					"value": "0x2"
+				},
+				{
+					"label": "NTSC 800 x 480",
+					"value": "0x12"
 				}
 			],
 			"default": "0x1"
