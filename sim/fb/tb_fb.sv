@@ -39,6 +39,13 @@ bit     ntsc = 0;         // frames of 262 lines (16.8 ms), 240 of them the pict
 bit     wide0 = 0;        // 800 x 240
 bit     wideswitch = 0;
 reg     wide = 0;         // the frame's (changes between frames)
+// the wide frame's column that is the 720 one's column 0, as gb_video gives
+// it: a standard screen's 59, 40 (an overscan screen's) in every third
+// frame, 5 (less than the panel's 12: the frame from its first column) in
+// every fifth; taken between frames
+reg [6:0] wide_dx = 7'd59;
+// +narrow: the 640 pixel picture (HDMI shows the frame's 40 .. 679)
+wire    narrow = $test$plusargs("narrow") && !wide;
 real    av_half;
 reg     clk_av = 0;
 initial begin
@@ -95,6 +102,7 @@ always @(posedge clk_28) begin
 				l <= 0;
 				frame <= frame + 1;
 				if (wideswitch) wide <= (frame + 1 >= 4 && frame + 1 < 10);
+				wide_dx <= ((frame + 1) % 5 == 4) ? 7'd5 : ((frame + 1) % 3 == 2) ? 7'd40 : 7'd59;
 				// frames 7 to 9: no picture (the Amiga held)
 				stalled <= (frame + 1 >= 7 && frame + 1 < 10);
 			end
@@ -132,7 +140,7 @@ wire        check;
 fw_video_sim fw
 (
 	.clk_sys (clk_28), .reset (reset), .hdmi (hdmi),
-	.de (de), .hblank (hblank), .vblank (vblank), .data (data), .fit (fit), .wide (wide),
+	.de (de), .hblank (hblank), .vblank (vblank), .data (data), .fit (fit), .wide (wide), .wide_dx (wide_dx), .narrow (narrow),
 	.wr_frame (wr_frame), .wr_drop (wr_drop),
 	.clk_av (clk_av), .ext_hdmi (ext_hdmi), .ext_x (ext_x), .ext_y (ext_y),
 	.ext_sync (ext_sync), .ext_frame (ext_frame), .ext_color (ext_color),
@@ -160,7 +168,7 @@ wire        dbg_overflow;
 gb_fb dut
 (
 	.clk_sys (clk_28), .reset (reset),
-	.px_de (de), .px_data (data), .px_hblank (hblank), .px_vblank (vblank), .fit (fit), .wide (wide),
+	.px_de (de), .px_data (data), .px_hblank (hblank), .px_vblank (vblank), .fit (fit), .wide (wide), .wide_dx (wide_dx), .narrow (narrow),
 	.wr_frame (wr_frame), .wr_drop (wr_drop),
 	.clk_114 (clk_114), .reset_114 (reset),
 	.sram_ceN (s_ce), .sram_weN (s_we), .sram_oeN (s_oe), .sram_writeMaskN (s_mask),

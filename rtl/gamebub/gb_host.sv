@@ -40,6 +40,11 @@
 //                         before, signed, away from the user positive (as
 //                         MiSTer gives them to minimig: the Amiga reads
 //                         their sum in the low byte of $DFF1F0)
+//   0x0000_1020, 1024,    the second mouse (a second USB/Bluetooth mouse on
+//   0x0000_1028           the dock): motion, buttons and wheel as 0x1030,
+//                         0x1034 and 0x103C (the firmware sets bit 16 of
+//                         the buttons while that mouse is connected; not
+//                         used here)
 //   0x0000_1038           keyboard event (written by the firmware fork for a
 //                         USB keyboard on the dock): bits 7:0 the key's USB
 //                         HID usage (0xE0..E7 the modifiers), bit 8 set when
@@ -146,6 +151,7 @@ module gb_host
 
 	// front end settings
 	output reg        audio_filter,
+	output reg  [1:0] pad_ab,         // A / B buttons: 0 fire / fire 2, 1 fire / up, 2 up / fire, 3 fire 2 / fire
 	output reg  [7:0] key_x,
 	output reg  [7:0] key_y,
 	output reg  [7:0] key_start,
@@ -153,6 +159,7 @@ module gb_host
 	output reg  [4:0] video_vpos,
 	output reg        video_fit,
 	output reg        video_wide,     // 800 x 480: 800 pixels by 240 lines, one to one on the panel
+	output reg        video_narrow,   // 640 pixels of the 720, the border beside them black
 
 	// mouse from the host (firmware)
 	output reg        hmouse_valid,   // one clock per motion write
@@ -161,6 +168,13 @@ module gb_host
 	output reg  [2:0] hmouse_btn,
 	output reg        hwheel_valid,   // one clock per wheel write
 	output reg  [7:0] hwheel,
+	output reg        hmouse2_valid,  // the second mouse, as the first
+	output reg [15:0] hmouse2_dx,
+	output reg [15:0] hmouse2_dy,
+	output reg  [2:0] hmouse2_btn,
+	output reg        hwheel2_valid,
+	output reg  [7:0] hwheel2,
+	output reg  [2:0] ports,          // Ports: bit 0 mice swapped, 1 controllers swapped, 2 mice as one
 
 	// keyboard from the host (firmware)
 	output reg        hkey_valid,     // one clock per key event
@@ -236,10 +250,17 @@ reg  [7:0] set_fspeed;    // 0 normal, 1 turbo
 reg  [7:0] set_df0;       // slot, >= NUM_SLOTS = empty
 reg  [7:0] set_df1;
 reg  [7:0] set_filter;
-reg  [7:0] set_stereo;
+reg  [7:0] set_stereo;    // Audio: bits 1:0 the stereo mix, bit 2 the filter off
+                          // (0x1064, Audio filter, is no longer in the menu: it
+                          // stays on and bit 2 turns it off)
+reg  [7:0] set_ab;        // A / B buttons
+reg  [7:0] set_ports;     // Ports
 reg  [7:0] set_vpos;
 reg  [7:0] set_fit;       // Picture: bit 0 all 256 PAL lines fitted to the screen,
-                          // bit 1 800 x 480 (800 pixels by 240 lines)
+                          // bit 1 800 x 480 (800 pixels by 240 lines), bit 2 the
+                          // standard screen's 640 pixels only (NTSC: and its 200
+                          // lines), bit 4 NTSC (the menu's Picture chooses PAL or
+                          // NTSC; 0x1050, no longer in the menu, still does too)
 
 // memory presets: XHFFSSCC
 function automatic [7:0] mem_preset(input [2:0] p);
@@ -257,17 +278,23 @@ endfunction
 
 always @* begin
 	// XXGEANT: G AGA, E ECS, A A1000 boot ROM, N NTSC, T turbo
-	cfg_chipset  = {1'b0, set_chipset == 8'd2, set_chipset == 8'd1, 1'b0, set_video[0], 1'b0};
+	cfg_chipset  = {1'b0, set_chipset == 8'd2, set_chipset == 8'd1, 1'b0, set_video[0] | set_fit[4], 1'b0};
 	// SSPCCCTT: 68EC020 = TT 11 with P (A1200 speed)
 	cfg_cpu      = (set_cpu == 8'd4) ? 8'h02 : (set_cpu == 8'd3) ? 8'h03 :
 	               (set_cpu == 8'd2) ? 8'h23 : (set_cpu == 8'd1) ? 8'h01 : 8'h00;
 	cfg_memory   = (set_memory == 8'd8) ? 8'hA3 : mem_preset(set_memory[2:0]);
-	cfg_floppy   = {2'b00, set_drives[1:0], set_fspeed[0]};
+	// XXXZFFXS as MiSTer sends it: the drives in bits 3:2 (minimig takes
+	// floppy_config[3:2]; up to v0.10.0 they were in 2:1 here, so Drives 2
+	// was one drive and 3 or 4 were two)
+	cfg_floppy   = {1'b0, set_drives[1:0], 1'b0, set_fspeed[0]};
 	cfg_audmix   = set_stereo[1:0];
-	audio_filter = set_filter[0];
+	audio_filter = set_filter[0] & ~set_stereo[2];
+	pad_ab       = set_ab[1:0];
+	ports        = set_ports[2:0];
 	video_vpos   = set_vpos[4:0];
 	video_fit    = set_fit[0] & ~set_fit[1];
 	video_wide   = set_fit[1];
+	video_narrow = set_fit[2] & ~set_fit[1];
 end
 
 // --------------------------------------------------------------- files
@@ -404,6 +431,10 @@ function automatic [31:0] reg_read(input [15:0] a);
 		16'h1078: reg_read = {24'd0, key_select};
 		16'h107C: reg_read = {24'd0, set_vpos};
 		16'h1080: reg_read = {24'd0, set_fit};
+		16'h1084: reg_read = {24'd0, set_ab};
+		16'h1088: reg_read = {24'd0, set_ports};
+		16'h1020: reg_read = {hmouse2_dy, hmouse2_dx};
+		16'h1024: reg_read = {29'd0, hmouse2_btn};
 		default:  reg_read = 32'd0;
 	endcase
 endfunction
@@ -413,6 +444,8 @@ always @(posedge clk) begin
 	boot_start   <= 1'b0;
 	hmouse_valid <= 1'b0;
 	hwheel_valid <= 1'b0;
+	hmouse2_valid <= 1'b0;
+	hwheel2_valid <= 1'b0;
 	hkey_valid   <= 1'b0;
 	stat_clr     <= 2'b00;
 	hb_we        <= 1'b0;
@@ -464,10 +497,16 @@ always @(posedge clk) begin
 		key_select   <= 8'h45;   // Esc
 		set_vpos     <= 8'd0;
 		set_fit      <= 8'd1;
+		set_ab       <= 8'd0;
+		set_ports    <= 8'd0;
 		hmouse_dx    <= 16'd0;
 		hmouse_dy    <= 16'd0;
 		hmouse_btn   <= 3'd0;
 		hwheel       <= 8'd0;
+		hmouse2_dx   <= 16'd0;
+		hmouse2_dy   <= 16'd0;
+		hmouse2_btn  <= 3'd0;
+		hwheel2      <= 8'd0;
 		prev_df0     <= 8'd0;
 		prev_df1     <= 8'd7;
 		eject_cnt[0] <= 25'd0;
@@ -572,6 +611,16 @@ always @(posedge clk) begin
 								hwheel_valid <= 1'b1;
 								hwheel       <= mem_dataWrite[7:0];
 							end
+							16'h1020: begin
+								hmouse2_valid <= 1'b1;
+								hmouse2_dx    <= mem_dataWrite[15:0];
+								hmouse2_dy    <= mem_dataWrite[31:16];
+							end
+							16'h1024: hmouse2_btn <= mem_dataWrite[2:0];
+							16'h1028: begin
+								hwheel2_valid <= 1'b1;
+								hwheel2       <= mem_dataWrite[7:0];
+							end
 							16'h1038: begin
 								hkey_valid <= 1'b1;
 								hkey_usage <= mem_dataWrite[7:0];
@@ -594,6 +643,8 @@ always @(posedge clk) begin
 							16'h1078: key_select  <= mem_dataWrite[7:0];
 							16'h107C: set_vpos    <= mem_dataWrite[7:0];
 							16'h1080: set_fit     <= mem_dataWrite[7:0];
+							16'h1084: set_ab      <= mem_dataWrite[7:0];
+							16'h1088: set_ports   <= mem_dataWrite[7:0];
 							// the network: 0x50 bit 0 the frame to send was taken,
 							// bit 16 the MCU brings frames (bit 17: write it), bit 18
 							// the board is fitted (bit 19: write it); 0x54 the

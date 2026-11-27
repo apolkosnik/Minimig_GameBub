@@ -201,10 +201,13 @@ wire [11:0] drv_slot;
 wire [31:0] drv_tracks;
 wire        audio_filter;
 wire  [7:0] key_x, key_y, key_start, key_select;
+wire  [1:0] pad_ab;
 wire  [4:0] video_vpos;
 wire        video_fit_set;
 wire        video_wide_set;
 wire        video_wide;
+wire  [6:0] video_wide_dx;
+wire        video_narrow_set, video_narrow;
 wire [15:0] fb_lines, fb_late;
 // the A2065's frames (gb_host <-> gb_a2065)
 wire        net_board, net_up, net_tx_valid, net_tx_taken, net_rx_we, net_rx_commit, net_rx_busy;
@@ -225,6 +228,12 @@ wire [15:0] hmouse_dx, hmouse_dy;
 wire  [2:0] hmouse_btn;
 wire        hwheel_valid;
 wire  [7:0] hwheel;
+wire        hmouse2_valid;
+wire [15:0] hmouse2_dx, hmouse2_dy;
+wire  [2:0] hmouse2_btn;
+wire        hwheel2_valid;
+wire  [7:0] hwheel2;
+wire  [2:0] ports;
 wire        hkey_valid, hkey_down;
 wire  [7:0] hkey_usage;
 wire        f_idle, f_committing;
@@ -293,6 +302,7 @@ gb_host #(
 	.drv_slot         (drv_slot),
 	.drv_tracks       (drv_tracks),
 	.audio_filter     (audio_filter),
+	.pad_ab           (pad_ab),
 	.key_x            (key_x),
 	.key_y            (key_y),
 	.key_start        (key_start),
@@ -300,12 +310,20 @@ gb_host #(
 	.video_vpos       (video_vpos),
 	.video_fit        (video_fit_set),
 	.video_wide       (video_wide_set),
+	.video_narrow     (video_narrow_set),
 	.hmouse_valid     (hmouse_valid),
 	.hmouse_dx        (hmouse_dx),
 	.hmouse_dy        (hmouse_dy),
 	.hmouse_btn       (hmouse_btn),
 	.hwheel_valid     (hwheel_valid),
 	.hwheel           (hwheel),
+	.hmouse2_valid    (hmouse2_valid),
+	.hmouse2_dx       (hmouse2_dx),
+	.hmouse2_dy       (hmouse2_dy),
+	.hmouse2_btn      (hmouse2_btn),
+	.hwheel2_valid    (hwheel2_valid),
+	.hwheel2          (hwheel2),
+	.ports            (ports),
 	.hkey_valid       (hkey_valid),
 	.hkey_usage       (hkey_usage),
 	.hkey_down        (hkey_down),
@@ -1100,8 +1118,11 @@ gb_video video
 	.drop_field (field1),
 	.fit_height (video_fit_set),
 	.wide_set   (video_wide_set),
+	.narrow_set (video_narrow_set),
 	.fit     (video_fit),
 	.wide    (video_wide),
+	.wide_dx (video_wide_dx),
+	.narrow  (video_narrow),
 	.r_in    (red),
 	.g_in    (green),
 	.b_in    (blue),
@@ -1131,6 +1152,8 @@ gb_fb fb
 	.px_vblank       (video_vblank),
 	.fit             (video_fit),
 	.wide            (video_wide),
+	.wide_dx         (video_wide_dx),
+	.narrow          (video_narrow),
 	.wr_frame        (video_frames_write),
 	.wr_drop         (video_frames_drop),
 
@@ -1206,8 +1229,14 @@ gb_input input_map
 	.p1_down    (input_slots_1_buttons_down),
 	.p1_left    (input_slots_1_buttons_left),
 	.p1_right   (input_slots_1_buttons_right),
+	.p1_l       (input_slots_1_buttons_l1),
+	.p1_r       (input_slots_1_buttons_r1),
 	.p1_lx      (input_slots_1_analog_leftX),
 	.p1_ly      (input_slots_1_analog_leftY),
+	.p1_rx      (input_slots_1_analog_rightX),
+	.p1_ry      (input_slots_1_analog_rightY),
+	.ports      (ports),
+	.pad_ab     (pad_ab),
 	.key_x      (key_x),
 	.key_y      (key_y),
 	.key_start  (key_start),
@@ -1218,6 +1247,12 @@ gb_input input_map
 	.hmouse_btn (hmouse_btn),
 	.hwheel_valid(hwheel_valid),
 	.hwheel     (hwheel),
+	.hmouse2_valid(hmouse2_valid),
+	.hmouse2_dx (hmouse2_dx),
+	.hmouse2_dy (hmouse2_dy),
+	.hmouse2_btn(hmouse2_btn),
+	.hwheel2_valid(hwheel2_valid),
+	.hwheel2    (hwheel2),
 	.hkey_valid (hkey_valid),
 	.hkey_usage (hkey_usage),
 	.hkey_down  (hkey_down),

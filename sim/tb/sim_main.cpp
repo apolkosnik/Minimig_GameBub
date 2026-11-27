@@ -36,6 +36,9 @@
 //   --shot-every N       only every Nth frame (default 1)
 //   --press MS:BUTTONS:LEN  press buttons (hex mask, tb_top order) at MS for LEN ms
 //   --mouse MS:DX:DY     a host mouse report at MS
+//   --mouse2 MS:DX:DY    a report of the second host mouse at MS
+//   --stick1r MS:RX:RY:LEN  slot 1's right stick held at RX, RY for LEN ms
+//   --check-mouse2 MS1:MS2:DX:DY[:TOL]  as --check-mouse, port 2's counters (JOY1DAT)
 //   --swap MS:DF0SLOT    change the DF0 setting at MS
 //   --hdf N FILE         hard disk image for drive N (0 master, 1 slave;
 //                        files.json ids 5, 6, on demand)
@@ -69,6 +72,11 @@
 //                        status line the interrupt state and the 256-byte
 //                        blocks it was in most; at the end the addresses it
 //                        was at most from MS on
+//   --wav FILE           record 48 kHz WAV, 6 channels: the core's left and
+//                        right, then Paula's channels 0..3 (sample x volume)
+//   --audio-trace FILE   log the audio, DMACON, INTENA, INTREQ and ADKCON
+//                        register writes (AUDxDAT counted, not logged), each
+//                        channel's state / silence, and a summary every 100 ms
 //   --watch ADDR         a chip RAM word (hex address) shown with every status
 //                        line
 //   --save-ram MS:PREFIX at MS write both SDRAM chips to PREFIX_chip0.bin (chip
@@ -99,6 +107,8 @@
 
 static std::unique_ptr<Vtb_top> top;
 static uint64_t cyc28 = 0;          // clk_28 cycles since start
+static uint64_t g_run_start = ~0ull; // clk_28 cycle of CoreRun (sim_ms_now)
+static double sim_ms_now() { return g_run_start == ~0ull ? 0.0 : (cyc28 - g_run_start) / 28375.0; }
 // --pc-prof: the CPU's PC sampled every clk_sys period
 static bool pc_prof = false;
 struct PcCheck { double ms1, ms2; uint32_t lo, hi; int minp, maxp; uint64_t c1, c2, in, n; bool done; };
@@ -252,6 +262,23 @@ static int64_t audio_abs_l = 0, audio_abs_r = 0;   // sums of |left| and |right|
 static int audio_peak_l = 0, audio_peak_r = 0;     // the largest |left| and |right|
 static uint64_t audio_samples = 0;
 
+// --wav / --audio-trace: audio diagnosis
+static FILE *wav_file = nullptr;          // 6 channels at 48 kHz: left, right, Paula 0..3 (sample x volume)
+static uint32_t wav_frames = 0;
+static double wav_acc = 0.0;
+static FILE *aud_trace = nullptr;
+static void wav_header(FILE *f, uint32_t frames) {
+	const uint16_t ch = 6, bits = 16; const uint32_t rate = 48000;
+	uint32_t data = frames * ch * (bits / 8);
+	std::fseek(f, 0, SEEK_SET);
+	std::fwrite("RIFF", 1, 4, f); uint32_t v = 36 + data; std::fwrite(&v, 4, 1, f);
+	std::fwrite("WAVEfmt ", 1, 8, f); v = 16; std::fwrite(&v, 4, 1, f);
+	uint16_t w = 1; std::fwrite(&w, 2, 1, f); std::fwrite(&ch, 2, 1, f); std::fwrite(&rate, 4, 1, f);
+	v = rate * ch * (bits / 8); std::fwrite(&v, 4, 1, f); w = ch * (bits / 8); std::fwrite(&w, 2, 1, f);
+	std::fwrite(&bits, 2, 1, f); std::fwrite("data", 1, 4, f); std::fwrite(&data, 4, 1, f);
+	std::fseek(f, 0, SEEK_END);
+}
+
 // -------------------------------------------------------------- host side
 struct Req { bool write; uint32_t addr; uint32_t data; uint32_t *rd; };
 static std::deque<Req> hq;
@@ -332,6 +359,63 @@ static void cycle28() {
 	audio_peak_l = std::max(audio_peak_l, std::abs((int)(int16_t)top->audio_left));
 	audio_peak_r = std::max(audio_peak_r, std::abs((int)(int16_t)top->audio_right));
 	audio_samples++;
+
+	if (wav_file || aud_trace) {
+		auto chan_out = [&](int c) {
+			int smp = (int8_t)((top->dbg_aud_sample >> (8 * c)) & 0xFF);
+			int vol = (top->dbg_aud_volume >> (7 * c)) & 0x7F;
+			if (vol > 64) vol = 64;
+			return smp * vol;   // -8192..8128, as Paula's volume stage
+		};
+		if (wav_file) {
+			wav_acc += 1.0;
+			if (wav_acc >= 28385416.0 / 48000.0) {
+				wav_acc -= 28385416.0 / 48000.0;
+				int16_t fr[6] = { (int16_t)top->audio_left, (int16_t)top->audio_right,
+				                  (int16_t)(chan_out(0) * 4), (int16_t)(chan_out(1) * 4),
+				                  (int16_t)(chan_out(2) * 4), (int16_t)(chan_out(3) * 4) };
+				std::fwrite(fr, sizeof fr, 1, wav_file);
+				wav_frames++;
+			}
+		}
+		if (aud_trace) {
+			static uint32_t p_addr = 0x1FF, p_data = 0;
+			static uint32_t p_state = 0xFFFFFFFF, p_sil = 0xFF, p_dma = 0xFF, p_adk = 0xFFFF;
+			static uint64_t dat_wr[4] = {0, 0, 0, 0}, energy[4] = {0, 0, 0, 0}, n_e = 0;
+			static double next_sum = 100.0;
+			double ms = sim_ms_now();
+			if (top->dbg_clk7_en) {
+				uint32_t a = top->dbg_reg_addr << 1, d = top->dbg_reg_data;
+				bool aud = a >= 0x0A0 && a <= 0x0DF;
+				bool ctl = a == 0x096 || a == 0x09A || a == 0x09C || a == 0x09E;
+				if ((aud || ctl) && (a != p_addr || d != p_data)) {
+					if (aud && (a & 0xF) == 0xA) dat_wr[(a - 0x0A0) >> 4]++;
+					else std::fprintf(aud_trace, "%10.4f ms  W %03X = %04X\n", ms, a, d);
+				}
+				p_addr = a; p_data = d;
+			}
+			uint32_t st = top->dbg_aud_state, sil = top->dbg_aud_silence, dma = top->dbg_aud_dmaena, adk = top->dbg_adkcon;
+			if (st != p_state || sil != p_sil || dma != p_dma || adk != p_adk) {
+				std::fprintf(aud_trace, "%10.4f ms  S dma %X  state %o %o %o %o  silence %X  adkcon %04X\n", ms, dma,
+				             st & 7, (st >> 3) & 7, (st >> 6) & 7, (st >> 9) & 7, sil, adk);
+				p_state = st; p_sil = sil; p_dma = dma; p_adk = adk;
+			}
+			for (int c = 0; c < 4; c++) energy[c] += std::abs(chan_out(c));
+			n_e++;
+			if (ms >= next_sum) {
+				std::fprintf(aud_trace, "%10.4f ms  SUM", ms);
+				for (int c = 0; c < 4; c++) {
+					std::fprintf(aud_trace, "  ch%d mean|out| %6.1f dat %6llu", c, n_e ? double(energy[c]) / n_e : 0.0,
+					             (unsigned long long)dat_wr[c]);
+					energy[c] = 0; dat_wr[c] = 0;
+				}
+				std::fprintf(aud_trace, "  L %d R %d\n", (int16_t)top->audio_left, (int16_t)top->audio_right);
+				n_e = 0;
+				next_sum += 100.0;
+				std::fflush(aud_trace);
+			}
+		}
+	}
 
 	{
 		// CPU cycles on the chip bus (cpu_wrapper's c_as falling) and the
@@ -1114,9 +1198,9 @@ int main(int argc, char **argv) {
 	int rtg_modes_expected = 0;
 	struct Press { double ms; uint32_t mask; double len; };
 	std::vector<Press> presses, presses2;   // slot 0, slot 1
-	struct Stick { double ms; int v[6]; double len; };
+	struct Stick { double ms; int v[8]; double len; };
 	std::vector<Stick> sticks;
-	struct Mouse { double ms; int dx, dy; };
+	struct Mouse { double ms; int dx, dy; int second; };
 	std::vector<Mouse> mice;
 	struct Swap { double ms; uint32_t slot; };
 	std::vector<Swap> swaps;
@@ -1126,7 +1210,7 @@ int main(int argc, char **argv) {
 	struct CheckRate { double ms1, ms2; uint32_t addr; int lo, hi; uint32_t before; int stage; };
 	std::vector<CheckRate> rchecks;
 	int expect_peak_l = -1, expect_peak_r = -1;   // --expect-audio-peak
-	struct CheckMouse { double ms1, ms2; int dx, dy, tol; uint32_t before; int stage; };
+	struct CheckMouse { double ms1, ms2; int dx, dy, tol; uint32_t before; int stage; int second; };
 	std::vector<CheckMouse> mchecks;
 	struct HWrite { double ms; uint32_t addr, value; bool done; };
 	std::vector<HWrite> hwrites;
@@ -1150,6 +1234,7 @@ int main(int argc, char **argv) {
 	int vidtest_data_x = 40;
 	int vidtest_wide_dx = 59;   // wide: the picture's columns from the 720 one's
 	bool floppy_write_test = false;
+	int floppy_write_slot = 0;   // the image slot the written track must be in
 	bool ide_test = false;
 	double coltest_ms = -1;       // when to check the still picture of sim/asm/coltest.s
 	bool coltest_done = false, coltest_end = false;
@@ -1175,12 +1260,13 @@ int main(int argc, char **argv) {
 		else if (a == "--stick") { Stick t{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d:%d:%d:%d:%d:%lf", &t.ms, &t.v[0], &t.v[1], &t.v[2], &t.v[3], &t.v[4], &t.v[5], &t.len); sticks.push_back(t); }
 		else if (a == "--slot1") slot1 = true;
 		else if (a == "--press") { Press p; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%lf", &p.ms, &p.mask, &p.len); presses.push_back(p); }
-		else if (a == "--mouse") { Mouse m; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d", &m.ms, &m.dx, &m.dy); mice.push_back(m); }
+		else if (a == "--mouse" || a == "--mouse2") { Mouse m{}; m.second = a == "--mouse2"; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d", &m.ms, &m.dx, &m.dy); mice.push_back(m); }
+		else if (a == "--stick1r") { Stick t{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%d:%d:%lf", &t.ms, &t.v[6], &t.v[7], &t.len); sticks.push_back(t); }
 		else if (a == "--swap") { Swap s; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &s.ms, &s.slot); swaps.push_back(s); }
 		else if (a == "--check-word") { CheckWord c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x:%x", &c.ms, &c.addr, &c.mask, &c.value); checks.push_back(c); }
 		else if (a == "--check-rate") { CheckRate c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%x:%d:%d", &c.ms1, &c.ms2, &c.addr, &c.lo, &c.hi); rchecks.push_back(c); }
 		else if (a == "--expect-audio-peak") { std::string v = next(); std::sscanf(v.c_str(), "%d:%d", &expect_peak_l, &expect_peak_r); }
-		else if (a == "--check-mouse") { CheckMouse c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy, &c.tol); mchecks.push_back(c); }
+		else if (a == "--check-mouse" || a == "--check-mouse2") { CheckMouse c{}; c.second = a == "--check-mouse2"; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%d:%d:%d", &c.ms1, &c.ms2, &c.dx, &c.dy, &c.tol); mchecks.push_back(c); }
 		else if (a == "--hwrite") { HWrite h{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%x:%x", &h.ms, &h.addr, &h.value); hwrites.push_back(h); }
 		else if (a == "--focus") { Focus f{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%u", &f.ms, &f.value); focuses.push_back(f); }
 		else if (a == "--check-pc") { PcCheck c{}; std::string v = next(); std::sscanf(v.c_str(), "%lf:%lf:%x:%x:%d:%d", &c.ms1, &c.ms2, &c.lo, &c.hi, &c.minp, &c.maxp); c.c1 = c.c2 = ~0ull; pc_checks.push_back(c); }
@@ -1214,12 +1300,15 @@ int main(int argc, char **argv) {
 		else if (a == "--vidtest-data-x") vidtest_data_x = std::atoi(next().c_str());
 		else if (a == "--vidtest-wide-dx") vidtest_wide_dx = std::atoi(next().c_str());
 		else if (a == "--floppy-write-test") floppy_write_test = true;
+		else if (a == "--floppy-write-slot") floppy_write_slot = std::atoi(next().c_str()) & 3;
 		else if (a == "--expect-audio-ratio") expect_lr = std::atof(next().c_str());
 		else if (a == "--random-ram") random_ram = std::stoul(next());
 		else if (a == "--dump1") { std::string v = next(); auto e = v.find(':'); dumps1.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--dump") { std::string v = next(); auto e = v.find(':'); dumps.push_back({uint32_t(std::stoul(v.substr(0, e), nullptr, 16)), uint32_t(std::stoul(v.substr(e + 1)))}); }
 		else if (a == "--pc-prof") { pc_prof = true; pc_prof_ms = std::atof(next().c_str()); }
 		else if (a == "--watch") watches.push_back(uint32_t(std::stoul(next(), nullptr, 16)));
+		else if (a == "--wav") { wav_file = std::fopen(next().c_str(), "wb"); if (wav_file) wav_header(wav_file, 0); }
+		else if (a == "--audio-trace") aud_trace = std::fopen(next().c_str(), "w");
 		else if (a == "--save-ram") { std::string v = next(); auto e = v.find(':'); saverams.push_back({std::atof(v.substr(0, e).c_str()), v.substr(e + 1), false}); }
 		else if (a == "--trace-cpu") cpu_trace = std::fopen(next().c_str(), "w");
 		else if (a == "--trace-from") trace_from = uint64_t(std::atof(next().c_str()) * 28375.0);
@@ -1343,6 +1432,7 @@ int main(int argc, char **argv) {
 
 	// run
 	uint64_t run_start = cyc28;
+	g_run_start = run_start;
 	if (pc_prof && pc_prof_ms >= 0) pc_from = run_start + uint64_t(pc_prof_ms * 28375.0);
 	uint64_t run_end = run_start + uint64_t(run_ms * 28375.0);
 	for (auto &c : pc_checks) { c.c1 = run_start + uint64_t(c.ms1 * 28375.0); c.c2 = run_start + uint64_t(c.ms2 * 28375.0); }
@@ -1360,10 +1450,10 @@ int main(int argc, char **argv) {
 		top->slot1_active = slot1;
 		uint64_t st = 0;
 		for (auto &t : sticks) if (ms >= t.ms && ms < t.ms + t.len)
-			for (int k = 0; k < 6; k++) st |= uint64_t(uint8_t(int8_t(t.v[k]))) << (8 * k);
+			for (int k = 0; k < 8; k++) st |= uint64_t(uint8_t(int8_t(t.v[k]))) << (8 * k);
 		top->sticks = st;
 		for (auto &m : mice) if (m.ms >= 0 && ms >= m.ms) {
-			hwrite(0x1030, (uint32_t(uint16_t(m.dy)) << 16) | uint16_t(m.dx));
+			hwrite(m.second ? 0x1020 : 0x1030, (uint32_t(uint16_t(m.dy)) << 16) | uint16_t(m.dx));
 			m.ms = -1;
 		}
 		for (auto &s : swaps) if (s.ms >= 0 && ms >= s.ms) {
@@ -1449,13 +1539,14 @@ int main(int argc, char **argv) {
 			}
 		}
 		for (auto &c : mchecks) {
-			if (c.stage == 0 && ms >= c.ms1) { c.before = sdram_peek16(0x102 >> 1); c.stage = 1; }
+			const uint32_t maddr = c.second ? 0x100 : 0x102;
+			if (c.stage == 0 && ms >= c.ms1) { c.before = sdram_peek16(maddr >> 1); c.stage = 1; }
 			if (c.stage == 1 && ms >= c.ms2) {
-				uint32_t after = sdram_peek16(0x102 >> 1);
+				uint32_t after = sdram_peek16(maddr >> 1);
 				int dx = int8_t(uint8_t(after) - uint8_t(c.before));
 				int dy = int8_t(uint8_t(after >> 8) - uint8_t(c.before >> 8));
-				if (std::abs(dx - c.dx) > c.tol || std::abs(dy - c.dy) > c.tol) FAIL("mouse counters moved by %d, %d; expected %d, %d (JOY0DAT %04X -> %04X)", dx, dy, c.dx, c.dy, c.before, after);
-				else std::printf("%.0f ms: mouse counters moved by %d, %d as expected (%d, %d +- %d)\n", ms, dx, dy, c.dx, c.dy, c.tol);
+				if (std::abs(dx - c.dx) > c.tol || std::abs(dy - c.dy) > c.tol) FAIL("port %d mouse counters moved by %d, %d; expected %d, %d (%04X -> %04X)", c.second + 1, dx, dy, c.dx, c.dy, c.before, after);
+				else std::printf("%.0f ms: port %d mouse counters moved by %d, %d as expected (%d, %d +- %d)\n", ms, c.second + 1, dx, dy, c.dx, c.dy, c.tol);
 				c.stage = 2;
 			}
 		}
@@ -1566,6 +1657,8 @@ int main(int argc, char **argv) {
 			else std::printf("coltest: %u steps of new colours, every frame's pixels checked\n", f);
 		}
 	}
+	if (wav_file) { wav_header(wav_file, wav_frames); std::fclose(wav_file); wav_file = nullptr; }
+	if (aud_trace) { std::fclose(aud_trace); aud_trace = nullptr; }
 	std::printf("audio: mean |sample| %.1f (left %.1f, right %.1f)\n",
 	            audio_samples ? double(audio_abs_sum) / audio_samples / 2 : 0.0,
 	            audio_samples ? double(audio_abs_l) / audio_samples : 0.0,
@@ -1723,6 +1816,14 @@ int main(int argc, char **argv) {
 	std::printf("chip bus: %llu CPU cycles, 32-bit: %llu reads, %llu writes\n",
 	            (unsigned long long)chip_cycles, (unsigned long long)chip_long_rd,
 	            (unsigned long long)chip_long_wr);
+	// (tb_top's checker: every cycle the CPU ended must have been taken)
+	std::printf("chip bus checker: %u writes, %u reads ended; not taken by the chipset: %u writes, %u reads\n",
+	            unsigned(top->dbg_bus_wr), unsigned(top->dbg_bus_rd), unsigned(top->dbg_bus_lost_wr), unsigned(top->dbg_bus_lost_rd));
+	std::printf("chip bus checker: %u strobes with no CPU cycle open, %u cycles strobed twice\n", unsigned(top->dbg_bus_stray), unsigned(top->dbg_bus_twice));
+	if (top->dbg_bus_stray || top->dbg_bus_twice)
+		FAIL("the chipset strobed %u times with no CPU cycle open and %u cycles twice", unsigned(top->dbg_bus_stray), unsigned(top->dbg_bus_twice));
+	if (top->dbg_bus_lost_wr || top->dbg_bus_lost_rd)
+		FAIL("%u CPU writes and %u reads on the chip bus were not taken by the chipset", unsigned(top->dbg_bus_lost_wr), unsigned(top->dbg_bus_lost_rd));
 	if (runc == 0) FAIL("run statistics counter did not count");
 
 	if (expect_sectors >= 0 && long(sec_rd) < expect_sectors) FAIL("%u sectors read, expected at least %ld", sec_rd, expect_sectors);
@@ -1737,11 +1838,11 @@ int main(int argc, char **argv) {
 			FAIL("audio peaks %d / %d, expected %d / %d", audio_peak_l, audio_peak_r, expect_peak_l, expect_peak_r);
 	}
 
-	// sim/asm/wrtest.s: track 0 of the image in slot 0 holds the sectors
+	// sim/asm/wrtest.s: track 0 of the image in slot 0 (or --floppy-write-slot) holds the sectors
 	if (floppy_write_test) {
 		int bad = 0;
 		for (int sec = 0; sec < 11; sec++) for (int i = 0; i < 512; i += 2) {
-			uint32_t w = sdram_peek16(0x800000u + uint32_t(sec * 256 + i / 2));
+			uint32_t w = sdram_peek16(0x800000u + uint32_t(floppy_write_slot) * 0x80000u + uint32_t(sec * 256 + i / 2));
 			uint32_t e = uint32_t(wtest_byte(sec, i)) << 8 | wtest_byte(sec, i + 1);
 			if (w != e && bad++ < 5) FAIL("written sector %d byte %d: %04X, expected %04X", sec, i, w, e);
 		}
@@ -1774,20 +1875,35 @@ int main(int argc, char **argv) {
 		if (bool(top->video_wide) != wide) FAIL("the core's wide output is %d, expected %d", int(top->video_wide), int(wide));
 		if (VW != (wide ? 800 : 720)) FAIL("the frames are %d pixels wide, expected %d", VW, wide ? 800 : 720);
 		const int dx = wide ? vidtest_wide_dx : 0;
+		// what the core says of it (gb_fb places the frame on the panel by
+		// this, where the 720 one would be) must be where the picture is
+		if (wide && int(top->video_wide_dx) != dx) FAIL("the core's wide_dx is %d, the picture is %d to the right", int(top->video_wide_dx), dx);
 		const int left = vidtest_data_x + dx;
 		// NTSC (0x1050 = 1): 240 lines from the window's top line whatever
 		// the two settings say; the frame ends some 220 lines below it, and
 		// the rest of the 240 are the next frame's first lines: black
 		bool ntsc = false;
 		for (auto &e : extra_settings) if (e.first == 0x1050) ntsc = e.second & 1;
+		// Picture's bit 4: NTSC too (the menu's PAL / NTSC choices); its bit
+		// 2 the 640 pixel picture: the frame's columns 40 .. 679, black
+		// beside them, and in NTSC the screen's 200 lines at the frame's
+		// lines 20 .. 219, black above and below
+		bool narrow = false;
+		for (auto &e : extra_settings) if (e.first == 0x1080) { if (e.second & 0x10) ntsc = true; narrow = !wide && (e.second & 4); }
+		const int shift = (ntsc && narrow) ? 20 : 0;
 		if (ntsc) { fit = 0; vpos = 0; }
 		if (bool(top->video_fit) != bool(fit)) FAIL("the core's fit output is %d, expected %d", int(top->video_fit), fit);
 		if (fit) vpos = 0;
 		const int lines = fit ? 256 : 240;
 		int bad = 0;
 		for (int y = 0; y < lines; y++) for (int x = 0; x < VW; x++) {
-			int line = y + vpos;
-			if (ntsc && y >= 216) {
+			if (narrow && (x < 40 || x >= 680 || (ntsc && (y < 20 || y >= 220)))) {
+				if (fb[y * VW + x] != 0 && bad++ < 5)
+					FAIL("vidtest pixel (%d,%d) is %06X, expected black outside the 640 pixel picture", x, y, fb[y * VW + x]);
+				continue;
+			}
+			int line = y - shift + vpos;
+			if (ntsc && y - shift >= 216) {
 				if (y >= 226 && fb[y * VW + x] != 0 && bad++ < 5)
 					FAIL("vidtest pixel (%d,%d) is %06X, expected black below the NTSC frame's end", x, y, fb[y * VW + x]);
 				continue;

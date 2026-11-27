@@ -57,14 +57,25 @@
 //     picture, av_x (0..719), of 256 pixels, a column every 25 us; the row
 //     av_y (0..479) shows line y / 2, or with `fit` line y * 256 / 480.
 //     The framework names column x of the panel as av_x = x - PANEL_X0 (a
-//     720 wide picture's place, in 10 bits); the wide picture takes the
-//     panel's column x, av_x + PANEL_X0, all 800 of them, 240 pixels each;
+//     720 wide picture's place, in 10 bits); the wide picture's column
+//     wx + x is the panel's column x, av_x + PANEL_X0, 240 pixels each,
+//     with wx = wide_dx - PANEL_X0 (0 at the least; wide_dx: gb_video,
+//     the wide frame's column that is the 720 one's column 0, kept with
+//     each frame): a screen is on the same columns of the panel with
+//     either picture (a standard screen's 640 pixels, at the wide
+//     picture's 99 .. 738, wide_dx 59, wx 47: at the panel's 52 .. 691,
+//     as the 720 picture's 40 .. 679 are; the Game Bub's glass shows the
+//     panel's columns 0 .. about 730, as measured with a ruler); the
+//     picture's first wx columns, border, are not shown, its last ones
+//     are followed by black;
 //     each frame is shown as it was written (its own `wide`, kept with it:
 //     a frame written before the setting changed is not read as the other
 //     size);
 //   - HDMI: a scan line is a line of the picture, shown on two or three
 //     lines of the 720 (line y / 3, or with `fit` y * 256 / 720); column x
-//     of the 1280 shows pixel x * 9 / 16 (wide: x * 5 / 8).
+//     of the 1280 shows pixel x * 9 / 16 (wide: wide_dx + x * 9 / 16, the
+//     same 720 columns, so the screen is in the middle as the 720
+//     picture has it; narrow: 40 + x / 2, the 640 pixels twice each).
 // As the framework's own frame buffers were shown (patches/framework 0001,
 // 0004). At av_sync (a frame of the screen begins) the frame to show is
 // taken and its first four scan lines are fetched; a line is fetched once
@@ -90,6 +101,8 @@ module gb_fb
 	input             px_vblank,
 	input             fit,           // all 256 lines over the screen's height (changes between frames)
 	input             wide,          // 800 x 240 (changes between frames)
+	input       [6:0] wide_dx,       // wide: the frame's column that is the 720 one's column 0 (changes between frames)
+	input             narrow,        // 640 pixels at the frame's 40 .. 679: HDMI shows these, twice each (changes between frames)
 	input             wr_frame,      // the framework: the frame these pixels belong to
 	input             wr_drop,       // and whether they are thrown away
 
@@ -132,6 +145,9 @@ reg        w_tgl = 1'b0;         // flips with every pixel handed over
 reg [18:0] w_q = 19'd0;
 reg [17:0] w_d = 18'd0;
 reg  [1:0] f_wide = 2'b00;       // each frame's size as it was written
+reg  [6:0] f_wx0 = 7'd0;         // and, wide, its column that is the 720 one's column 0
+reg  [6:0] f_wx1 = 7'd0;
+reg  [1:0] f_narrow = 2'b00;     // and whether it is the 640 pixel one
 // a line holds its first 720 (800) pixels and a frame its first 256 (240)
 // lines: what comes beyond them (the Amiga's sync gone astray: a line that
 // does not end) is not kept
@@ -158,6 +174,8 @@ always @(posedge clk_sys) begin
 		w_d   <= px_data;
 		w_tgl <= ~w_tgl;
 		f_wide[wr_frame] <= wide;
+		if (wr_frame) f_wx1 <= wide_dx; else f_wx0 <= wide_dx;
+		f_narrow[wr_frame] <= narrow;
 	end
 end
 
@@ -442,10 +460,11 @@ always @(posedge clk_114) begin
 			g_hdmi    <= q_hdmi;
 			g_frame   <= q_frame;
 			g_wide    <= q_wide;
-			g_need    <= 10'd0;
-			g_line    <= 10'd0;
+			// (the wide picture on the panel: from its column wx)
+			g_need    <= q_need;
+			g_line    <= q_need;
 			g_k       <= 10'd0;
-			g_a       <= 19'd0;
+			g_a       <= {9'd0, q_need};
 			g_rowbase <= 19'd0;
 			g_setup   <= 1'b0;
 		end
@@ -481,6 +500,13 @@ end
 (* ASYNC_REG = "TRUE" *) reg [1:0] fit_s = 2'b00;
 (* ASYNC_REG = "TRUE" *) reg [1:0] wide0_s = 2'b00;   // f_wide, frame 0
 (* ASYNC_REG = "TRUE" *) reg [1:0] wide1_s = 2'b00;   // and frame 1
+(* ASYNC_REG = "TRUE" *) reg [6:0] wx0_m = 7'd0, wx0_s = 7'd0;   // f_wx0 (steady long before the frame is shown)
+(* ASYNC_REG = "TRUE" *) reg [6:0] wx1_m = 7'd0, wx1_s = 7'd0;   // f_wx1
+(* ASYNC_REG = "TRUE" *) reg [1:0] narrow0_s = 2'b00;   // f_narrow, frame 0
+(* ASYNC_REG = "TRUE" *) reg [1:0] narrow1_s = 2'b00;   // and frame 1
+reg  [6:0] a_wx = 7'd0;          // the frame shown: its column at the panel's column 0
+reg  [6:0] a_dx = 7'd0;          // and its column that is the 720 one's column 0
+reg        a_narrow = 1'b0;
 reg [10:0] x1 = 11'd0;
 reg  [9:0] y1 = 10'd0;
 reg        sync_d = 1'b0;
@@ -496,8 +522,13 @@ reg  [9:0] s_line = 10'd0;
 reg        s_ok = 1'b0;
 reg        s_ok1 = 1'b0;
 
-// the panel: the picture's column (the wide one's from the panel's first)
-wire [9:0] pcol      = a_wide ? x1[9:0] + 10'(PANEL_X0) : x1[9:0];
+// the panel: the picture's column (the wide one's: a_wx from the panel's
+// first)
+wire [9:0] pcol      = a_wide ? x1[9:0] + 10'(PANEL_X0) + {3'd0, a_wx} : x1[9:0];
+// a frame's first scan line
+wire [6:0] sel_dx    = av_frame ? wx1_s : wx0_s;
+wire [6:0] sel_wx    = (sel_dx > 7'(PANEL_X0)) ? sel_dx - 7'(PANEL_X0) : 7'd0;
+wire [9:0] first_av  = (!av_hdmi && (av_frame ? wide1_s[1] : wide0_s[1])) ? {3'd0, sel_wx} : 10'd0;
 wire       pcol_ok   = a_wide ? (pcol < WW[9:0]) : (x1 < W);
 wire       adv_panel = !a_hdmi && pcol_ok && (pcol == need + 10'd1);
 wire       adv_hdmi  = a_hdmi && s_ok && (s_line == need + 10'd1);
@@ -509,6 +540,12 @@ always @(posedge clk_av) begin
 	fit_s  <= {fit_s[0], fit};
 	wide0_s <= {wide0_s[0], f_wide[0]};
 	wide1_s <= {wide1_s[0], f_wide[1]};
+	narrow0_s <= {narrow0_s[0], f_narrow[0]};
+	narrow1_s <= {narrow1_s[0], f_narrow[1]};
+	wx0_m  <= f_wx0;
+	wx0_s  <= wx0_m;
+	wx1_m  <= f_wx1;
+	wx1_s  <= wx1_m;
 	q_go   <= 1'b0;
 	if (q_go) q_tgl <= ~q_tgl;
 
@@ -523,14 +560,17 @@ always @(posedge clk_av) begin
 		a_hdmi  <= av_hdmi;
 		a_fit   <= fit_s[1];
 		a_wide  <= av_frame ? wide1_s[1] : wide0_s[1];
-		need    <= 10'd0;
+		a_wx    <= sel_wx;
+		a_dx    <= sel_dx;
+		a_narrow <= av_frame ? narrow1_s[1] : narrow0_s[1];
+		need    <= first_av;
 		s_ok    <= 1'b0;
 		s_ok1   <= 1'b0;
 		q_new   <= 1'b1;
 		q_hdmi  <= av_hdmi;
 		q_frame <= av_frame;
 		q_wide  <= av_frame ? wide1_s[1] : wide0_s[1];
-		q_need  <= 10'd0;
+		q_need  <= first_av;
 		q_go    <= 1'b1;
 	end
 	else if (!q_go && (adv_panel || adv_hdmi)) begin
@@ -545,7 +585,12 @@ end
 // y * 256 / 480 = (y * 34953) >> 16, exact for every row of the 480
 wire [24:0] row_fit = y1[8:0] * 16'd34953;
 wire [14:0] col_fit = x1 * 4'd9;            // x * 9 / 16
-wire [13:0] col_w   = x1 * 3'd5;            // wide: x * 5 / 8
+// wide: the 720 columns the 720 picture would have, from the frame's a_dx
+// (the screen in HDMI's middle, as with the 720 picture; the frame's other
+// 80 columns are the panel's); the 640 pixel picture: its 640, from the
+// frame's 40, twice each
+wire  [9:0] col_w   = col_fit[13:4] + {3'd0, a_dx};
+wire  [9:0] col_n   = x1[10:1] + 10'd40;
 reg  [11:0] p2_a;
 reg         p2_in;
 reg  [17:0] p3_q, p4_q;
@@ -554,7 +599,7 @@ reg  [23:0] p_c [5:11];
 
 always @(posedge clk_av) begin
 	if (a_hdmi) begin
-		p2_a  <= {s_line[1:0], a_wide ? col_w[12:3] : col_fit[13:4]};
+		p2_a  <= {s_line[1:0], a_wide ? col_w : a_narrow ? col_n : col_fit[13:4]};
 		p2_in <= s_ok && (x1 < 11'd1280);
 	end
 	else begin

@@ -101,3 +101,4 @@ Change `patches/minimig/*.patch` and re-run the import instead.
 - `0014-toccata-sound-card.patch`
 - `0015-toccata-volume-table-as-constants.patch`
 - `0016-toccata-autocalibration-at-every-mode-change.patch`
+- `0017-userio-joystick-line-changes-counted-once.patch`

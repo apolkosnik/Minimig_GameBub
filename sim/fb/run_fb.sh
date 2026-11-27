@@ -15,7 +15,7 @@ verilator --binary --timing -j ${JOBS:-16} -Wno-fatal -Wno-WIDTH -Wno-CASEINCOMP
 	../rtl/xilinx_sim.sv ../rtl/sram_sim.sv ../rtl/fw_video_sim.sv ${FB:-$R/rtl/gamebub/gb_fb.sv} \
 	tb_fb.sv > $OBJ.log 2>&1 || { tail -30 $OBJ.log; exit 1; }
 rc=0
-for args in ${RUNS:-"+seed=1" "+seed=2+nofit" "+seed=3+hdmi" "+seed=4+hdmi+nofit" "+seed=5" "+seed=6+hdmi" "+seed=7+ntsc" "+seed=8+ntsc" "+seed=9+ntsc+hdmi" "+seed=10+wide" "+seed=11+wide" "+seed=12+wide+hdmi" "+seed=13+wide+ntsc" "+seed=14+wideswitch" "+seed=15+wideswitch+hdmi"}; do
+for args in ${RUNS:-"+seed=1" "+seed=2+nofit" "+seed=3+hdmi" "+seed=4+hdmi+nofit" "+seed=5" "+seed=6+hdmi" "+seed=7+ntsc" "+seed=8+ntsc" "+seed=9+ntsc+hdmi" "+seed=10+wide" "+seed=11+wide" "+seed=12+wide+hdmi" "+seed=13+wide+ntsc" "+seed=14+wideswitch" "+seed=15+wideswitch+hdmi" "+seed=16+narrow" "+seed=17+narrow+hdmi" "+seed=18+narrow+ntsc+hdmi"}; do
 	out=$($OBJ/Vtb_fb $(echo $args | tr '+' ' ' | sed 's/ / +/g') +frames=${FRAMES:-14} 2>&1)
 	echo "== $args"
 	echo "$out" | grep -E "^(frames|SRAM|FAIL|TEST|\[sram\]|\[video\])" | head -24

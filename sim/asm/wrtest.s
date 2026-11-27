@@ -9,6 +9,12 @@
 ; SPDX-License-Identifier: GPL-3.0-or-later
 
 TRACKBUF	equ	$30000
+; the drive: DF0, or with -DDF1 the second drive (wrtest_df1.rom)
+	ifd	DF1
+SELECT		equ	$6F
+	else
+SELECT		equ	$77
+	endc
 TRACKWORDS	equ	6000
 
 	org	$FC0000
@@ -29,15 +35,15 @@ start:
 	move.b	#$FF,$BFD300		; DDRB all out
 	move.b	#$FF,(a0)		; nothing selected
 	move.b	#$7F,(a0)		; /MTR low
-	move.b	#$77,(a0)		; select DF0: motor on (latched)
+	move.b	#SELECT,(a0)		; select the drive: motor on (latched)
 	bsr	delay
 
 	; seek to track 0 (DIR = 1: outwards), lower head (/SIDE = 1)
 	moveq	#100,d2
 .seek:	btst	#4,$BFE001		; /TK0
 	beq.s	.at0
-	move.b	#$76,(a0)		; /STEP low, DIR 1 (bit 1), /SIDE 1
-	move.b	#$77,(a0)		; /STEP high
+	move.b	#SELECT-1,(a0)		; /STEP low, DIR 1 (bit 1), /SIDE 1
+	move.b	#SELECT,(a0)		; /STEP high
 	bsr	delay
 	dbra	d2,.seek
 	bra	fail

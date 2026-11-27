@@ -36,19 +36,34 @@ which suits Kickstart 1.3 and most games. For Kickstart 3.x choose AGA, 68EC020 
 | Game Bub (or the first dock controller) | Amiga |
 |---|---|
 | D-pad, left stick | joystick in port 2 |
-| A / B | fire / second fire button |
+| A / B | fire / second fire button, or as the *A / B buttons* setting puts them (fire / up, up / fire, second fire / fire) |
 | right stick | moves the mouse in port 1 |
 | L (held) | D-pad moves the mouse in port 1, A and B are its left and right buttons |
 | R | left mouse button (to drag while L is held) |
-| X, Y, Start, Select | keys chosen in the settings (default Space, Return, F1, Esc) |
-| second dock controller: D-pad, left stick, A, B | joystick in port 1 (two player games) |
+| X, Y, Start, Select | keys chosen in the settings (default Space, Return, F1, Esc); X and Y can also be the joystick's fire, second fire or up |
+| second dock controller: D-pad, left stick, A, B | joystick in port 1 (two player games; A and B as the *A / B buttons* setting puts them) |
+| second dock controller: right stick, L + D-pad, R | the mouse in port 2, as the first controller's is the mouse in port 1 |
 | USB or Bluetooth mouse on the dock | the mouse in port 1 (needs the firmware forks, see below) |
+| second USB or Bluetooth mouse on the dock | the mouse in port 2 (needs the handheld firmware fork's branch `minimig-mouse2`, see below) |
 | USB keyboard on the dock | the Amiga's keyboard (needs the firmware forks, see below) |
 
-Port 1 holds the mouse or the second joystick: as on MiSTer, pressing the second
-controller's fire button switches it to the joystick, a left mouse click back to the
-mouse. Dock controllers need the dock beta firmware that goes with framework
-v1.1.0-beta5.
+So there are two players, each with a joystick and a mouse: the first has the joystick
+in port 2 and the mouse in port 1, the second the joystick in port 1 and the mouse in
+port 2 (a game with a mouse for each of two players, as Lemmings has, takes them
+there). Each port is whichever of its two devices was used last. Port 1 is the mouse
+or the second player's joystick: as on MiSTer, pressing that joystick's fire button
+switches it to the joystick, a left mouse click back to the mouse. Port 2 is the first
+player's joystick while any of its directions or buttons is held, and the second
+player's mouse from when that is moved or clicked (a dock mouse, or the controller's
+L + D-pad, R, or right stick pushed more than half way) until the joystick is used
+again. As a mouse, port 2 has the left and right buttons and no wheel.
+
+The **Ports** setting says whose the devices are: *Normal* as above, *Mice swapped*
+(the first dock mouse is the second player's, the second the first's), *Pads swapped*
+(the handheld or first controller is the second player's, the second controller the
+first's), *Both swapped*, and *Mice as one* (both dock mice are the first player's
+mouse, as up to v0.10.0; also with the pads swapped). It applies at once. Dock
+controllers need the dock beta firmware that goes with framework v1.1.0-beta5.
 
 ### Keyboard and mouse on the dock
 
@@ -65,7 +80,11 @@ keyboard and a USB or Bluetooth mouse on the dock are the Amiga's:
   code. The Windows keys are the Amiga keys, Insert and F12 are Help, Caps Lock toggles
   as on an Amiga keyboard. Ctrl + Amiga + Amiga resets the Amiga as usual;
 * the mouse's movement and buttons are written to 0x1030 / 0x1034, its wheel's clicks
-  to 0x103C. The wheel is the one of MiSTer's Minimig: the Amiga reads the sum of the
+  to 0x103C; a second mouse's to 0x1020 / 0x1024 and 0x1028, by the handheld firmware
+  fork's branch [`minimig-mouse2`](https://github.com/apolkosnik/gamebub/tree/minimig-mouse2)
+  (commit `bbead72d` or later; `falcon-input-mouse2` is the same on the branch with
+  the Falcon core's input). An older one drops the second mouse's reports; the dock
+  firmware is the same for both. The wheel is the one of MiSTer's Minimig: the Amiga reads the sum of the
   clicks in the low byte of `$DFF1F0`, so it needs a wheel driver made for MiSTer or
   the Minimig (AmigaOS has none of its own).
 
@@ -83,20 +102,21 @@ mouse.
 
 | Setting | |
 |---|---|
-| Reset (apply) | restarts the Amiga with the chipset, CPU, memory and video settings below |
+| Reset (apply) | restarts the Amiga with the chipset, CPU and memory settings below, and with PAL or NTSC as *Picture* has it |
 | Chipset | OCS (A500), ECS (A600), AGA (A1200) |
 | CPU | 68000, 68010, 68EC020, 68020, 68030 |
 | Memory | 512K, 512K + 512K slow, 1M chip, 2M chip, 2M chip + 2/4/8 MB fast (Zorro II), 2M chip + 32 MB fast (Zorro III: a 68020 or 68030) |
-| Video | PAL, NTSC |
 | DF0, DF1 | which loaded disk is in the drive, or Empty. Changing it takes the disk out for half a second, so the Amiga sees the change: this is how multi-disk games are played |
-| Drives | number of floppy drives (DF2 and DF3 hold Disks 3 and 4) |
+| Drives | number of floppy drives (DF2 and DF3 hold Disks 3 and 4). Up to v0.10.0 the number reached the Amiga a bit off: 2 was one drive, 3 and 4 were two |
 | Floppy speed | Normal or Turbo |
-| Audio filter | the Amiga 500's fixed 4.4 kHz output filter |
-| Stereo mix | how much of each channel goes into the other (None, 12 %, 25 %, Mono) |
-| X / Y / Start / Select key | Space, Return, Esc, F1, F2, Help, Del or P |
-| Picture | 256 or 240 PAL lines (see *Limitations*). 256 lines: all of them fitted to the screen, slightly uneven; 240: the top ones, each exactly two rows |
+| Audio | how much of each channel goes into the other (Stereo, 12 %, 25 %, Mono), each with or without the Amiga 500's fixed 4.4 kHz output filter |
+| A / B buttons | Fire / Fire 2 (default), Fire / Up, Up / Fire, Fire 2 / Fire: Up is the joystick's up, for games that jump with it |
+| X / Y button | Space, Return, Esc, F1 or Help, or Fire, Fire 2 or Up (the joystick in port 2: no key is sent) |
+| Start, Select | Space, Return, Esc, F1, F2, Help, Del or P (the firmware lists at most 8 choices) |
+| Ports | Normal, Mice swapped, Pads swapped, Both swapped, Mice as one, Mice as one with the pads swapped (see *Controls*) |
+| Picture | PAL 640 x 256, NTSC 640 x 200, PAL overscan (720), NTSC overscan (720), PAL 800 x 480, NTSC 800 x 480 (see *Limitations*). It chooses PAL or NTSC too (on the next reset). 640: the standard screen alone, one to one, black around it; overscan: 720 pixels across, PAL's 256 lines fitted to the screen, slightly uneven; 800 x 480: 800 pixels across, 240 lines |
 
-Settings marked as applying on reset (chipset, CPU, memory, video) take effect with
+Settings marked as applying on reset (chipset, CPU, memory, PAL or NTSC) take effect with
 **Reset (apply)**; the others apply at once.
 
 ### Hard disks
@@ -139,7 +159,7 @@ none. What kind it is the image says:
   (`AR5.ROM`, up to 512 KB): the ROM at `$A80000`, the RAM at `$AC0000`.
 
 **Help freezes** the Amiga and enters the cartridge: Insert or F12 on a USB keyboard on
-the dock, or a button of the handheld set to Help (*X / Y / Start / Select button key*
+the dock, or a button of the handheld set to Help (*X / Y button*, *Start* or *Select*
 in the settings). The key still reaches the Amiga as Help. The cartridge's image goes up
 again with every **Reset (apply)**, and when the core starts.
 
@@ -230,13 +250,25 @@ unselected ones quietly.
   fitted to them (seven lines of every eight are two rows tall, one is one row: nothing
   is cut off, lines are slightly uneven) and the top 240 lines, each exactly two rows
   (the firmware takes 16 settings at most, so there is none for which 240).
-  The third choice, **800 x 480**, fills the panel: 800 pixels of each line one to one across all of its
-  800 columns, 240 lines two rows each (no fitted 256: the FPGA has no block RAM left for
-  two frames of 800 x 256). An Amiga line has some 828 pixels between its blankings,
-  so 800 are the standard window's 640, 99 to their left and 61 to their right: the
-  window cannot be centred, 800 centred on it would run past the line's end. An overscan
-  screen moves the 800 left with it (not right). On HDMI the 800 are fitted across
-  the 1280 columns (column x shows pixel x * 5 / 8).
+  The **640** choices show the standard screen alone: the 640 pixels of the standard
+  display window one to one in the middle of the 720, black either side (and on HDMI
+  each pixel two columns wide, the 640 across all 1280, where the 720 are fitted
+  unevenly). PAL 640 x 256 has the 256 lines fitted as overscan has; NTSC 640 x 200
+  has the 200 lines of an NTSC screen two rows each in the middle of the panel's 480
+  rows and three rows each in the middle of HDMI's 720, black above and below.
+  The third choice, **800 x 480**, fills the panel: the pixels of each line one to one
+  across all of its 800 columns, 240 lines two rows each (no fitted 256: the FPGA has no
+  block RAM left for two frames of 800 x 256). The core keeps 800 pixels of a line, the
+  standard window's 640 with 99 to their left and 61 to their right (an Amiga line has
+  some 828 between its blankings: the window cannot be centred, 800 centred on it would
+  run past the line's end; an overscan screen moves the 800 left with it). The panel
+  puts them where the 720 wide picture has the same screen, so nothing moves across when
+  the setting changes (the standard screen's 640 pixels are at the panel's columns 52 to
+  691 with either; the wide picture's first 47 columns, border, are then not shown: the
+  glass shows only the panel's columns 0 to about 730, its first column some 120 columns
+  in from the glass's edge, a black strip the core cannot light, and the last 70 past
+  the glass). An overscan screen that moved the 800 left is placed the same way, as far
+  as the picture has columns for it. On HDMI the 720 columns of the overscan picture are shown, fitted the same way and so centred the same way (up to v0.10.0 all 800 were fitted across the 1280 columns, which put the screen off centre).
   In NTSC the picture is 240 lines from the same top line as PAL's, two rows each: the 200 lines of an NTSC screen are at the very top (up to v0.9.1 they were centred, 20 lines down), a PAL-sized screen run in NTSC shows as far as the NTSC frame goes (some 220 lines), and the rows below the frame's end are black.
   Interlaced screens show their long fields only: there is memory for two frames of
   256 lines, not of both fields' 512, and the two fields in the same lines would
@@ -332,7 +364,8 @@ Host (MCU) memory map:
 | 0x0000_1030, 1034 | mouse motion and buttons (firmware fork) |
 | 0x0000_103C | mouse wheel: clicks since the write before, signed 8 bit (firmware fork) |
 | 0x0000_1038 | keyboard event: USB HID usage, bit 8 set when pressed (firmware fork) |
-| 0x0000_1040 - 107C | settings |
+| 0x0000_1020, 1024, 1028 | the second mouse: motion, buttons, wheel, as 0x1030, 0x1034, 0x103C (firmware fork) |
+| 0x0000_1040 - 1088 | settings |
 | 0x1000_0000 + n * 1 MB | disk image n (files 0 to 3) |
 | 0x2000_0000 | Kickstart (file 4) |
 | 0x2010_0000 | cartridge (file 7), up to 512 KB |
@@ -417,6 +450,10 @@ are inlined, and the patches in `patches/minimig/` are applied:
   taken away with ACAL set, as the AD1848's does, and not only when ACAL is first set.
   `toccata.library` waits for it every time it is loaded, with interrupts off and
   without a limit: loaded a second time without a reset between, it stopped the Amiga.
+* `0017`: userio's delayed copies of the joystick lines step with `clk7_en`, as the
+  counters that compare them with the lines do. Upstream they step every clock, so a
+  change of a line is counted only when it falls on a `clk7_en` clock: a joystick does
+  not notice, a mouse on the lines (port 2's, from `gb_input`) lost most of its counts.
 
 `rtl/gamebub/compat/` holds portable replacements for the two Altera RAM primitives the
 MiSTer tree uses.
@@ -470,9 +507,12 @@ needed; `sim/build.sh` first):
 | video, video_ecs, video_aga | `sim/asm/vidtest.s` builds a one bitplane picture with the copper; every pixel of the 720 x 240 frame (the picture and the border either side) is checked, with OCS, ECS and AGA and the picture at the top, middle and bottom |
 | diw_l, diw_r, diw_aga | `vidtest.s` with the display window 32 pixels left (with the fetch) and 4 pixels right (without it): the 720 pixels centred on the window, every pixel checked with OCS, ECS and AGA |
 | lace | `lacetest.s`: the vidtest picture in interlace, COLOR00 blue in long fields and red in short ones: every frame the core completes is a long field, one every two fields, and the picture exact |
+| input_map, input_ab | `inptest.s` with the buttons remapped: A / B as fire / up, up / fire and (changed while running) fire 2 / fire, on the handheld and a second controller; X, Y, Start as fire, fire 2, up with no key sent (the core takes them on any of the four buttons, the menu offers them on X and Y); Select still a key |
 | input | `inptest.s` copies the inputs to memory: D-pad, left stick and fire on port 2, keys (with the keyboard handshake), host mouse motion, buttons and wheel (alone, with motion, and motion and a key after it), the D-pad mouse mode, the right stick mouse, a second controller on port 1, host keyboard events (a key down and up, Caps Lock, a burst, an unknown usage) |
+| input_mouse2, input_ports | `inptest.s` again: the second host mouse as the mouse in port 2 (its counts in JOY1DAT through userio's own counters, port 1's standing still, left button on fire, right on pin 9), the joystick taking the port back and the mouse again, the second controller's right stick, L + D-pad and R as that mouse; the Ports setting (mice swapped with the wheel following, mice as one, pads swapped), changed while running |
 | audio0..3 | `audtest.s` plays on Paula channel 0; left / right levels for each stereo mix |
 | floppy | `wrtest.s` writes a track with disk DMA; the bench checks the 11 sectors decoded into the image and the image saved on exit |
+| floppy_df1 | the same on the second drive: Drives 2, DF1 = Disk 2, DF0 empty; the sectors arrive in the image of slot 1 |
 | colour, ham, aga256 | `coltest.s` gives every line its own background colour (256 colours a frame), still and then changing every frame; `hamtest.s` is a HAM picture, almost every pixel another colour; `aga256.s` an AGA picture of 256 colours in random pixels (`aga256_h`: on HDMI). Every pixel sent is checked against the chipset's 24 bits: each component one of the two 6 bit values around it (itself if it is one), and the mean over every flat 2 x 2 block the colour to within 1 of 255 |
 | toccata, toccata_f | `toccatest.s` drives the Toccata as `toccata.library` does, on the 68000 and on the fastest CPU: autoconfig, the codec's registers, 16 bit stereo at 44100 Hz from the FIFO filled again at every level 6 interrupt; the rate of the interrupts, the status read at each, and the two channels' levels at the core's audio output |
 | a2065 | `a2065test.s` drives the A2065 as `a2065.device` does: autoconfig and the station address from the serial number, the LANCE's registers, the board's RAM, the initialisation block, a frame in internal loopback received again with its CRC, a frame in two buffers and one of 20 bytes (padded to 60) sent, level 2 interrupts, and of seven frames the bench brings as the MCU four received (for the station, broadcast, a multicast group of the logical address filter, 600 bytes over three buffers) and three not (another station's, another group's, one with no descriptor left: MISS). Seven changed copies of `gb_a2065` each fail it |

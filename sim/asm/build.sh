@@ -26,10 +26,10 @@ for v in "vidtest_l -DDIWH=-16 -DDDF=\$30" "vidtest_r -DDIWH=2" "rtgtest040 -DCA
          "mb40_rd_dc -DCPU040 -DDC -DRD" "mb40_wr_dc -DCPU040 -DDC -DWR" "mb40_cp_dc -DCPU040 -DDC -DCP" \
          "mb40_m16_dc -DCPU040 -DDC -DM16" "mb40_alu -DCPU040 -DDC -DALU" "mb40_mix -DCPU040 -DDC -DMIX" \
          "z3diag -DDIAG" "romtest" "systest" "systest256 -DROM256" \
-         "carttest_hrt" "carttest_ar -DAR" "carttest_hrt_c -DCACHE" "carttest_ar_c -DAR -DCACHE"; do
+         "wrtest_df1 -DDF1" "carttest_hrt" "carttest_ar -DAR" "carttest_hrt_c -DCACHE" "carttest_ar_c -DAR -DCACHE"; do
 	set -- $v
 	t=$1; shift
-	src=vidtest.s; case $t in rtg*) src=rtgtest.s;; ram*) src=ramtest.s;; mb*) src=membench.s;; z3*) src=z3test.s;; rom*) src=romtest.s;; sys*) src=systest.s;; cart*) src=carttest.s;; esac
+	src=vidtest.s; case $t in rtg*) src=rtgtest.s;; ram*) src=ramtest.s;; mb*) src=membench.s;; z3*) src=z3test.s;; rom*) src=romtest.s;; sys*) src=systest.s;; cart*) src=carttest.s;; wr*) src=wrtest.s;; esac
 	vasmm68k_mot -Fbin -quiet "$@" -o $t.bin $src
 	size=262144; [ $t = systest ] && size=524288   # systest: a 512 KB ROM at $F80000
 	python3 -c "import sys; d = open('$t.bin', 'rb').read(); open('$t.rom', 'wb').write(d + b'\xff' * ($size - len(d)))"

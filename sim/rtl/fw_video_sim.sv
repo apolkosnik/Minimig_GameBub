@@ -18,8 +18,12 @@
 //     720); on HDMI line y / 3 (y * 256 / 720), column x * 9 / 16, of the
 //     frame that was the last completed when the screen's frame began.
 //     With `wide` (the core's 800 x 240 frames, gb_fb) a frame is 800 x
-//     240, the panel's column x is its column x (all 800), and HDMI's
-//     column x * 5 / 8; the external picture's x is the same (x - 12).
+//     240, the panel's column x is its column x + wide_dx - OFFX (the
+//     core's, kept with each frame: a screen where the 720 picture has
+//     it; black past the frame's 800), and HDMI's
+//     column wide_dx + x * 9 / 16 (the 720 picture's columns); a `narrow`
+//     frame's (640 pixels) on HDMI 40 + x / 2; the external picture's x
+//     is the same (x - 12).
 //     Each frame is compared as it was written (its own size: a frame
 //     written before `wide` changed keeps the size it had; on HDMI the size
 //     taken as the screen's frame begins, as the core does). A pixel of the
@@ -57,6 +61,8 @@ module fw_video_sim
 	input      [17:0] data,
 	input             fit,
 	input             wide,          // (steady)
+	input       [6:0] wide_dx,       // wide: the frame's column that is the 720 one's column 0
+	input             narrow,        // the 640 pixel picture (HDMI: its columns 40 .. 679, twice each)
 	output            wr_frame,
 	output            wr_drop,
 
@@ -94,6 +100,9 @@ localparam FS = (WW * HW > W * H) ? WW * HW : W * H;
 wire [10:0] lw = wide ? 11'(WW) : 11'(W);
 wire  [8:0] lh = wide ? 9'(HW) : 9'(H);
 reg   [1:0] fwide = 2'b00;      // each frame's size as written
+int         fwx [0:1];          // wide: its column at the panel's column 0
+int         fdx [0:1];          // and the one that is the 720 one's column 0
+reg   [1:0] fnarrow = 2'b00;
 reg  [1:0] disp_s = 2'b00;
 wire       displayReadingFrame;
 // (the panel's driver, below: the frame it shows, its scan line)
@@ -128,6 +137,9 @@ always @(posedge clk_sys) begin
 		mem[waddr]  <= data;
 		seen[waddr] <= 1'b1;
 		fwide[writeIndex] <= wide;
+		fwx[writeIndex]   <= (int'(wide_dx) > OFFX) ? int'(wide_dx) - OFFX : 0;
+		fdx[writeIndex]   <= int'(wide_dx);
+		fnarrow[writeIndex] <= narrow;
 		// the framework's rules keep a frame the panel shows from being written
 		if (!hdmi && writeIndex == currentFrame && !reset) begin
 			shown_written <= shown_written + 1'd1;
@@ -292,6 +304,8 @@ reg        sync_d = 1'b0;
 reg        shownFrame = 1'b0;
 reg        shownFit = 1'b0;
 reg        shownWide = 1'b0;
+reg        shownNarrow = 1'b0;
+int        shownDx = 0;
 reg        screen_ok = 1'b0;         // a whole frame of the screen is being compared
 reg [31:0] screen_px = 32'd0;
 reg        check_d = 1'b0;
@@ -310,6 +324,8 @@ always @(posedge clk_av) begin
 		shownFrame <= ext_frame;
 		shownFit   <= fit_s[1];
 		shownWide  <= fwide[ext_frame];
+		shownNarrow <= fnarrow[ext_frame];
+		shownDx    <= fdx[ext_frame];
 		// the screen's frame that ends here
 		if (screen_ok && check_d) begin
 			if (screen_px == (hdmi ? 32'd1280 * 32'd720 : 32'd800 * 32'd480)) screens <= screens + 1'd1;
@@ -329,7 +345,8 @@ always @(posedge clk_av) begin
 			// the hdmi module takes rgb one clock before the pixel's own
 			if (cx >= 11'd1 && cx <= 11'd1280 && cy < 10'd720) begin
 				line = shownFit ? (int'(cy) * 256) / 720 : int'(cy) / 3;
-				col  = shownWide ? ((int'(cx) - 1) * 5) / 8 : ((int'(cx) - 1) * 9) / 16;
+				col  = shownWide ? shownDx + ((int'(cx) - 1) * 9) / 16 :
+				       shownNarrow ? 40 + (int'(cx) - 1) / 2 : ((int'(cx) - 1) * 9) / 16;
 				a    = (shownFrame ? FS : 0) + line * (shownWide ? WW : W) + col;
 				pixels    <= pixels + 1'd1;
 				screen_px <= screen_px + 1'd1;
@@ -341,7 +358,7 @@ always @(posedge clk_av) begin
 		end
 		else if (d_active) begin
 			line = shownFit ? (int'(dpiY) * 256) / 480 : int'(dpiY) / 2;
-			col  = fwide[currentFrame] ? int'(dpiX) : int'(dpiX) - OFFX;
+			col  = fwide[currentFrame] ? int'(dpiX) + fwx[currentFrame] : int'(dpiX) - OFFX;
 			a    = (currentFrame ? FS : 0) + line * (fwide[currentFrame] ? WW : W) + col;
 			pixels    <= pixels + 1'd1;
 			screen_px <= screen_px + 1'd1;

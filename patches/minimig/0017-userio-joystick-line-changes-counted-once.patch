@@ -1,0 +1,22 @@
+--- a/rtl/minimig/userio.sv
++++ b/rtl/minimig/userio.sv
+@@ -236,11 +236,17 @@ wire [15:0] joy1 = joy_ana_en ? {{12{1'b1}}, _joy1[6], 1'b1, _joy1[4], _joy1[5]}
+ wire [15:0] joy2 = joy_ana_en ? {{12{1'b1}}, _joy2[6], 1'b1, _joy2[4], _joy2[5]} : _joy2;
+ 
+ // input synchronization of external signals
++// Game Bub port: the delayed copies step with clk7_en, as the counters
++// below do, so that every change of a line is seen there exactly once. (With
++// a copy per clk a change was seen only when it fell on a clk7_en clock: a
++// mouse on the joystick lines, as gb_input puts one on port 2, lost counts.)
+ always @ (posedge clk) begin
+ 	_sjoy1 <= joy_swap ? joy1 : joy2;
+-	_djoy1 <= _sjoy1;
+ 	_sjoy2 <= joy_swap ? joy2 : joy1;
+-	_djoy2 <= _sjoy2;
++	if (clk7_en) begin
++		_djoy1 <= _sjoy1;
++		_djoy2 <= _sjoy2;
++	end
+ end
+ 
+ // port 1 automatic mouse/joystick switch
